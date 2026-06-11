@@ -2,9 +2,7 @@
 
 A lightweight server that leverages [`streamlink`](https://github.com/streamlink/streamlink) and [`ffmpeg`](https://github.com/ffmpeg/ffmpeg) to stream Twitch livestreams via `Web-UI` and `Jellyfin` (*requires [Jellyfin Plugin](https://github.com/c2bw/jellyfin-plugin-jellych)*).
 
-<img src="docs/images/home.jpg" alt="Jellych web UI" height="350">
-<img src="docs/images/vods.jpg" alt="Jellych vods UI" height="350">
-
+<img src="docs/images/home.jpg" alt="Jellych web UI" height="450">
 
 ## Configuration
 
