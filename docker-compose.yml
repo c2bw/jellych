@@ -1,0 +1,26 @@
+services:
+  jellych:
+    command: --addr :8080 --config /data/config --vods /data/vods
+    image: ghcr.io/c2bw/jellych:latest
+    restart: unless-stopped
+    volumes:
+      - vods_volume:/data/vods
+      - config_volume:/data/config
+    environment:
+      - LOG_LEVEL=INFO
+      - TWITCH_CLIENT_ID=${TWITCH_CLIENT_ID}
+      - TWITCH_CLIENT_SECRET=${TWITCH_CLIENT_SECRET}
+      - SERVER_URL=${SERVER_URL}
+      - JELLYFIN_WEBHOOK_SECRET=${JELLYFIN_WEBHOOK_SECRET}
+    ports:
+      - 8080:8080
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1000M
+    memswap_limit: 1050M
+
+volumes:
+  vods_volume:
+  config_volume:

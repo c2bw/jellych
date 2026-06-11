@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>VODs - Jellych</title>
+  <link rel="icon" href="/html/assets/img/twitch_jellyfish_icon.svg" type="image/svg+xml" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style type="text/tailwindcss">
+    @layer components {
+      .field {
+        @apply w-full rounded-md border border-[#333] bg-[#171718] px-3 py-2 text-sm text-white outline-none transition-colors placeholder:text-white/35 focus:border-[#4aa3ff];
+      }
+      .button {
+        @apply rounded-md border border-[#333] bg-[#242426] px-3 py-2 text-sm font-medium text-white transition-colors hover:border-[#4aa3ff] hover:bg-[#2d2d30] disabled:cursor-not-allowed disabled:opacity-50;
+      }
+      .button-danger {
+        @apply border-red-950 bg-red-950/70 hover:border-red-500 hover:bg-red-900;
+      }
+    }
+  </style>
+</head>
+<body class="min-h-screen bg-[#111] text-[#eee] font-sans">
+  <div class="mx-auto flex min-h-screen w-full max-w-5xl flex-col px-4 py-4 sm:px-6">
+    <header class="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-4">
+      <a href="/" class="flex items-center gap-2 text-white no-underline">
+        <img src="/html/assets/img/twitch_jellyfish_icon.svg" alt="Jellyfish icon" class="h-11 w-11 rounded-md" />
+        <div>
+          <div class="text-lg font-bold leading-tight">Jellych</div>
+          <div class="text-xs text-white/50">VOD library</div>
+        </div>
+      </a>
+      <nav class="flex items-center gap-2 text-sm">
+        <a href="/watch" class="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-white/80 no-underline transition-colors hover:border-[#4aa3ff] hover:text-white">Live</a>
+        <a href="/api/vods.m3u" class="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-white/80 no-underline transition-colors hover:border-[#4aa3ff] hover:text-white">M3U</a>
+      </nav>
+    </header>
+
+    <main class="grid min-w-0 flex-1 gap-4 py-4 lg:grid-cols-[360px_minmax(0,1fr)]">
+      <section class="min-w-0 rounded-lg border border-[#333] bg-[#1a1a1b] p-4">
+        <h1 class="mb-4 text-base font-bold">Add VOD</h1>
+        <form id="vodForm" class="flex flex-col gap-3">
+          <label class="flex flex-col gap-1.5 text-sm text-white/75">
+            VOD URL
+            <input id="vodUrl" class="field" type="url" placeholder="https://www.twitch.tv/videos/123456789" required />
+          </label>
+          <label class="flex flex-col gap-1.5 text-sm text-white/75">
+            Channel
+            <input id="vodChannel" class="field" type="text" placeholder="Optional channel name" />
+          </label>
+          <label class="flex flex-col gap-1.5 text-sm text-white/75">
+            Title
+            <input id="vodTitle" class="field" type="text" placeholder="Optional display title" />
+          </label>
+          <button id="addVodBtn" class="button" type="submit">Add VOD</button>
+          <div id="vodMsg" class="min-h-[20px] text-sm text-white/50"></div>
+        </form>
+      </section>
+
+      <section class="min-w-0 rounded-lg border border-[#222] bg-[#0f0f10] p-4">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 class="text-base font-bold">Saved VODs</h2>
+          <code class="rounded border border-white/10 bg-black/40 px-2 py-1 text-xs text-white/60">/api/vods.m3u</code>
+        </div>
+        <div id="vodList" class="flex min-w-0 flex-col gap-2">Loading VODs...</div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/html/js/vods.js"></script>
+</body>
+</html>

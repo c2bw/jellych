@@ -1,0 +1,22 @@
+.git
+.gitignore
+.dockerignore
+
+# Local build outputs
+jellych
+jellych.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Local caches and scratch data
+.cache/
+data/
+tmp/
+*.log
+*.tmp
+
+# Editor and OS files
+.vscode/
+.DS_Store

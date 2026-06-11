@@ -1,0 +1,340 @@
+package stream
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/exec"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	twitch "github.com/c2bw/twitch-url-extractor"
+)
+
+var mu sync.Mutex
+var mgrs map[string]*manager
+var startLiveChannel = Start
+
+// ErrStopTimeout indicates a stream process did not exit before the shutdown timeout.
+var ErrStopTimeout = errors.New("stop timeout")
+var ErrAlreadyStarted = errors.New("stream already started")
+
+var channelNameRE = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
+
+// ValidateChannelName enforces a conservative channel name format to avoid path traversal.
+func ValidateChannelName(name string) error {
+	if !channelNameRE.MatchString(name) {
+		return fmt.Errorf("invalid channel name")
+	}
+	return nil
+}
+
+// ActiveChannels returns a slice of channel names that currently have
+// active stream managers.
+func ActiveChannels() []string {
+	mu.Lock()
+	defer mu.Unlock()
+	if len(mgrs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(mgrs))
+	for k := range mgrs {
+		out = append(out, k)
+	}
+	return out
+}
+
+// IsChannelActive reports whether a channel currently has an active stream manager.
+func IsChannelActive(channel string) bool {
+	if err := ValidateChannelName(channel); err != nil {
+		return false
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if mgrs == nil {
+		return false
+	}
+	m, ok := mgrs[channel]
+	return ok && m != nil && m.started
+}
+
+// PlaylistSegmentCount returns the current number of media segment entries
+// in the channel's index.m3u8 playlist.
+func PlaylistSegmentCount(channel string) (int, error) {
+	if err := ValidateChannelName(channel); err != nil {
+		return 0, err
+	}
+
+	playlist := getLiveObject(channel, "index.m3u8")
+	if playlist == nil {
+		return 0, nil
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(playlist)))
+	count := 0
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		count++
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
+type manager struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	// processes
+	ffmpegCmd *exec.Cmd
+	// bookkeeping
+	started   bool
+	startTime time.Time
+	// wait groups / channels
+	doneFF chan error
+}
+
+// Start begins streaming for the given channel. It returns an error if
+// streaming is already started or if commands fail to start.
+func Start(channel string) error {
+	if err := ValidateChannelName(channel); err != nil {
+		return err
+	}
+	configuredLiveBaseURL := getLiveBaseURL()
+	if configuredLiveBaseURL == "" {
+		return errors.New("live base url not configured")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m := &manager{
+		ctx:       ctx,
+		cancel:    cancel,
+		doneFF:    make(chan error, 1),
+		startTime: time.Now(),
+	}
+
+	mu.Lock()
+	if mgrs == nil {
+		mgrs = make(map[string]*manager)
+	}
+	if existing, ok := mgrs[channel]; ok && existing.started {
+		mu.Unlock()
+		cancel()
+		return ErrAlreadyStarted
+	}
+	// reserve this channel to avoid concurrent double-starts
+	m.started = true
+	mgrs[channel] = m
+	mu.Unlock()
+
+	resetLiveChannel(channel)
+
+	inputURL, streamName, err := resolveLiveStreamURL(m.ctx, channel)
+	if err != nil {
+		return abortStart(channel, m, err)
+	}
+	slog.Info("resolved stream url", "channel", channel, "stream", streamName, "elapsed", time.Since(m.startTime))
+
+	playlistURL := strings.TrimRight(configuredLiveBaseURL, "/") + liveWritePrefix + channel + "/index.m3u8"
+	m.ffmpegCmd = exec.CommandContext(m.ctx, "ffmpeg", buildFFmpegHLSArgs(channel, inputURL, playlistURL, getServerBaseURL())...)
+	stderrFF, err := m.ffmpegCmd.StderrPipe()
+	if err != nil {
+		return abortStart(channel, m, fmt.Errorf("failed to get ffmpeg stderr pipe: %w", err))
+	}
+
+	if err := m.ffmpegCmd.Start(); err != nil {
+		return abortStart(channel, m, fmt.Errorf("failed to start ffmpeg: %w", err))
+	}
+
+	go logCommandOutput("ffmpeg", channel, stderrFF)
+
+	go func() {
+		err := m.ffmpegCmd.Wait()
+		if err != nil {
+			slog.Error("ffmpeg exited", "error", err)
+		} else {
+			slog.Info("ffmpeg exited normally")
+		}
+		m.doneFF <- err
+		close(m.doneFF)
+	}()
+
+	go func() {
+		select {
+		case <-m.doneFF:
+			slog.Info("ffmpeg finished", "elapsed", time.Since(m.startTime))
+			cancel()
+		case <-m.ctx.Done():
+			// stop requested
+		}
+
+		// Remove manager from global map when finished
+		deleteManager(channel, m)
+	}()
+
+	slog.Info("started", "ffmpeg_pid", m.ffmpegCmd.Process.Pid, "channel", channel)
+	return nil
+}
+
+func resolveLiveStreamURL(ctx context.Context, channel string) (string, string, error) {
+	streams, err := twitch.NewClient(nil).Streams(ctx, "https://twitch.tv/"+channel)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to resolve stream URL: %w", err)
+	}
+	stream, ok := twitch.BestStream(streams)
+	if !ok {
+		return "", "", fmt.Errorf("no playable stream URL returned")
+	}
+	if err := validateHTTPURL(stream.URL); err != nil {
+		return "", "", fmt.Errorf("stream URL extractor returned invalid stream url: %w", err)
+	}
+	return stream.URL, stream.Name, nil
+}
+
+func abortStart(channel string, m *manager, err error) error {
+	close(m.doneFF)
+	deleteManager(channel, m)
+	m.cancel()
+	return err
+}
+
+// Stop attempts to gracefully stop any running stream. It's safe to call
+// multiple times; it returns nil if no stream was running.
+func Stop() error {
+	mu.Lock()
+	if len(mgrs) == 0 {
+		mu.Unlock()
+		return nil
+	}
+	// copy keys and managers to stop outside lock
+	copyMap := make(map[string]*manager, len(mgrs))
+	for k, v := range mgrs {
+		copyMap[k] = v
+		delete(mgrs, k)
+	}
+	mu.Unlock()
+
+	var lastErr error
+	for _, m := range copyMap {
+		if err := stopManager(m); err != nil {
+			lastErr = err
+		}
+	}
+	for channel := range copyMap {
+		clearLiveChannel(channel)
+	}
+	return lastErr
+}
+
+// StopChannel stops the stream for a specific channel. Returns nil if there was no active stream.
+func StopChannel(channel string) error {
+	if err := ValidateChannelName(channel); err != nil {
+		return err
+	}
+	mu.Lock()
+	if mgrs == nil {
+		mu.Unlock()
+		return nil
+	}
+	m, ok := mgrs[channel]
+	if !ok {
+		mu.Unlock()
+		return nil
+	}
+	delete(mgrs, channel)
+	mu.Unlock()
+	clearLiveChannel(channel)
+	return stopManager(m)
+}
+
+func stopManager(m *manager) error {
+	if m == nil {
+		return nil
+	}
+	// cancel context to propagate to commands created with it
+	m.cancel()
+
+	// try graceful interrupt
+	if m.ffmpegCmd != nil && m.ffmpegCmd.Process != nil {
+		_ = m.ffmpegCmd.Process.Signal(os.Interrupt)
+	}
+
+	// wait with timeout for both to exit
+	deadline := time.Now().Add(5 * time.Second)
+	if m.ffmpegCmd == nil || m.ffmpegCmd.Process == nil {
+		return nil
+	}
+	if !waitForDone(m.doneFF, deadline) {
+		// force kill
+		if m.ffmpegCmd != nil && m.ffmpegCmd.Process != nil {
+			_ = m.ffmpegCmd.Process.Kill()
+		}
+		return fmt.Errorf("%w: timed out stopping processes; killed", ErrStopTimeout)
+	}
+
+	slog.Info("processes terminated", "elapsed", time.Since(m.startTime))
+	return nil
+}
+
+func deleteManager(channel string, m *manager) {
+	mu.Lock()
+	if mgrs != nil {
+		if cur, ok := mgrs[channel]; ok && cur == m {
+			delete(mgrs, channel)
+			clearLiveChannel(channel)
+		}
+	}
+	mu.Unlock()
+}
+
+func buildFFmpegHLSArgs(channel, inputURL, playlistURL, publicBaseURL string) []string {
+	args := []string{
+		"-i", inputURL,
+		"-c", "copy",
+		"-f", "hls",
+		"-method", "PUT",
+		"-headers", liveWriteTokenHeader + ": " + getLiveWriteToken() + "\r\n",
+		"-hls_time", "1",
+		"-hls_list_size", "30",
+		"-hls_flags", "delete_segments",
+	}
+
+	if publicBaseURL = strings.TrimSpace(publicBaseURL); publicBaseURL != "" {
+		hlsBaseURL := strings.TrimRight(publicBaseURL, "/") + "/live/" + channel + "/"
+		args = append(args, "-hls_base_url", hlsBaseURL)
+	}
+
+	return append(args, playlistURL)
+}
+
+func logCommandOutput(command, channel string, r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		slog.Debug(command, "channel", channel, "line", scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Debug(command+" log stream ended with error", "channel", channel, "error", err)
+	}
+}
+
+func waitForDone(ch <-chan error, deadline time.Time) bool {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return false
+	}
+	select {
+	case <-ch:
+		return true
+	case <-time.After(remaining):
+		return false
+	}
+}

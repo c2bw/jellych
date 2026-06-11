@@ -1,0 +1,22 @@
+# Ignore built binary
+jellych
+jellych.exe
+
+# Common Go ignores
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE/editor
+.vscode/
+.DS_Store
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Temporary directories
+tmp/
+data/
+.cache/

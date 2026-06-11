@@ -1,0 +1,438 @@
+package manager
+
+import (
+	"context"
+	"log/slog"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/c2bw/jellych/server/api"
+	twitchapi "github.com/c2bw/jellych/twitch/api"
+	"github.com/c2bw/jellych/twitch/client"
+	"github.com/c2bw/jellych/twitch/manager/channel"
+)
+
+const latestVODImportLimit = 5
+const latestVODImportInterval = 15 * time.Minute
+
+type Manager struct {
+	configPath   string
+	channels     []channel.Info
+	vods         []api.VOD
+	vodBlacklist map[string]struct{}
+	statuses     []channel.Status
+	twitchClient *client.TwitchClient
+	mu           sync.RWMutex
+}
+
+type vodState struct {
+	vods      []api.VOD
+	blacklist map[string]struct{}
+}
+
+func Start(configPath string) (*Manager, error) {
+	m := &Manager{configPath: configPath, channels: []channel.Info{}}
+	if err := m.loadChannels(); err != nil {
+		return nil, err
+	}
+	if err := m.loadVODs(); err != nil {
+		return nil, err
+	}
+	if err := m.loadVODBlacklist(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (m *Manager) SetTwitchClient(c *client.TwitchClient) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.twitchClient = c
+}
+
+func (m *Manager) ListVODs() []api.VOD {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]api.VOD(nil), m.vods...)
+}
+
+func (m *Manager) FindVOD(id string) (api.VOD, bool) {
+	id = strings.TrimSpace(id)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, vod := range m.vods {
+		if vod.ID == id {
+			return vod, true
+		}
+	}
+	return api.VOD{}, false
+}
+
+func (m *Manager) AddChannel(name string) (string, error) {
+	iconURL := m.fetchChannelIconURL(name)
+
+	m.mu.Lock()
+	for _, c := range m.channels {
+		if c.Name == name {
+			m.mu.Unlock()
+			return "", api.ErrChannelAlreadyExists
+		}
+	}
+	backup := append([]channel.Info(nil), m.channels...)
+	m.channels = append(m.channels, channel.Info{Name: name, IconURL: iconURL})
+	if err := m.saveChannels(m.channels); err != nil {
+		m.channels = backup
+		m.mu.Unlock()
+		return "", err
+	}
+	m.mu.Unlock()
+	return iconURL, nil
+}
+
+func (m *Manager) AddVOD(vod api.VOD) error {
+	vod = api.PrepareVOD(vod)
+	if err := api.ValidateVOD(vod); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	for _, existing := range m.vods {
+		if existing.ID == vod.ID {
+			m.mu.Unlock()
+			return api.ErrVODAlreadyExists
+		}
+	}
+	backup := m.snapshotVODStateLocked()
+	if m.vodBlacklist != nil {
+		delete(m.vodBlacklist, vod.ID)
+	}
+	m.vods = append(m.vods, vod)
+	if err := m.saveVODStateLocked(); err != nil {
+		m.restoreVODStateLocked(backup)
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) addImportedVODs(items []api.VOD) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+
+	m.mu.Lock()
+	existing := make(map[string]struct{}, len(m.vods)+len(items))
+	for _, vod := range m.vods {
+		existing[vod.ID] = struct{}{}
+	}
+	blacklisted := cloneStringSet(m.vodBlacklist)
+
+	next := append([]api.VOD(nil), m.vods...)
+	added := 0
+	for _, vod := range items {
+		vod = api.PrepareVOD(vod)
+		if err := api.ValidateVOD(vod); err != nil {
+			slog.Warn("skipping invalid imported vod", "id", vod.ID, "url", vod.URL, "error", err)
+			continue
+		}
+		if _, ok := existing[vod.ID]; ok {
+			continue
+		}
+		if _, ok := blacklisted[vod.ID]; ok {
+			continue
+		}
+		existing[vod.ID] = struct{}{}
+		next = append(next, vod)
+		added++
+	}
+	if added == 0 {
+		m.mu.Unlock()
+		return 0, nil
+	}
+
+	backup := m.vods
+	m.vods = next
+	if err := m.saveVODs(m.vods); err != nil {
+		m.vods = backup
+		m.mu.Unlock()
+		return 0, err
+	}
+	m.mu.Unlock()
+
+	return added, nil
+}
+
+func (m *Manager) RemoveVOD(id string) error {
+	id = strings.TrimSpace(id)
+	m.mu.Lock()
+	backup := m.snapshotVODStateLocked()
+	for i, vod := range m.vods {
+		if vod.ID == id {
+			m.vods = append(m.vods[:i], m.vods[i+1:]...)
+			if m.vodBlacklist == nil {
+				m.vodBlacklist = make(map[string]struct{})
+			}
+			m.vodBlacklist[id] = struct{}{}
+			if err := m.saveVODStateLocked(); err != nil {
+				m.restoreVODStateLocked(backup)
+				m.mu.Unlock()
+				return err
+			}
+			m.mu.Unlock()
+			return nil
+		}
+	}
+	m.mu.Unlock()
+	return api.ErrVODNotFound
+}
+
+func (m *Manager) RemoveChannel(name string) error {
+	m.mu.Lock()
+	backup := append([]channel.Info(nil), m.channels...)
+	for i, c := range m.channels {
+		if c.Name == name {
+			m.channels = append(m.channels[:i], m.channels[i+1:]...)
+			if err := m.saveChannels(m.channels); err != nil {
+				m.channels = backup
+				m.mu.Unlock()
+				return err
+			}
+			m.mu.Unlock()
+			return nil
+		}
+	}
+	m.mu.Unlock()
+	return api.ErrChannelNotFound
+}
+
+func (m *Manager) UpdateStatus(ctx context.Context, c *client.TwitchClient) {
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		names := m.channelNames()
+
+		if len(names) == 0 {
+			m.mu.Lock()
+			m.statuses = nil
+			m.mu.Unlock()
+			api.SetChannelStatus(nil)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				continue
+			}
+		}
+
+		status, err := channel.FetchStatus(c, names)
+		if err != nil {
+			slog.Error("failed to fetch channel status", "error", err)
+		} else {
+			status = normalizeStatuses(names, status)
+			logStatuses(status)
+
+			m.mu.Lock()
+			m.statuses = status
+			m.mu.Unlock()
+			api.SetChannelStatus(toAPIStatuses(status))
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *Manager) ImportLatestVODs(ctx context.Context, c *client.TwitchClient) {
+	m.importLatestVODsOnce(ctx, c)
+
+	ticker := time.NewTicker(latestVODImportInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.importLatestVODsOnce(ctx, c)
+		}
+	}
+}
+
+func (m *Manager) importLatestVODsOnce(ctx context.Context, c *client.TwitchClient) {
+	if c == nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+
+	names := m.channelNames()
+	if len(names) == 0 {
+		return
+	}
+
+	users, err := twitchapi.UserInfo(c.ClientID(), c.AccessToken(), names)
+	if err != nil {
+		slog.Error("failed to fetch Twitch users for VOD import", "error", err)
+		return
+	}
+
+	var imported []api.VOD
+	for _, user := range users.Data {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		videos, err := twitchapi.VideosByUser(c.ClientID(), c.AccessToken(), user.ID, latestVODImportLimit)
+		if err != nil {
+			slog.Error("failed to fetch latest Twitch VODs", "channel", user.Login, "error", err)
+			continue
+		}
+		for _, video := range videos.Data {
+			vod := vodFromTwitchVideo(video)
+			if vod.ID != "" {
+				imported = append(imported, vod)
+			}
+		}
+	}
+
+	added, err := m.addImportedVODs(imported)
+	if err != nil {
+		slog.Error("failed to save imported VODs", "error", err)
+		return
+	}
+	if added > 0 {
+		slog.Info("imported latest Twitch VODs", "added", added)
+	}
+}
+
+func (m *Manager) channelNames() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	names := make([]string, 0, len(m.channels))
+	for _, c := range m.channels {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+func normalizeStatuses(names []string, status []channel.Status) []channel.Status {
+	// Ensure offline channels are represented in the status list.
+	statusByName := make(map[string]channel.Status, len(status))
+	for _, s := range status {
+		statusByName[strings.ToLower(s.Name)] = s
+	}
+	for _, name := range names {
+		lower := strings.ToLower(name)
+		if _, ok := statusByName[lower]; !ok {
+			status = append(status, channel.Status{Name: name, Online: false})
+		}
+	}
+
+	// sort statuses: online first, then by viewers descending; offline at the end
+	sort.SliceStable(status, func(i, j int) bool {
+		a := status[i]
+		b := status[j]
+		if a.Online && !b.Online {
+			return true
+		}
+		if !a.Online && b.Online {
+			return false
+		}
+		if a.Online && b.Online {
+			return a.Viewers > b.Viewers
+		}
+		// both offline — keep original order
+		return false
+	})
+	return status
+}
+
+func logStatuses(status []channel.Status) {
+	for _, s := range status {
+		slog.Debug("channel status", "name", s.Name, "online", s.Online, "viewers", s.Viewers, "game", s.Game)
+	}
+}
+
+func toAPIStatuses(status []channel.Status) []api.Status {
+	apiStatus := make([]api.Status, 0, len(status))
+	for _, s := range status {
+		apiStatus = append(apiStatus, api.Status{
+			Name:    strings.ToLower(s.Name),
+			Online:  s.Online,
+			Viewers: s.Viewers,
+			Title:   s.Title,
+			Game:    s.Game,
+		})
+	}
+	return apiStatus
+}
+
+func vodFromTwitchVideo(video twitchapi.Video) api.VOD {
+	id := strings.TrimSpace(video.ID)
+	title := strings.TrimSpace(video.Title)
+	if title == "" && id != "" {
+		title = "Twitch VOD " + id
+	}
+	return api.VOD{
+		ID:      id,
+		URL:     strings.TrimSpace(video.URL),
+		Title:   title,
+		Channel: twitchVideoChannel(video),
+		Logo:    normalizeTwitchThumbnail(video.ThumbnailURL),
+		Date:    twitchVideoDate(video),
+	}
+}
+
+func twitchVideoChannel(video twitchapi.Video) string {
+	if userName := strings.TrimSpace(video.UserName); userName != "" {
+		return userName
+	}
+	return strings.TrimSpace(video.UserLogin)
+}
+
+func twitchVideoDate(video twitchapi.Video) string {
+	if publishedAt := strings.TrimSpace(video.PublishedAt); publishedAt != "" {
+		return publishedAt
+	}
+	return strings.TrimSpace(video.CreatedAt)
+}
+
+func normalizeTwitchThumbnail(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	raw = strings.ReplaceAll(raw, "%{width}", "320")
+	raw = strings.ReplaceAll(raw, "%{height}", "180")
+	return raw
+}
+
+func (m *Manager) fetchChannelIconURL(name string) string {
+	m.mu.RLock()
+	c := m.twitchClient
+	m.mu.RUnlock()
+	if c == nil {
+		return ""
+	}
+	iconURL, err := channel.FetchIconURL(c, name)
+	if err != nil {
+		slog.Warn("failed to fetch channel icon", "channel", name, "error", err)
+		return ""
+	}
+	return strings.TrimSpace(iconURL)
+}

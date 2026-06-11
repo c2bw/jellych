@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Watch - Local HLS Player</title>
+  <link rel="icon" href="/html/assets/img/twitch_jellyfish_icon.svg" type="image/svg+xml" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style type="text/tailwindcss">
+    @layer components {
+      .btn-base {
+        @apply bg-[#222] py-1 px-2 rounded-md cursor-pointer border border-[#333] min-w-[52px] hover:border-[#4aa3ff] transition-colors;
+      }
+      .btn-started {
+        @apply bg-red-900 border-red-900 text-white;
+      }
+      .btn-playing {
+        @apply bg-green-700 border-green-800 text-white;
+      }
+      .stats-chip {
+        @apply inline-flex items-center gap-1 rounded-full border border-white/10 bg-black/55 px-2 py-1 text-[11px] leading-none text-white/85 backdrop-blur;
+      }
+    }
+  </style>
+</head>
+<body class="bg-[#111] text-[#eee] font-sans m-0 overflow-x-hidden">
+  <div class="p-2">
+    <header class="flex items-center gap-3 justify-center text-center w-full py-0">
+      <a href="/" class="flex items-center gap-2">
+        <img src="/html/assets/img/twitch_jellyfish_icon.svg" alt="Jellyfish icon" class="w-12 h-12 rounded-md shrink-0" />
+        <h1 class="text-lg font-bold">Jellych</h1>
+      </a>
+      <a href="/vods" class="rounded-md border border-white/10 bg-white/5 px-3 py-1 text-sm text-white/80 no-underline transition-colors hover:border-[#4aa3ff] hover:text-white">VODs</a>
+    </header>
+
+    <div class="flex gap-4 items-start mt-3 overflow-hidden">
+      <div class="w-[260px] shrink-0 flex flex-col gap-3">
+        <div id="statsOverlay" class="rounded-lg border border-white/10 bg-black/65 p-3 text-[12px] text-white shadow-lg backdrop-blur">
+          <div class="mb-2 flex items-center justify-between gap-3">
+            <div class="font-semibold tracking-wide text-white/90">Render stats</div>
+            <div id="statsState" class="stats-chip">Idle</div>
+          </div>
+          <div id="statsGrid" class="grid grid-cols-2 gap-2"></div>
+        </div>
+
+        <div id="manager" class="p-2 bg-[#1a1a1b] rounded border border-[#333]">
+          <h3 class="m-0 mb-2 text-[13px] font-bold">Manage</h3>
+          <div class="flex flex-col gap-1.5">
+            <div class="flex gap-2 items-center">
+              <input id="newName" placeholder="Channel name" class="bg-[#222] border border-[#333] rounded p-1.5 flex-1 min-w-[120px] outline-none focus:border-[#4aa3ff]" />
+              <button id="addBtn" class="bg-[#333] hover:bg-[#444] py-1.5 px-3 rounded text-sm transition-colors">Add</button>
+            </div>
+            <div class="flex gap-2 items-center">
+              <select id="removeSelect" class="bg-[#222] border border-[#333] rounded p-1.5 flex-1 min-w-[120px] outline-none focus:border-[#4aa3ff]"></select>
+              <button id="removeBtn" class="bg-[#333] hover:bg-[#444] py-1.5 px-3 rounded text-sm transition-colors">Remove</button>
+            </div>
+            <div id="managerMsg" class="text-gray-400 text-[90%] min-h-[18px]"></div>
+          </div>
+        </div>
+
+        <div id="channels" class="max-h-[72vh] overflow-y-auto p-2 bg-[#0f0f10] rounded-md border border-[#222]">
+          <div id="channelsList" class="flex flex-col gap-1">Loading channels..</div>
+        </div>
+      </div>
+
+      <div class="flex-1 min-w-0">
+        <video id="player" controls playsinline class="w-full h-auto bg-black rounded-md"></video>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.0/dist/hls.min.js"></script>
+  <script type="module" src="/html/js/index.js"></script>
+</body>
+</html>
