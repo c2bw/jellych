@@ -235,7 +235,7 @@ func TestVODListIncludesDownloadStatus(t *testing.T) {
 		ID:  "123456789",
 		URL: "https://www.twitch.tv/videos/123456789",
 	}})
-	if err := os.WriteFile(filepath.Join(dir, "123456789.mp4"), []byte("downloaded"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "123456789.mkv"), []byte("downloaded"), 0644); err != nil {
 		t.Fatalf("failed to create downloaded vod file: %v", err)
 	}
 

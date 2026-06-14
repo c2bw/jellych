@@ -17,7 +17,7 @@ COPY . .
 RUN go build -ldflags "-s -w" -o /jellych .
 
 FROM alpine:latest
-RUN apk add --no-cache tzdata ca-certificates ffmpeg streamlink
+RUN apk add --no-cache tzdata ca-certificates ffmpeg
 
 # Create an unprivileged user to run the service
 RUN addgroup -S -g 1000 app && adduser -S -D -H -u 1000 -G app app

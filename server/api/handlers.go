@@ -123,7 +123,7 @@ func handleDownloadVOD(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := stream.StartVODDownload(vod.ID, vod.URL); err != nil {
+	if err := stream.StartVODDownload(r.Context(), vod.ID, vod.URL, vod.Title, vod.Channel); err != nil {
 		switch {
 		case errors.Is(err, stream.ErrVODDownloadsDisabled):
 			http.Error(w, "vod downloads folder is not configured; start jellych with --vods <folder>", http.StatusServiceUnavailable)
@@ -131,6 +131,8 @@ func handleDownloadVOD(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "vod download already started", http.StatusConflict)
 		case errors.Is(err, stream.ErrVODDownloadAlreadyExists):
 			http.Error(w, "vod already downloaded", http.StatusConflict)
+		case errors.Is(err, context.DeadlineExceeded):
+			http.Error(w, "timed out resolving vod stream URL", http.StatusGatewayTimeout)
 		default:
 			writeErrorf(w, http.StatusInternalServerError, "failed to start vod download: %v", err)
 		}

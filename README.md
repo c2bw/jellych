@@ -1,6 +1,6 @@
 # Jellych
 
-A lightweight server that leverages [`streamlink`](https://github.com/streamlink/streamlink) and [`ffmpeg`](https://github.com/ffmpeg/ffmpeg) to stream Twitch livestreams via `Web-UI` and `Jellyfin` (*requires [Jellyfin Plugin](https://github.com/c2bw/jellyfin-plugin-jellych)*).
+A lightweight server that leverages [`ffmpeg`](https://github.com/ffmpeg/ffmpeg) to stream Twitch livestreams via `Web-UI` and `Jellyfin` (*requires [Jellyfin Plugin](https://github.com/c2bw/jellyfin-plugin-jellych)*).
 
 <img src="docs/images/home.jpg" alt="Jellych web UI" height="450">
 
@@ -19,6 +19,11 @@ Required environment variables:
 - `SERVER_URL` publicly accessible URL where the server is reachable, also used for Jellyfin webhook
 - `JELLYFIN_WEBHOOK_SECRET` shared secret expected on `X-Jellych-Secret`
 
+Optional environment variables:
+
+- `LOG_LEVEL` logging level (default `INFO`)
+- `VOD_RETENTION_DAYS` number of days to keep downloaded VOD files (default `30`, must be a positive integer)
+
 Optional flags:
 
 - `-addr` (default `:8080`) HTTP listen address
@@ -36,6 +41,7 @@ services:
     restart: unless-stopped
     environment:
       - LOG_LEVEL=INFO
+      - VOD_RETENTION_DAYS=30
       - TWITCH_CLIENT_ID=your_client_id
       - TWITCH_CLIENT_SECRET=your_client_secret
       - SERVER_URL=http://localhost:8080
