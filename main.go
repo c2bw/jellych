@@ -20,6 +20,8 @@ import (
 	"github.com/c2bw/jellych/twitch/client"
 )
 
+const version = "0.0.1"
+
 func main() {
 	// Set log level to debug for more verbose output, overridable by environment variable (e.g. LOG_LEVEL=info)
 	var logLevel slog.Level
@@ -31,6 +33,7 @@ func main() {
 		logLevel = slog.LevelInfo
 	}
 	slog.SetLogLoggerLevel(logLevel)
+	slog.Info("Starting Jellych", "version", version)
 	//Parse command line flags
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	configPath := flag.String("config", "/data/config", "path to the channels config directory")
