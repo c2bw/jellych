@@ -19,6 +19,11 @@ Required environment variables:
 - `SERVER_URL` publicly accessible URL where the server is reachable, also used for Jellyfin webhook
 - `JELLYFIN_WEBHOOK_SECRET` shared secret expected on `X-Jellych-Secret`
 
+Optional environment variables:
+
+- `LOG_LEVEL` logging level (default `INFO`)
+- `VOD_RETENTION_DAYS` number of days to keep downloaded VOD files (default `30`, must be a positive integer)
+
 Optional flags:
 
 - `-addr` (default `:8080`) HTTP listen address
@@ -36,6 +41,7 @@ services:
     restart: unless-stopped
     environment:
       - LOG_LEVEL=INFO
+      - VOD_RETENTION_DAYS=30
       - TWITCH_CLIENT_ID=your_client_id
       - TWITCH_CLIENT_SECRET=your_client_secret
       - SERVER_URL=http://localhost:8080

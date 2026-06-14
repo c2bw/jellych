@@ -8,6 +8,7 @@ services:
       - config_volume:/data/config
     environment:
       - LOG_LEVEL=INFO
+      - VOD_RETENTION_DAYS=30
       - TWITCH_CLIENT_ID=${TWITCH_CLIENT_ID}
       - TWITCH_CLIENT_SECRET=${TWITCH_CLIENT_SECRET}
       - SERVER_URL=${SERVER_URL}

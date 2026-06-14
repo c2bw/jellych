@@ -20,6 +20,8 @@ var ErrVODDownloadAlreadyExists = errors.New("vod download already exists")
 var ErrVODDownloadNotFound = errors.New("vod download not found")
 
 const vodURLResolutionTimeout = 20 * time.Second
+const vodDownloadCleanupInterval = time.Hour
+const defaultVODDownloadRetention = 30 * 24 * time.Hour
 
 var vodDownloadIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
@@ -27,15 +29,43 @@ type vodDownload struct{}
 
 var vodDownloadState = struct {
 	sync.Mutex
-	dir    string
-	active map[string]*vodDownload
-}{}
+	dir       string
+	retention time.Duration
+	active    map[string]*vodDownload
+}{
+	retention: defaultVODDownloadRetention,
+}
 
 // SetVODDownloadDir configures the folder used by manual VOD downloads.
 func SetVODDownloadDir(dir string) {
 	vodDownloadState.Lock()
 	defer vodDownloadState.Unlock()
 	vodDownloadState.dir = strings.TrimSpace(dir)
+}
+
+// SetVODDownloadRetention configures how long completed VOD downloads are kept.
+func SetVODDownloadRetention(retention time.Duration) {
+	vodDownloadState.Lock()
+	defer vodDownloadState.Unlock()
+	vodDownloadState.retention = retention
+}
+
+// StartVODDownloadCleanup removes expired downloads immediately and once per hour.
+func StartVODDownloadCleanup(ctx context.Context) {
+	runVODDownloadCleanup(time.Now())
+
+	go func() {
+		ticker := time.NewTicker(vodDownloadCleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case now := <-ticker.C:
+				runVODDownloadCleanup(now)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 }
 
 // VODDownloadExists reports whether a finished VOD download exists on disk.
@@ -136,12 +166,17 @@ func StartVODDownload(ctx context.Context, id, vodURL, title, channel string) er
 	go logCommandOutput("ffmpeg-vod", id, stderr)
 	go func() {
 		err := cmd.Wait()
-		clearVODDownload(id, download)
 		if err != nil {
+			clearVODDownload(id, download)
 			_ = os.Remove(outputPath)
 			slog.Error("vod download exited", "id", id, "output", outputPath, "elapsed", time.Since(startedAt), "error", err)
 			return
 		}
+		completedAt := time.Now()
+		if err := os.Chtimes(outputPath, completedAt, completedAt); err != nil {
+			slog.Error("failed to record vod download completion time", "id", id, "output", outputPath, "error", err)
+		}
+		clearVODDownload(id, download)
 		slog.Info("vod download finished", "id", id, "output", outputPath, "elapsed", time.Since(startedAt))
 	}()
 
@@ -189,6 +224,106 @@ func clearVODDownload(id string, download *vodDownload) {
 
 func vodDownloadPath(dir, id string) string {
 	return filepath.Join(dir, id+".mkv")
+}
+
+func runVODDownloadCleanup(now time.Time) {
+	deleted, err := cleanupExpiredVODDownloads(now)
+	if err != nil {
+		slog.Error("failed to clean up expired vod downloads", "error", err)
+	}
+	if deleted > 0 {
+		slog.Info("cleaned up expired vod downloads", "deleted", deleted)
+	}
+}
+
+func cleanupExpiredVODDownloads(now time.Time) (int, error) {
+	vodDownloadState.Lock()
+	dir := vodDownloadState.dir
+	retention := vodDownloadState.retention
+	vodDownloadState.Unlock()
+
+	if dir == "" {
+		return 0, nil
+	}
+
+	dirInfo, err := os.Stat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to inspect vod downloads folder: %w", err)
+	}
+	if !dirInfo.IsDir() {
+		return 0, fmt.Errorf("vod downloads path is not a directory: %s", dir)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read vod downloads folder: %w", err)
+	}
+
+	cutoff := now.Add(-retention)
+	deleted := 0
+	var cleanupErrs []error
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if filepath.Ext(name) != ".mkv" {
+			continue
+		}
+		id := strings.TrimSuffix(name, ".mkv")
+		if !vodDownloadIDRE.MatchString(id) {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("failed to inspect %q: %w", name, err))
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		if !info.ModTime().Before(cutoff) {
+			continue
+		}
+
+		path := filepath.Join(dir, name)
+		removed, err := removeExpiredVODDownload(dir, id, path)
+		if err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("failed to delete %q: %w", name, err))
+			continue
+		}
+		if !removed {
+			continue
+		}
+		deleted++
+		slog.Info("expired vod download deleted", "id", id, "output", path, "age", now.Sub(info.ModTime()))
+	}
+	return deleted, errors.Join(cleanupErrs...)
+}
+
+func removeExpiredVODDownload(dir, id, path string) (bool, error) {
+	vodDownloadState.Lock()
+	defer vodDownloadState.Unlock()
+
+	if vodDownloadState.dir != dir {
+		return false, nil
+	}
+	if vodDownloadState.active != nil {
+		if _, ok := vodDownloadState.active[id]; ok {
+			return false, nil
+		}
+	}
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func resolveVODDownloadURL(ctx context.Context, vodURL string) (string, error) {

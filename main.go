@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -46,6 +47,12 @@ func main() {
 	// ffmpeg can be instructed to emit absolute segment URLs via -hls_base_url.
 	stream.SetServerBaseURL(serverURL)
 	stream.SetVODDownloadDir(*vodsPath)
+	vodRetention, err := parseVODRetentionDays(os.Getenv("VOD_RETENTION_DAYS"))
+	if err != nil {
+		slog.Error("invalid VOD retention", "error", err)
+		os.Exit(1)
+	}
+	stream.SetVODDownloadRetention(vodRetention)
 
 	webhookSecret, err := getRequiredEnv("JELLYFIN_WEBHOOK_SECRET")
 	if err != nil {
@@ -92,6 +99,7 @@ func main() {
 	// Handle graceful shutdown on interrupt signal
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	stream.StartVODDownloadCleanup(ctx)
 	<-ctx.Done()
 	// shutdown HTTP server
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -102,6 +110,25 @@ func main() {
 	}
 	// stop stream processes
 	_ = stream.Stop()
+}
+
+func parseVODRetentionDays(value string) (time.Duration, error) {
+	const defaultDays = 30
+
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return defaultDays * 24 * time.Hour, nil
+	}
+
+	days, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("VOD_RETENTION_DAYS must be a positive integer: %w", err)
+	}
+	maxDays := int64((1<<63 - 1) / int64(24*time.Hour))
+	if days <= 0 || days > maxDays {
+		return 0, fmt.Errorf("VOD_RETENTION_DAYS must be between 1 and %d", maxDays)
+	}
+	return time.Duration(days) * 24 * time.Hour, nil
 }
 
 func localLiveBaseURL(addr string) (string, error) {
