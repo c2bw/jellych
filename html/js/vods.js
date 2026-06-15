@@ -153,6 +153,13 @@ function renderVOD(vod){
   titleRow.appendChild(titleWrap);
   info.appendChild(titleRow);
   info.appendChild(meta);
+  const deletionAt = vod.estimatedDeletionAt || vod.EstimatedDeletionAt || '';
+  if(vodDownloaded(vod) && deletionAt){
+    const deletionText = document.createElement('div');
+    deletionText.className = 'mt-1 text-xs text-amber-300/70';
+    deletionText.textContent = 'Estimated deletion: ' + formatVODDate(deletionAt, deletionAt);
+    info.appendChild(deletionText);
+  }
   row.appendChild(info);
   return row;
 }

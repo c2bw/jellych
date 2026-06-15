@@ -64,19 +64,25 @@ func handleVODs(w http.ResponseWriter, r *http.Request) {
 
 type vodResponse struct {
 	VOD
-	Downloaded bool `json:"downloaded"`
+	Downloaded          bool   `json:"downloaded"`
+	EstimatedDeletionAt string `json:"estimatedDeletionAt,omitempty"`
 }
 
 func buildVODResponses(vods []VOD) []vodResponse {
 	out := make([]vodResponse, 0, len(vods))
 	for _, vod := range vods {
-		downloaded, err := stream.VODDownloadExists(vod.ID)
+		downloaded, deletionAt, err := stream.VODDownloadStatus(vod.ID)
 		if err != nil && !errors.Is(err, stream.ErrVODDownloadsDisabled) {
 			slog.Warn("failed to check vod download status", "id", vod.ID, "error", err)
 		}
+		var estimatedDeletionAt string
+		if downloaded && !deletionAt.IsZero() {
+			estimatedDeletionAt = deletionAt.Format(time.RFC3339)
+		}
 		out = append(out, vodResponse{
-			VOD:        vod,
-			Downloaded: downloaded,
+			VOD:                 vod,
+			Downloaded:          downloaded,
+			EstimatedDeletionAt: estimatedDeletionAt,
 		})
 	}
 	return out

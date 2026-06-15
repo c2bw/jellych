@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/c2bw/jellych/stream"
 )
@@ -231,12 +232,19 @@ func TestVODListIncludesDownloadStatus(t *testing.T) {
 	resetAPIStateForTest(t)
 	dir := t.TempDir()
 	stream.SetVODDownloadDir(dir)
+	stream.SetVODDownloadRetention(30 * 24 * time.Hour)
+	t.Cleanup(func() { stream.SetVODDownloadRetention(30 * 24 * time.Hour) })
 	SetVODs([]VOD{{
 		ID:  "123456789",
 		URL: "https://www.twitch.tv/videos/123456789",
 	}})
-	if err := os.WriteFile(filepath.Join(dir, "123456789.mkv"), []byte("downloaded"), 0644); err != nil {
+	path := filepath.Join(dir, "123456789.mkv")
+	if err := os.WriteFile(path, []byte("downloaded"), 0644); err != nil {
 		t.Fatalf("failed to create downloaded vod file: %v", err)
+	}
+	completedAt := time.Date(2026, time.June, 1, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, completedAt, completedAt); err != nil {
+		t.Fatalf("failed to set download completion time: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/vods", nil)
@@ -248,8 +256,9 @@ func TestVODListIncludesDownloadStatus(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
 	}
 	var got []struct {
-		ID         string `json:"id"`
-		Downloaded bool   `json:"downloaded"`
+		ID                  string    `json:"id"`
+		Downloaded          bool      `json:"downloaded"`
+		EstimatedDeletionAt time.Time `json:"estimatedDeletionAt"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
@@ -259,6 +268,10 @@ func TestVODListIncludesDownloadStatus(t *testing.T) {
 	}
 	if !got[0].Downloaded {
 		t.Fatalf("expected downloaded status for vod %q", got[0].ID)
+	}
+	wantDeletionAt := completedAt.Add(30 * 24 * time.Hour)
+	if !got[0].EstimatedDeletionAt.Equal(wantDeletionAt) {
+		t.Fatalf("expected deletion estimate %v, got %v", wantDeletionAt, got[0].EstimatedDeletionAt)
 	}
 }
 

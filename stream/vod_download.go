@@ -70,21 +70,29 @@ func StartVODDownloadCleanup(ctx context.Context) {
 
 // VODDownloadExists reports whether a finished VOD download exists on disk.
 func VODDownloadExists(id string) (bool, error) {
+	exists, _, err := VODDownloadStatus(id)
+	return exists, err
+}
+
+// VODDownloadStatus reports whether a completed download exists and when it
+// becomes eligible for retention cleanup.
+func VODDownloadStatus(id string) (bool, time.Time, error) {
 	id = strings.TrimSpace(id)
 	if !vodDownloadIDRE.MatchString(id) {
-		return false, fmt.Errorf("invalid vod id")
+		return false, time.Time{}, fmt.Errorf("invalid vod id")
 	}
 
 	vodDownloadState.Lock()
 	dir := vodDownloadState.dir
+	retention := vodDownloadState.retention
 	if dir == "" {
 		vodDownloadState.Unlock()
-		return false, ErrVODDownloadsDisabled
+		return false, time.Time{}, ErrVODDownloadsDisabled
 	}
 	if vodDownloadState.active != nil {
 		if _, ok := vodDownloadState.active[id]; ok {
 			vodDownloadState.Unlock()
-			return false, nil
+			return false, time.Time{}, nil
 		}
 	}
 	outputPath := vodDownloadPath(dir, id)
@@ -92,12 +100,15 @@ func VODDownloadExists(id string) (bool, error) {
 
 	info, err := os.Stat(outputPath)
 	if err == nil {
-		return !info.IsDir(), nil
+		if !info.Mode().IsRegular() {
+			return false, time.Time{}, nil
+		}
+		return true, info.ModTime().Add(retention), nil
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		return false, time.Time{}, nil
 	}
-	return false, fmt.Errorf("failed to check vod output file: %w", err)
+	return false, time.Time{}, fmt.Errorf("failed to check vod output file: %w", err)
 }
 
 // StartVODDownload resolves a Twitch VOD and downloads it to a tagged MKV.

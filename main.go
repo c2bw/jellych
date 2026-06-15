@@ -56,6 +56,7 @@ func main() {
 		os.Exit(1)
 	}
 	stream.SetVODDownloadRetention(vodRetention)
+	slog.Info("VOD retention", "days", int(vodRetention/(24*time.Hour)))
 
 	webhookSecret, err := getRequiredEnv("JELLYFIN_WEBHOOK_SECRET")
 	if err != nil {
