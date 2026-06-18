@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,6 +28,7 @@ func resetAPIStateForTest(t *testing.T) {
 		SetJellyfinWebhookSecret("")
 		SetPlaylistBaseURL("")
 		stream.SetVODDownloadDir("")
+		resolveVODPlaylist = stream.ResolveVODPlaylist
 
 		playMu.Lock()
 		playSessions = nil
@@ -232,6 +235,29 @@ func TestDownloadVODRequiresConfiguredFolder(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "vod downloads folder is not configured") {
 		t.Fatalf("expected missing folder message, got %q", rec.Body.String())
+	}
+}
+
+func TestGetVODPlaylistReturnsForbiddenForRestrictedManifest(t *testing.T) {
+	resetAPIStateForTest(t)
+	SetVODs([]VOD{{
+		ID:  "123456789",
+		URL: "https://www.twitch.tv/videos/123456789",
+	}})
+	resolveVODPlaylist = func(context.Context, string) ([]byte, error) {
+		return nil, fmt.Errorf("%w: Twitch rejected the VOD manifest", stream.ErrVODManifestRestricted)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/vod/123456789/index.m3u8", nil)
+	rec := httptest.NewRecorder()
+
+	Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "subscriber-only") {
+		t.Fatalf("expected restricted VOD message, got %q", rec.Body.String())
 	}
 }
 

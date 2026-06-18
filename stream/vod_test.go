@@ -1,6 +1,8 @@
 package stream
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -43,5 +45,21 @@ func TestNormalizeHLSPlaylistURLsLeavesDataURIsAlone(t *testing.T) {
 	}
 	if !strings.Contains(string(got), `URI="data:text/plain;base64,abcd"`) {
 		t.Fatalf("expected data URI to be preserved, got %q", string(got))
+	}
+}
+
+func TestRestrictedVODManifestErrorIsClassified(t *testing.T) {
+	err := fmt.Errorf(`usher playlist request failed: 403 Forbidden: [{"error":"Manifest is restricted","error_code":"vod_manifest_restricted","type":"error"}]`)
+
+	if !isRestrictedVODManifestError(err) {
+		t.Fatal("expected restricted VOD manifest error to be classified")
+	}
+}
+
+func TestRestrictedVODManifestErrorIgnoresUnrelatedErrors(t *testing.T) {
+	err := errors.New("usher playlist request failed: 404 Not Found")
+
+	if isRestrictedVODManifestError(err) {
+		t.Fatal("did not expect unrelated usher error to be classified")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 )
 
 const maxVODPlaylistBytes = 16 << 20
+
+var ErrVODManifestRestricted = errors.New("vod manifest restricted")
 
 // ResolveVODPlaylist resolves the upstream HLS URL and returns the playlist
 // with relative URIs made absolute against the upstream playlist URL.
@@ -33,6 +36,9 @@ func resolveVODStreamURL(ctx context.Context, vodURL string) (string, error) {
 
 	streams, err := twitch.NewClient(nil).Streams(ctx, vodURL)
 	if err != nil {
+		if isRestrictedVODManifestError(err) {
+			return "", fmt.Errorf("%w: Twitch rejected the VOD manifest", ErrVODManifestRestricted)
+		}
 		return "", fmt.Errorf("failed to resolve stream URL: %w", err)
 	}
 
@@ -44,6 +50,16 @@ func resolveVODStreamURL(ctx context.Context, vodURL string) (string, error) {
 		return "", fmt.Errorf("stream URL extractor returned invalid stream url: %w", err)
 	}
 	return stream.URL, nil
+}
+
+func isRestrictedVODManifestError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, `"error_code":"vod_manifest_restricted"`) ||
+		strings.Contains(msg, `"error_code\":\"vod_manifest_restricted\"`) ||
+		strings.Contains(msg, "Manifest is restricted")
 }
 
 // FetchAndNormalizeHLSPlaylist fetches an HLS playlist and makes relative

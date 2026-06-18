@@ -16,6 +16,8 @@ import (
 	"github.com/c2bw/jellych/stream"
 )
 
+var resolveVODPlaylist = stream.ResolveVODPlaylist
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
@@ -151,6 +153,8 @@ func handleDownloadVOD(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "vod download already started", http.StatusConflict)
 		case errors.Is(err, stream.ErrVODDownloadAlreadyExists):
 			http.Error(w, "vod already downloaded", http.StatusConflict)
+		case errors.Is(err, stream.ErrVODManifestRestricted):
+			http.Error(w, "vod is subscriber-only or otherwise restricted by Twitch", http.StatusForbidden)
 		case errors.Is(err, context.DeadlineExceeded):
 			http.Error(w, "timed out resolving vod stream URL", http.StatusGatewayTimeout)
 		default:
@@ -496,8 +500,13 @@ func handleGetVODPlaylist(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	playlist, err := stream.ResolveVODPlaylist(ctx, vod.URL)
+	playlist, err := resolveVODPlaylist(ctx, vod.URL)
 	if err != nil {
+		if errors.Is(err, stream.ErrVODManifestRestricted) {
+			slog.Warn("vod playlist is restricted by Twitch", "id", id, "error", err)
+			http.Error(w, "vod is subscriber-only or otherwise restricted by Twitch", http.StatusForbidden)
+			return
+		}
 		slog.Warn("failed to resolve vod playlist", "id", id, "error", err)
 		writeErrorf(w, http.StatusBadGateway, "failed to resolve vod playlist: %v", err)
 		return
