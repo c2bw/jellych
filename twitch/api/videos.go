@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -56,6 +57,55 @@ func VideosByUser(clientID, accessToken, userID string, first int) (*VideosRespo
 	q.Set("type", "archive")
 	q.Set("sort", "time")
 	q.Set("first", strconv.Itoa(first))
+
+	endpoint := "https://api.twitch.tv/helix/videos?" + q.Encode()
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Client-ID", clientID)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	remaining := resp.Header.Get("Ratelimit-Remaining")
+	limit := resp.Header.Get("Ratelimit-Limit")
+	reset := resp.Header.Get("Ratelimit-Reset")
+	if remaining != "" {
+		slog.Debug("Twitch rate limit", "remaining", remaining, "limit", limit, "reset", reset)
+	} else {
+		slog.Debug("Twitch rate limit headers not present")
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API error: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	var videosResp VideosResponse
+	if err := json.Unmarshal(body, &videosResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	return &videosResp, nil
+}
+
+// VideosByID fetches a single VOD by Twitch video ID.
+func VideosByID(clientID, accessToken, id string) (*VideosResponse, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return &VideosResponse{Data: []Video{}}, nil
+	}
+
+	q := url.Values{}
+	q.Set("id", id)
 
 	endpoint := "https://api.twitch.tv/helix/videos?" + q.Encode()
 	req, err := http.NewRequest("GET", endpoint, nil)

@@ -1,12 +1,11 @@
 const form = document.getElementById('vodForm');
-const urlInput = document.getElementById('vodUrl');
-const channelInput = document.getElementById('vodChannel');
-const titleInput = document.getElementById('vodTitle');
+const idInput = document.getElementById('vodId');
 const addButton = document.getElementById('addVodBtn');
 const msgEl = document.getElementById('vodMsg');
 const listEl = document.getElementById('vodList');
 const filterEl = document.getElementById('vodFilter');
 let currentVODs = [];
+const vodIDLength = 10;
 
 function setMessage(message, isError){
   msgEl.textContent = message || '';
@@ -199,11 +198,9 @@ async function loadVODs(){
 
 async function addVOD(event){
   event.preventDefault();
-  const url = urlInput.value.trim();
-  const channel = channelInput.value.trim();
-  const title = titleInput.value.trim();
-  if(!url){
-    setMessage('VOD URL required', true);
+  const id = idInput.value.trim();
+  if(id.length !== vodIDLength || !/^\d+$/.test(id)){
+    setMessage('VOD ID must be ' + vodIDLength + ' digits', true);
     return;
   }
 
@@ -213,11 +210,9 @@ async function addVOD(event){
     await fetchJSON('/api/vods', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, channel, title }),
+      body: JSON.stringify({ id }),
     });
-    urlInput.value = '';
-    channelInput.value = '';
-    titleInput.value = '';
+    idInput.value = '';
     setMessage('VOD added', false);
     await loadVODs();
   }catch(err){

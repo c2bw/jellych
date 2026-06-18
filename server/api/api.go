@@ -171,12 +171,11 @@ func GetVODs() []VOD {
 
 func AddVOD(vod VOD) error {
 	vod = PrepareVOD(vod)
-	if err := ValidateVOD(vod); err != nil {
-		return err
-	}
-
 	if store := configuredVODStore(); store != nil {
 		return store.AddVOD(vod)
+	}
+	if err := ValidateVOD(vod); err != nil {
+		return err
 	}
 
 	vodMu.Lock()
@@ -268,6 +267,9 @@ func PrepareVOD(vod VOD) VOD {
 	vod = NormalizeVOD(vod)
 	if vod.ID == "" {
 		vod.ID = VODIDFromURL(vod.URL)
+	}
+	if vod.URL == "" && vod.ID != "" {
+		vod.URL = "https://www.twitch.tv/videos/" + vod.ID
 	}
 	if vod.Title == "" && vod.ID != "" {
 		vod.Title = "Twitch VOD " + vod.ID

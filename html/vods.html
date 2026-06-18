@@ -41,16 +41,8 @@
         <h1 class="mb-4 text-base font-bold">Add VOD</h1>
         <form id="vodForm" class="flex flex-col gap-3">
           <label class="flex flex-col gap-1.5 text-sm text-white/75">
-            VOD URL
-            <input id="vodUrl" class="field" type="url" placeholder="https://www.twitch.tv/videos/123456789" required />
-          </label>
-          <label class="flex flex-col gap-1.5 text-sm text-white/75">
-            Channel
-            <input id="vodChannel" class="field" type="text" placeholder="Optional channel name" />
-          </label>
-          <label class="flex flex-col gap-1.5 text-sm text-white/75">
-            Title
-            <input id="vodTitle" class="field" type="text" placeholder="Optional display title" />
+            VOD ID
+            <input id="vodId" class="field" type="text" inputmode="numeric" minlength="10" maxlength="10" pattern="[0-9]{10}" placeholder="1234567890" required />
           </label>
           <button id="addVodBtn" class="button" type="submit">Add VOD</button>
           <div id="vodMsg" class="min-h-[20px] text-sm text-white/50"></div>

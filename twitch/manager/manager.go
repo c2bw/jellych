@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -92,6 +93,11 @@ func (m *Manager) AddChannel(name string) (string, error) {
 }
 
 func (m *Manager) AddVOD(vod api.VOD) error {
+	var err error
+	vod, err = m.enrichVOD(vod)
+	if err != nil {
+		return err
+	}
 	vod = api.PrepareVOD(vod)
 	if err := api.ValidateVOD(vod); err != nil {
 		return err
@@ -116,6 +122,40 @@ func (m *Manager) AddVOD(vod api.VOD) error {
 	}
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *Manager) enrichVOD(vod api.VOD) (api.VOD, error) {
+	vod = api.PrepareVOD(vod)
+	if vod.ID == "" {
+		return vod, nil
+	}
+
+	m.mu.RLock()
+	c := m.twitchClient
+	m.mu.RUnlock()
+	if c == nil {
+		return vod, nil
+	}
+
+	videos, err := twitchapi.VideosByID(c.ClientID(), c.AccessToken(), vod.ID)
+	if err != nil {
+		return vod, fmt.Errorf("failed to fetch Twitch VOD metadata: %w", err)
+	}
+	if len(videos.Data) == 0 {
+		return vod, fmt.Errorf("Twitch VOD metadata not found for id %s", vod.ID)
+	}
+
+	enriched := vodFromTwitchVideo(videos.Data[0])
+	if enriched.ID == "" {
+		enriched.ID = vod.ID
+	}
+	if enriched.URL == "" {
+		enriched.URL = vod.URL
+	}
+	if enriched.Title == "" {
+		enriched.Title = vod.Title
+	}
+	return api.PrepareVOD(enriched), nil
 }
 
 func (m *Manager) addImportedVODs(items []api.VOD) (int, error) {

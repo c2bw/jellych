@@ -207,6 +207,13 @@ func TestBuildVODM3UIncludesVODEntries(t *testing.T) {
 	}
 }
 
+func TestPrepareVODDerivesURLFromID(t *testing.T) {
+	got := PrepareVOD(VOD{ID: "1234567890"})
+	if got.URL != "https://www.twitch.tv/videos/1234567890" {
+		t.Fatalf("expected Twitch VOD URL, got %q", got.URL)
+	}
+}
+
 func TestDownloadVODRequiresConfiguredFolder(t *testing.T) {
 	resetAPIStateForTest(t)
 	SetVODs([]VOD{{
