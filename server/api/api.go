@@ -23,7 +23,7 @@ type VOD struct {
 	Date    string `json:"date,omitempty"`
 }
 
-var (
+type APIState struct {
 	channelNames  []string
 	channelLogos  map[string]string
 	chMu          sync.RWMutex
@@ -35,7 +35,9 @@ var (
 	statusMu      sync.RWMutex
 	webhookSecret string
 	webhookMu     sync.RWMutex
-)
+}
+
+var defaultState = &APIState{}
 
 var ErrChannelAlreadyExists = errors.New("channel already exists")
 var ErrChannelNotFound = errors.New("channel not found")
@@ -59,65 +61,89 @@ type vodStore interface {
 
 // SetChannelStore configures the persistence backend for channel changes.
 func SetChannelStore(s channelStore) {
-	chMu.Lock()
-	defer chMu.Unlock()
-	store = s
+	defaultState.SetChannelStore(s)
+}
+
+func (s *APIState) SetChannelStore(store channelStore) {
+	s.chMu.Lock()
+	defer s.chMu.Unlock()
+	s.store = store
 }
 
 // SetVODStore configures the persistence backend for VOD changes.
 func SetVODStore(s vodStore) {
-	vodMu.Lock()
-	defer vodMu.Unlock()
-	vodStoreRef = s
+	defaultState.SetVODStore(s)
 }
 
-func configuredVODStore() vodStore {
-	vodMu.RLock()
-	defer vodMu.RUnlock()
-	return vodStoreRef
+func (s *APIState) SetVODStore(store vodStore) {
+	s.vodMu.Lock()
+	defer s.vodMu.Unlock()
+	s.vodStoreRef = store
+}
+
+func (s *APIState) configuredVODStore() vodStore {
+	s.vodMu.RLock()
+	defer s.vodMu.RUnlock()
+	return s.vodStoreRef
 }
 
 // SetJellyfinWebhookSecret configures the shared secret required by
 // POST /api/jellyfin/webhook via the X-Jellych-Secret header.
 func SetJellyfinWebhookSecret(secret string) {
-	webhookMu.Lock()
-	defer webhookMu.Unlock()
-	webhookSecret = strings.TrimSpace(secret)
+	defaultState.SetJellyfinWebhookSecret(secret)
 }
 
-func jellyfinWebhookSecret() string {
-	webhookMu.RLock()
-	defer webhookMu.RUnlock()
-	return webhookSecret
+func (s *APIState) SetJellyfinWebhookSecret(secret string) {
+	s.webhookMu.Lock()
+	defer s.webhookMu.Unlock()
+	s.webhookSecret = strings.TrimSpace(secret)
+}
+
+func (s *APIState) jellyfinWebhookSecret() string {
+	s.webhookMu.RLock()
+	defer s.webhookMu.RUnlock()
+	return s.webhookSecret
 }
 
 // SetChannels replaces the in-memory channel list.
 func SetChannels(c []string) {
-	chMu.Lock()
-	defer chMu.Unlock()
-	channelNames = append([]string{}, c...)
+	defaultState.SetChannels(c)
+}
+
+func (s *APIState) SetChannels(c []string) {
+	s.chMu.Lock()
+	defer s.chMu.Unlock()
+	s.channelNames = append([]string{}, c...)
 }
 
 // SetChannelLogos replaces the in-memory channel logo mapping.
 func SetChannelLogos(logos map[string]string) {
-	chMu.Lock()
-	defer chMu.Unlock()
+	defaultState.SetChannelLogos(logos)
+}
+
+func (s *APIState) SetChannelLogos(logos map[string]string) {
+	s.chMu.Lock()
+	defer s.chMu.Unlock()
 	if logos == nil {
-		channelLogos = nil
+		s.channelLogos = nil
 		return
 	}
-	channelLogos = make(map[string]string, len(logos))
+	s.channelLogos = make(map[string]string, len(logos))
 	for name, logo := range logos {
-		channelLogos[strings.ToLower(strings.TrimSpace(name))] = strings.TrimSpace(logo)
+		s.channelLogos[strings.ToLower(strings.TrimSpace(name))] = strings.TrimSpace(logo)
 	}
 }
 
 // GetChannelLogos returns a copy of the in-memory channel logo mapping.
 func GetChannelLogos() map[string]string {
-	chMu.RLock()
-	defer chMu.RUnlock()
-	out := make(map[string]string, len(channelLogos))
-	for name, logo := range channelLogos {
+	return defaultState.GetChannelLogos()
+}
+
+func (s *APIState) GetChannelLogos() map[string]string {
+	s.chMu.RLock()
+	defer s.chMu.RUnlock()
+	out := make(map[string]string, len(s.channelLogos))
+	for name, logo := range s.channelLogos {
 		out[name] = logo
 	}
 	return out
@@ -134,72 +160,100 @@ type Status struct {
 
 // SetChannelStatus replaces the in-memory channel status list.
 func SetChannelStatus(s []Status) {
-	statusMu.Lock()
-	defer statusMu.Unlock()
-	statusList = append([]Status{}, s...)
+	defaultState.SetChannelStatus(s)
+}
+
+func (s *APIState) SetChannelStatus(statuses []Status) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.statusList = append([]Status{}, statuses...)
 }
 
 // GetChannelStatus returns a copy of the in-memory channel status list.
 func GetChannelStatus() []Status {
-	statusMu.RLock()
-	defer statusMu.RUnlock()
-	return append([]Status{}, statusList...)
+	return defaultState.GetChannelStatus()
+}
+
+func (s *APIState) GetChannelStatus() []Status {
+	s.statusMu.RLock()
+	defer s.statusMu.RUnlock()
+	return append([]Status{}, s.statusList...)
 }
 
 // GetChannels returns a copy of the in-memory channel list.
 func GetChannels() []string {
-	chMu.RLock()
-	defer chMu.RUnlock()
-	return append([]string{}, channelNames...)
+	return defaultState.GetChannels()
+}
+
+func (s *APIState) GetChannels() []string {
+	s.chMu.RLock()
+	defer s.chMu.RUnlock()
+	return append([]string{}, s.channelNames...)
 }
 
 func SetVODs(items []VOD) {
-	vodMu.Lock()
-	defer vodMu.Unlock()
-	vods = cloneVODs(items)
+	defaultState.SetVODs(items)
+}
+
+func (s *APIState) SetVODs(items []VOD) {
+	s.vodMu.Lock()
+	defer s.vodMu.Unlock()
+	s.vods = cloneVODs(items)
 }
 
 func GetVODs() []VOD {
-	if store := configuredVODStore(); store != nil {
+	return defaultState.GetVODs()
+}
+
+func (s *APIState) GetVODs() []VOD {
+	if store := s.configuredVODStore(); store != nil {
 		return store.ListVODs()
 	}
 
-	vodMu.RLock()
-	defer vodMu.RUnlock()
-	return cloneVODs(vods)
+	s.vodMu.RLock()
+	defer s.vodMu.RUnlock()
+	return cloneVODs(s.vods)
 }
 
 func AddVOD(vod VOD) error {
+	return defaultState.AddVOD(vod)
+}
+
+func (s *APIState) AddVOD(vod VOD) error {
 	vod = PrepareVOD(vod)
-	if store := configuredVODStore(); store != nil {
+	if store := s.configuredVODStore(); store != nil {
 		return store.AddVOD(vod)
 	}
 	if err := ValidateVOD(vod); err != nil {
 		return err
 	}
 
-	vodMu.Lock()
-	defer vodMu.Unlock()
-	for _, existing := range vods {
+	s.vodMu.Lock()
+	defer s.vodMu.Unlock()
+	for _, existing := range s.vods {
 		if existing.ID == vod.ID {
 			return ErrVODAlreadyExists
 		}
 	}
-	vods = append(vods, vod)
+	s.vods = append(s.vods, vod)
 	return nil
 }
 
 func RemoveVOD(id string) error {
+	return defaultState.RemoveVOD(id)
+}
+
+func (s *APIState) RemoveVOD(id string) error {
 	id = strings.TrimSpace(id)
-	if store := configuredVODStore(); store != nil {
+	if store := s.configuredVODStore(); store != nil {
 		return store.RemoveVOD(id)
 	}
 
-	vodMu.Lock()
-	defer vodMu.Unlock()
-	for i, vod := range vods {
+	s.vodMu.Lock()
+	defer s.vodMu.Unlock()
+	for i, vod := range s.vods {
 		if vod.ID == id {
-			vods = slices.Delete(vods, i, i+1)
+			s.vods = slices.Delete(s.vods, i, i+1)
 			return nil
 		}
 	}
@@ -207,14 +261,18 @@ func RemoveVOD(id string) error {
 }
 
 func FindVOD(id string) (VOD, bool) {
+	return defaultState.FindVOD(id)
+}
+
+func (s *APIState) FindVOD(id string) (VOD, bool) {
 	id = strings.TrimSpace(id)
-	if store := configuredVODStore(); store != nil {
+	if store := s.configuredVODStore(); store != nil {
 		return store.FindVOD(id)
 	}
 
-	vodMu.RLock()
-	defer vodMu.RUnlock()
-	for _, vod := range vods {
+	s.vodMu.RLock()
+	defer s.vodMu.RUnlock()
+	for _, vod := range s.vods {
 		if vod.ID == id {
 			return vod, true
 		}
@@ -224,25 +282,29 @@ func FindVOD(id string) (VOD, bool) {
 
 // AddChannel adds a channel to the in-memory list if it doesn't already exist.
 func AddChannel(name string) error {
-	chMu.Lock()
-	defer chMu.Unlock()
-	if slices.Contains(channelNames, name) {
+	return defaultState.AddChannel(name)
+}
+
+func (s *APIState) AddChannel(name string) error {
+	s.chMu.Lock()
+	defer s.chMu.Unlock()
+	if slices.Contains(s.channelNames, name) {
 		return ErrChannelAlreadyExists
 	}
 	iconURL := ""
-	if store != nil {
+	if s.store != nil {
 		var err error
-		iconURL, err = store.AddChannel(name)
+		iconURL, err = s.store.AddChannel(name)
 		if err != nil {
 			return err
 		}
 	}
-	channelNames = append(channelNames, name)
+	s.channelNames = append(s.channelNames, name)
 	if iconURL != "" {
-		if channelLogos == nil {
-			channelLogos = make(map[string]string)
+		if s.channelLogos == nil {
+			s.channelLogos = make(map[string]string)
 		}
-		channelLogos[name] = iconURL
+		s.channelLogos[name] = iconURL
 	}
 	return nil
 }
@@ -314,20 +376,24 @@ func VODIDFromURL(raw string) string {
 
 // RemoveChannel removes a channel by name from the in-memory list.
 func RemoveChannel(name string) error {
-	chMu.Lock()
-	defer chMu.Unlock()
-	idx := slices.Index(channelNames, name)
+	return defaultState.RemoveChannel(name)
+}
+
+func (s *APIState) RemoveChannel(name string) error {
+	s.chMu.Lock()
+	defer s.chMu.Unlock()
+	idx := slices.Index(s.channelNames, name)
 	if idx < 0 {
 		return ErrChannelNotFound
 	}
-	if store != nil {
-		if err := store.RemoveChannel(name); err != nil {
+	if s.store != nil {
+		if err := s.store.RemoveChannel(name); err != nil {
 			return err
 		}
 	}
-	channelNames = slices.Delete(channelNames, idx, idx+1)
-	if channelLogos != nil {
-		delete(channelLogos, name)
+	s.channelNames = slices.Delete(s.channelNames, idx, idx+1)
+	if s.channelLogos != nil {
+		delete(s.channelLogos, name)
 	}
 	return nil
 }

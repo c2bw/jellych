@@ -89,7 +89,7 @@ func TestAuthorizeJellyfinWebhook(t *testing.T) {
 			}
 			rec := httptest.NewRecorder()
 
-			gotOK := authorizeJellyfinWebhook(rec, req)
+			gotOK := defaultAPI.authorizeJellyfinWebhook(rec, req)
 
 			if gotOK != tt.wantOK {
 				t.Fatalf("expected ok=%v, got %v", tt.wantOK, gotOK)
