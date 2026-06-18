@@ -60,7 +60,12 @@
       <section class="min-w-0 rounded-lg border border-[#222] bg-[#0f0f10] p-4">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 class="text-base font-bold">Saved VODs</h2>
-          <code class="rounded border border-white/10 bg-black/40 px-2 py-1 text-xs text-white/60">/api/vods.m3u</code>
+          <div class="flex items-center gap-2">
+            <select id="vodFilter" class="field w-auto py-1.5 text-xs" aria-label="Filter VODs">
+              <option value="all">All VODs</option>
+              <option value="downloaded">Downloaded only</option>
+            </select>
+          </div>
         </div>
         <div id="vodList" class="flex min-w-0 flex-col gap-2">Loading VODs...</div>
       </section>

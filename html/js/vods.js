@@ -5,6 +5,8 @@ const titleInput = document.getElementById('vodTitle');
 const addButton = document.getElementById('addVodBtn');
 const msgEl = document.getElementById('vodMsg');
 const listEl = document.getElementById('vodList');
+const filterEl = document.getElementById('vodFilter');
+let currentVODs = [];
 
 function setMessage(message, isError){
   msgEl.textContent = message || '';
@@ -67,8 +69,12 @@ function sortVODsByDate(vods){
   return [...vods].sort((a, b)=>vodTime(b) - vodTime(a));
 }
 
-function renderEmpty(){
-  listEl.innerHTML = '<div class="rounded-md border border-dashed border-white/10 p-4 text-sm text-white/45">No VODs saved yet.</div>';
+function renderEmpty(message){
+  listEl.innerHTML = '';
+  const empty = document.createElement('div');
+  empty.className = 'rounded-md border border-dashed border-white/10 p-4 text-sm text-white/45';
+  empty.textContent = message;
+  listEl.appendChild(empty);
 }
 
 function renderVOD(vod){
@@ -167,7 +173,8 @@ function renderVOD(vod){
 function renderVODs(vods){
   listEl.innerHTML = '';
   if(!Array.isArray(vods) || vods.length === 0){
-    renderEmpty();
+    const onlyDownloaded = filterEl && filterEl.value === 'downloaded';
+    renderEmpty(onlyDownloaded ? 'No downloaded VODs found.' : 'No VODs saved yet.');
     return;
   }
   const frag = document.createDocumentFragment();
@@ -175,10 +182,16 @@ function renderVODs(vods){
   listEl.appendChild(frag);
 }
 
+function applyVODFilter(){
+  const onlyDownloaded = filterEl && filterEl.value === 'downloaded';
+  const vods = onlyDownloaded ? currentVODs.filter(vodDownloaded) : currentVODs;
+  renderVODs(vods);
+}
+
 async function loadVODs(){
   try{
-    const vods = await fetchJSON('/api/vods');
-    renderVODs(vods);
+    currentVODs = await fetchJSON('/api/vods');
+    applyVODFilter();
   }catch(err){
     listEl.textContent = 'Could not load VODs: ' + err.message;
   }
@@ -268,4 +281,5 @@ async function deleteDownloadedVOD(id, button){
 }
 
 form.addEventListener('submit', addVOD);
+filterEl.addEventListener('change', applyVODFilter);
 loadVODs();
