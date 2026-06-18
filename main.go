@@ -113,7 +113,12 @@ func main() {
 		stopStatus()
 	}
 	// stop stream processes
-	_ = stream.Stop()
+	if err := stream.StopVODDownloads(); err != nil {
+		slog.Warn("failed to stop VOD downloads cleanly", "error", err)
+	}
+	if err := stream.Stop(); err != nil {
+		slog.Warn("failed to stop live streams cleanly", "error", err)
+	}
 }
 
 func parseVODRetentionDays(value string) (time.Duration, error) {

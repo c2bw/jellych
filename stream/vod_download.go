@@ -21,10 +21,12 @@ var ErrVODDownloadsDisabled = errors.New("vod downloads folder not configured")
 var ErrVODDownloadAlreadyStarted = errors.New("vod download already started")
 var ErrVODDownloadAlreadyExists = errors.New("vod download already exists")
 var ErrVODDownloadNotFound = errors.New("vod download not found")
+var ErrVODDownloadsStopping = errors.New("vod downloads stopping")
 
 const vodURLResolutionTimeout = 20 * time.Second
 const vodDownloadCleanupInterval = time.Hour
 const defaultVODDownloadRetention = 30 * 24 * time.Hour
+const vodDownloadStopTimeout = 5 * time.Second
 
 var vodDownloadIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
@@ -32,6 +34,10 @@ type vodDownload struct {
 	progress            VODDownloadProgress
 	lastTotalSize       int64
 	lastTotalSizeUpdate time.Time
+	cmd                 *exec.Cmd
+	done                chan error
+	outputPath          string
+	startedAt           time.Time
 }
 
 // VODDownloadProgress is a snapshot of an active or completed VOD download.
@@ -51,6 +57,7 @@ type VODDownloader struct {
 	dir       string
 	retention time.Duration
 	active    map[string]*vodDownload
+	stopping  bool
 }
 
 var vodDownloadState = &VODDownloader{retention: defaultVODDownloadRetention}
@@ -207,6 +214,10 @@ func (d *VODDownloader) Start(ctx context.Context, id, vodURL, title, channel st
 		d.Unlock()
 		return ErrVODDownloadsDisabled
 	}
+	if d.stopping {
+		d.Unlock()
+		return ErrVODDownloadsStopping
+	}
 	if d.active == nil {
 		d.active = make(map[string]*vodDownload)
 	}
@@ -236,6 +247,10 @@ func (d *VODDownloader) Start(ctx context.Context, id, vodURL, title, channel st
 		d.clear(id, download)
 		return err
 	}
+	if !d.prepareStart(id, download) {
+		d.clear(id, download)
+		return ErrVODDownloadsStopping
+	}
 
 	cmd := exec.Command("ffmpeg", buildVODDownloadArgs(inputURL, outputPath, title, channel)...)
 	stdout, err := cmd.StdoutPipe()
@@ -249,34 +264,59 @@ func (d *VODDownloader) Start(ctx context.Context, id, vodURL, title, channel st
 		return fmt.Errorf("failed to get ffmpeg stderr pipe: %w", err)
 	}
 
+	startedAt := time.Now()
+	d.Lock()
+	if d.stopping || d.active == nil || d.active[id] != download {
+		d.Unlock()
+		d.clear(id, download)
+		return ErrVODDownloadsStopping
+	}
+	download.cmd = cmd
+	download.outputPath = outputPath
+	download.startedAt = startedAt
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(outputPath)
-		d.clear(id, download)
+		if d.active != nil && d.active[id] == download {
+			delete(d.active, id)
+		}
+		d.Unlock()
 		return fmt.Errorf("failed to start ffmpeg: %w", err)
 	}
+	d.Unlock()
 
-	startedAt := time.Now()
 	d.setProgressState(id, download, "running")
 	go d.readProgress(id, download, stdout)
 	go logCommandOutput("ffmpeg-vod", id, stderr)
 	go func() {
-		err := cmd.Wait()
-		if err != nil {
-			d.clear(id, download)
-			_ = os.Remove(outputPath)
-			slog.Error("vod download exited", "id", id, "output", outputPath, "elapsed", time.Since(startedAt), "error", err)
-			return
-		}
-		completedAt := time.Now()
-		if err := os.Chtimes(outputPath, completedAt, completedAt); err != nil {
-			slog.Error("failed to record vod download completion time", "id", id, "output", outputPath, "error", err)
-		}
-		d.clear(id, download)
-		slog.Info("vod download finished", "id", id, "output", outputPath, "elapsed", time.Since(startedAt))
+		d.finishDownload(id, download, outputPath, startedAt, cmd.Wait())
 	}()
 
 	slog.Info("vod download started", "id", id, "output", outputPath, "ffmpeg_pid", cmd.Process.Pid)
 	return nil
+}
+
+// StopVODDownloads attempts to gracefully stop any active VOD downloads.
+func StopVODDownloads() error {
+	return vodDownloadState.Stop()
+}
+
+// Stop attempts to gracefully stop any active VOD downloads.
+func (d *VODDownloader) Stop() error {
+	d.Lock()
+	d.stopping = true
+	active := make(map[string]*vodDownload, len(d.active))
+	for id, download := range d.active {
+		active[id] = download
+	}
+	d.Unlock()
+
+	var lastErr error
+	for id, download := range active {
+		if err := stopVODDownload(id, download); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
 }
 
 // DeleteVODDownload removes a previously downloaded VOD file from disk.
@@ -326,6 +366,12 @@ func (d *VODDownloader) clear(id string, download *vodDownload) {
 	}
 }
 
+func (d *VODDownloader) prepareStart(id string, download *vodDownload) bool {
+	d.Lock()
+	defer d.Unlock()
+	return !d.stopping && d.active != nil && d.active[id] == download
+}
+
 func newVODDownload() *vodDownload {
 	now := time.Now()
 	progress := VODDownloadProgress{
@@ -334,7 +380,44 @@ func newVODDownload() *vodDownload {
 		StartedAt: now,
 		UpdatedAt: now,
 	}
-	return &vodDownload{progress: progress}
+	return &vodDownload{progress: progress, done: make(chan error, 1)}
+}
+
+func (d *VODDownloader) finishDownload(id string, download *vodDownload, outputPath string, startedAt time.Time, err error) {
+	if err != nil {
+		d.clear(id, download)
+		_ = os.Remove(outputPath)
+		slog.Error("vod download exited", "id", id, "output", outputPath, "elapsed", time.Since(startedAt), "error", err)
+		download.done <- err
+		close(download.done)
+		return
+	}
+	completedAt := time.Now()
+	if err := os.Chtimes(outputPath, completedAt, completedAt); err != nil {
+		slog.Error("failed to record vod download completion time", "id", id, "output", outputPath, "error", err)
+	}
+	d.clear(id, download)
+	slog.Info("vod download finished", "id", id, "output", outputPath, "elapsed", time.Since(startedAt))
+	download.done <- err
+	close(download.done)
+}
+
+func stopVODDownload(id string, download *vodDownload) error {
+	if download == nil || download.cmd == nil || download.cmd.Process == nil || download.done == nil {
+		return nil
+	}
+
+	_ = download.cmd.Process.Signal(os.Interrupt)
+	if waitForDone(download.done, time.Now().Add(vodDownloadStopTimeout)) {
+		slog.Info("vod download stopped", "id", id, "output", download.outputPath, "elapsed", time.Since(download.startedAt))
+		return nil
+	}
+
+	_ = download.cmd.Process.Kill()
+	if waitForDone(download.done, time.Now().Add(vodDownloadStopTimeout)) {
+		return fmt.Errorf("%w: timed out stopping vod download %s; killed", ErrStopTimeout, id)
+	}
+	return fmt.Errorf("%w: timed out stopping vod download %s; kill did not complete", ErrStopTimeout, id)
 }
 
 func (d *VODDownloader) setProgressState(id string, download *vodDownload, state string) {
