@@ -65,23 +65,37 @@ func handleVODs(w http.ResponseWriter, r *http.Request) {
 type vodResponse struct {
 	VOD
 	Downloaded          bool   `json:"downloaded"`
+	DownloadActive      bool   `json:"downloadActive"`
+	DownloadSize        int64  `json:"downloadSize"`
+	DownloadRate        int64  `json:"downloadRate,omitempty"`
 	EstimatedDeletionAt string `json:"estimatedDeletionAt,omitempty"`
 }
 
 func buildVODResponses(vods []VOD) []vodResponse {
 	out := make([]vodResponse, 0, len(vods))
 	for _, vod := range vods {
-		downloaded, deletionAt, err := stream.VODDownloadStatus(vod.ID)
+		progress, err := stream.GetVODDownloadProgress(vod.ID)
 		if err != nil && !errors.Is(err, stream.ErrVODDownloadsDisabled) {
 			slog.Warn("failed to check vod download status", "id", vod.ID, "error", err)
 		}
+		downloaded := progress.Downloaded
+		downloadActive := progress.Active
 		var estimatedDeletionAt string
-		if downloaded && !deletionAt.IsZero() {
-			estimatedDeletionAt = deletionAt.Format(time.RFC3339)
+		if downloaded {
+			_, deletionAt, err := stream.VODDownloadStatus(vod.ID)
+			if err != nil && !errors.Is(err, stream.ErrVODDownloadsDisabled) {
+				slog.Warn("failed to check vod download retention status", "id", vod.ID, "error", err)
+			}
+			if !deletionAt.IsZero() {
+				estimatedDeletionAt = deletionAt.Format(time.RFC3339)
+			}
 		}
 		out = append(out, vodResponse{
 			VOD:                 vod,
 			Downloaded:          downloaded,
+			DownloadActive:      downloadActive,
+			DownloadSize:        progress.TotalSize,
+			DownloadRate:        progress.BytesPerSecond,
 			EstimatedDeletionAt: estimatedDeletionAt,
 		})
 	}
@@ -146,6 +160,25 @@ func handleDownloadVOD(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeText(w, http.StatusAccepted, "download started")
+}
+
+func handleGetVODDownload(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if _, ok := FindVOD(id); !ok {
+		http.Error(w, "vod not found", http.StatusNotFound)
+		return
+	}
+
+	progress, err := stream.GetVODDownloadProgress(id)
+	if err != nil {
+		if errors.Is(err, stream.ErrVODDownloadsDisabled) {
+			http.Error(w, "vod downloads folder is not configured; start jellych with --vods <folder>", http.StatusServiceUnavailable)
+			return
+		}
+		writeErrorf(w, http.StatusInternalServerError, "failed to get vod download progress: %v", err)
+		return
+	}
+	writeJSON(w, progress)
 }
 
 func handleDeleteVODDownload(w http.ResponseWriter, r *http.Request) {

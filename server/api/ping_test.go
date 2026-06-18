@@ -265,6 +265,8 @@ func TestVODListIncludesDownloadStatus(t *testing.T) {
 	var got []struct {
 		ID                  string    `json:"id"`
 		Downloaded          bool      `json:"downloaded"`
+		DownloadSize        int64     `json:"downloadSize"`
+		DownloadRate        int64     `json:"downloadRate"`
 		EstimatedDeletionAt time.Time `json:"estimatedDeletionAt"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
@@ -276,9 +278,82 @@ func TestVODListIncludesDownloadStatus(t *testing.T) {
 	if !got[0].Downloaded {
 		t.Fatalf("expected downloaded status for vod %q", got[0].ID)
 	}
+	if got[0].DownloadSize != int64(len("downloaded")) {
+		t.Fatalf("expected download size %d, got %d", len("downloaded"), got[0].DownloadSize)
+	}
 	wantDeletionAt := completedAt.Add(30 * 24 * time.Hour)
 	if !got[0].EstimatedDeletionAt.Equal(wantDeletionAt) {
 		t.Fatalf("expected deletion estimate %v, got %v", wantDeletionAt, got[0].EstimatedDeletionAt)
+	}
+}
+
+func TestVODListIncludesUnknownDownloadSize(t *testing.T) {
+	resetAPIStateForTest(t)
+	stream.SetVODDownloadDir(t.TempDir())
+	SetVODs([]VOD{{
+		ID:  "123456789",
+		URL: "https://www.twitch.tv/videos/123456789",
+	}})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/vods", nil)
+	rec := httptest.NewRecorder()
+
+	Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+	var got []struct {
+		DownloadSize int64 `json:"downloadSize"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected one vod, got %d", len(got))
+	}
+	if got[0].DownloadSize != 0 {
+		t.Fatalf("expected unknown download size to be 0, got %d", got[0].DownloadSize)
+	}
+}
+
+func TestGetVODDownloadProgressEndpoint(t *testing.T) {
+	resetAPIStateForTest(t)
+	dir := t.TempDir()
+	stream.SetVODDownloadDir(dir)
+	SetVODs([]VOD{{
+		ID:  "123456789",
+		URL: "https://www.twitch.tv/videos/123456789",
+	}})
+	path := filepath.Join(dir, "123456789.mkv")
+	if err := os.WriteFile(path, []byte("downloaded"), 0644); err != nil {
+		t.Fatalf("failed to create downloaded vod file: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/vods/123456789/download", nil)
+	rec := httptest.NewRecorder()
+
+	Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+	var got struct {
+		Active     bool  `json:"active"`
+		Downloaded bool  `json:"downloaded"`
+		TotalSize  int64 `json:"totalSize"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if got.Active {
+		t.Fatal("did not expect completed download to be active")
+	}
+	if !got.Downloaded {
+		t.Fatal("expected completed download status")
+	}
+	if got.TotalSize != int64(len("downloaded")) {
+		t.Fatalf("expected total size %d, got %d", len("downloaded"), got.TotalSize)
 	}
 }
 

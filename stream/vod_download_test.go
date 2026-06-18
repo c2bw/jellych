@@ -206,6 +206,8 @@ func TestBuildVODDownloadArgsIncludesInputAndMetadata(t *testing.T) {
 	for _, want := range []string{
 		inputURL,
 		"copy",
+		"-progress",
+		"pipe:1",
 		"title=A great stream",
 		"artist=Streamer",
 		"matroska",
@@ -214,6 +216,36 @@ func TestBuildVODDownloadArgsIncludesInputAndMetadata(t *testing.T) {
 		if !slices.Contains(args, want) {
 			t.Fatalf("expected download args to contain %q, got %#v", want, args)
 		}
+	}
+}
+
+func TestUpdateVODDownloadProgressCalculatesByteRate(t *testing.T) {
+	download := newVODDownload()
+	vodDownloadState.Lock()
+	vodDownloadState.active = map[string]*vodDownload{"active": download}
+	vodDownloadState.Unlock()
+	t.Cleanup(func() { clearVODDownload("active", download) })
+
+	download.lastTotalSize = 1000
+	download.lastTotalSizeUpdate = time.Now().Add(-time.Second)
+	updateVODDownloadProgress("active", download, "total_size", "12345")
+	updateVODDownloadProgress("active", download, "speed", "1.5x")
+
+	got, err := GetVODDownloadProgress("active")
+	if err != nil {
+		t.Fatalf("expected progress lookup to succeed, got %v", err)
+	}
+	if !got.Active {
+		t.Fatal("expected active progress")
+	}
+	if got.TotalSize != 12345 {
+		t.Fatalf("expected total size to be recorded, got %d", got.TotalSize)
+	}
+	if got.BytesPerSecond <= 0 {
+		t.Fatalf("expected byte rate to be recorded, got %d", got.BytesPerSecond)
+	}
+	if got.Speed != "1.5x" {
+		t.Fatalf("expected speed to be recorded, got %q", got.Speed)
 	}
 }
 

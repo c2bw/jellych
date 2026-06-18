@@ -12,6 +12,7 @@ func Handler() http.Handler {
 	mux.HandleFunc("GET /api/channels", handleChannels)
 	mux.HandleFunc("GET /api/vods", handleVODs)
 	mux.HandleFunc("POST /api/vods", handleAddVOD)
+	mux.HandleFunc("GET /api/vods/{id}/download", handleGetVODDownload)
 	mux.HandleFunc("POST /api/vods/{id}/download", handleDownloadVOD)
 	mux.HandleFunc("DELETE /api/vods/{id}/download", handleDeleteVODDownload)
 	mux.HandleFunc("DELETE /api/vods/{id}", handleRemoveVOD)

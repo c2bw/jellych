@@ -1,14 +1,17 @@
 package stream
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +28,23 @@ const defaultVODDownloadRetention = 30 * 24 * time.Hour
 
 var vodDownloadIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
-type vodDownload struct{}
+type vodDownload struct {
+	progress            VODDownloadProgress
+	lastTotalSize       int64
+	lastTotalSizeUpdate time.Time
+}
+
+// VODDownloadProgress is a snapshot of an active or completed VOD download.
+type VODDownloadProgress struct {
+	Active         bool      `json:"active"`
+	Downloaded     bool      `json:"downloaded"`
+	Progress       string    `json:"progress,omitempty"`
+	TotalSize      int64     `json:"totalSize,omitempty"`
+	BytesPerSecond int64     `json:"bytesPerSecond,omitempty"`
+	Speed          string    `json:"speed,omitempty"`
+	StartedAt      time.Time `json:"startedAt,omitempty,omitzero"`
+	UpdatedAt      time.Time `json:"updatedAt,omitempty,omitzero"`
+}
 
 var vodDownloadState = struct {
 	sync.Mutex
@@ -111,6 +130,32 @@ func VODDownloadStatus(id string) (bool, time.Time, error) {
 	return false, time.Time{}, fmt.Errorf("failed to check vod output file: %w", err)
 }
 
+// GetVODDownloadProgress returns the current progress for an active download,
+// or the completed file status when no download is running.
+func GetVODDownloadProgress(id string) (VODDownloadProgress, error) {
+	id = strings.TrimSpace(id)
+	if !vodDownloadIDRE.MatchString(id) {
+		return VODDownloadProgress{}, fmt.Errorf("invalid vod id")
+	}
+
+	vodDownloadState.Lock()
+	if vodDownloadState.active != nil {
+		if download, ok := vodDownloadState.active[id]; ok && download != nil {
+			progress := download.progress
+			progress.Active = true
+			vodDownloadState.Unlock()
+			return progress, nil
+		}
+	}
+	vodDownloadState.Unlock()
+
+	downloaded, size, err := completedVODDownloadFile(id)
+	if err != nil {
+		return VODDownloadProgress{}, err
+	}
+	return VODDownloadProgress{Downloaded: downloaded, TotalSize: size}, nil
+}
+
 // StartVODDownload resolves a Twitch VOD and downloads it to a tagged MKV.
 func StartVODDownload(ctx context.Context, id, vodURL, title, channel string) error {
 	id = strings.TrimSpace(id)
@@ -145,7 +190,7 @@ func StartVODDownload(ctx context.Context, id, vodURL, title, channel string) er
 		vodDownloadState.Unlock()
 		return fmt.Errorf("failed to check vod output file: %w", err)
 	}
-	download := &vodDownload{}
+	download := newVODDownload()
 	vodDownloadState.active[id] = download
 	vodDownloadState.Unlock()
 
@@ -161,6 +206,11 @@ func StartVODDownload(ctx context.Context, id, vodURL, title, channel string) er
 	}
 
 	cmd := exec.Command("ffmpeg", buildVODDownloadArgs(inputURL, outputPath, title, channel)...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		clearVODDownload(id, download)
+		return fmt.Errorf("failed to get ffmpeg progress pipe: %w", err)
+	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		clearVODDownload(id, download)
@@ -174,6 +224,8 @@ func StartVODDownload(ctx context.Context, id, vodURL, title, channel string) er
 	}
 
 	startedAt := time.Now()
+	setVODDownloadProgressState(id, download, "running")
+	go readVODDownloadProgress(id, download, stdout)
 	go logCommandOutput("ffmpeg-vod", id, stderr)
 	go func() {
 		err := cmd.Wait()
@@ -233,8 +285,113 @@ func clearVODDownload(id string, download *vodDownload) {
 	}
 }
 
+func newVODDownload() *vodDownload {
+	now := time.Now()
+	progress := VODDownloadProgress{
+		Active:    true,
+		Progress:  "resolving",
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	return &vodDownload{progress: progress}
+}
+
+func setVODDownloadProgressState(id string, download *vodDownload, state string) {
+	updateVODDownloadProgress(id, download, "progress", state)
+}
+
+func readVODDownloadProgress(id string, download *vodDownload, r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			slog.Debug("ffmpeg-vod progress", "id", id, "line", line)
+			continue
+		}
+		updateVODDownloadProgress(id, download, strings.TrimSpace(key), strings.TrimSpace(value))
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Debug("ffmpeg-vod progress stream ended with error", "id", id, "error", err)
+	}
+}
+
+func updateVODDownloadProgress(id string, download *vodDownload, key, value string) {
+	vodDownloadState.Lock()
+	defer vodDownloadState.Unlock()
+	if vodDownloadState.active == nil || vodDownloadState.active[id] != download {
+		return
+	}
+
+	progress := &download.progress
+	progress.Active = true
+	progress.UpdatedAt = time.Now()
+
+	switch key {
+	case "total_size":
+		if totalSize, err := strconv.ParseInt(value, 10, 64); err == nil && totalSize >= 0 {
+			updateVODDownloadByteRate(download, totalSize, progress.UpdatedAt)
+			progress.TotalSize = totalSize
+		}
+	case "speed":
+		progress.Speed = value
+	case "progress":
+		progress.Progress = value
+	}
+}
+
+func updateVODDownloadByteRate(download *vodDownload, totalSize int64, updatedAt time.Time) {
+	if download.lastTotalSizeUpdate.IsZero() {
+		download.lastTotalSize = totalSize
+		download.lastTotalSizeUpdate = updatedAt
+		return
+	}
+
+	elapsed := updatedAt.Sub(download.lastTotalSizeUpdate)
+	delta := totalSize - download.lastTotalSize
+	if elapsed > 0 && delta >= 0 {
+		download.progress.BytesPerSecond = int64(float64(delta) / elapsed.Seconds())
+	}
+	download.lastTotalSize = totalSize
+	download.lastTotalSizeUpdate = updatedAt
+}
+
 func vodDownloadPath(dir, id string) string {
 	return filepath.Join(dir, id+".mkv")
+}
+
+func completedVODDownloadFile(id string) (bool, int64, error) {
+	id = strings.TrimSpace(id)
+	if !vodDownloadIDRE.MatchString(id) {
+		return false, 0, fmt.Errorf("invalid vod id")
+	}
+
+	vodDownloadState.Lock()
+	dir := vodDownloadState.dir
+	if dir == "" {
+		vodDownloadState.Unlock()
+		return false, 0, ErrVODDownloadsDisabled
+	}
+	if vodDownloadState.active != nil {
+		if _, ok := vodDownloadState.active[id]; ok {
+			vodDownloadState.Unlock()
+			return false, 0, nil
+		}
+	}
+	outputPath := vodDownloadPath(dir, id)
+	vodDownloadState.Unlock()
+
+	info, err := os.Stat(outputPath)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return false, 0, nil
+		}
+		return true, info.Size(), nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, 0, nil
+	}
+	return false, 0, fmt.Errorf("failed to check vod output file: %w", err)
 }
 
 func runVODDownloadCleanup(now time.Time) {
@@ -365,6 +522,8 @@ func buildVODDownloadArgs(inputURL, outputPath, title, channel string) []string 
 		"-hide_banner",
 		"-loglevel", "warning",
 		"-nostdin",
+		"-nostats",
+		"-progress", "pipe:1",
 		"-i", inputURL,
 		"-map", "0:v?",
 		"-map", "0:a?",

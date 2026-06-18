@@ -5,6 +5,7 @@ const msgEl = document.getElementById('vodMsg');
 const listEl = document.getElementById('vodList');
 const filterEl = document.getElementById('vodFilter');
 let currentVODs = [];
+let progressPollTimer = 0;
 const vodIDLength = 10;
 
 function setMessage(message, isError){
@@ -43,6 +44,40 @@ function vodDate(vod){
 
 function vodDownloaded(vod){
   return vod.downloaded || vod.Downloaded || false;
+}
+
+function vodDownloadActive(vod){
+  return vod.downloadActive || vod.DownloadActive || false;
+}
+
+function vodDownloadSize(vod){
+  const value = vod.downloadSize ?? vod.DownloadSize ?? vod.totalSize ?? vod.TotalSize ?? 0;
+  const size = Number(value);
+  if(!Number.isFinite(size) || size <= 0) return 0;
+  return size;
+}
+
+function vodDownloadRate(vod){
+  const value = vod.downloadRate ?? vod.DownloadRate ?? vod.bytesPerSecond ?? vod.BytesPerSecond ?? 0;
+  const rate = Number(value);
+  if(!Number.isFinite(rate) || rate <= 0) return 0;
+  return rate;
+}
+
+function formatBytes(value){
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = value;
+  let unit = 0;
+  while(size >= 1024 && unit < units.length - 1){
+    size /= 1024;
+    unit += 1;
+  }
+  if(unit === 0) return String(size) + ' ' + units[unit];
+  return size.toFixed(size >= 10 ? 1 : 2) + ' ' + units[unit];
+}
+
+function formatMegabytesPerSecond(value){
+  return (value / (1024 * 1024)).toFixed(2) + ' MB/s';
 }
 
 function formatVODDate(value, fallback){
@@ -98,6 +133,10 @@ function renderVOD(vod){
     downloadAction.textContent = 'Delete File';
     downloadAction.className = 'button button-danger';
     downloadAction.addEventListener('click', ()=>deleteDownloadedVOD(id, downloadAction));
+  }else if(vodDownloadActive(vod)){
+    downloadAction.textContent = 'Downloading';
+    downloadAction.className = 'button';
+    downloadAction.disabled = true;
   }else{
     downloadAction.textContent = 'Download';
     downloadAction.className = 'button';
@@ -144,14 +183,25 @@ function renderVOD(vod){
   meta.className = 'mt-1 flex min-w-0 flex-col gap-1 text-xs text-white/45 sm:flex-row sm:items-center';
   const dateText = document.createElement('span');
   dateText.textContent = formatVODDate(vodDate(vod), id);
-  const separator = document.createElement('span');
-  separator.className = 'hidden sm:inline';
-  separator.textContent = '-';
+  const size = vodDownloadSize(vod);
   const urlText = document.createElement('span');
   urlText.className = 'min-w-0 flex-1 truncate';
   urlText.textContent = vodURL(vod);
   meta.appendChild(dateText);
-  meta.appendChild(separator);
+  if(size > 0){
+    const sizeSeparator = document.createElement('span');
+    sizeSeparator.className = 'hidden sm:inline';
+    sizeSeparator.textContent = '-';
+    const sizeText = document.createElement('span');
+    sizeText.className = 'shrink-0 tabular-nums text-white/55';
+    sizeText.textContent = formatBytes(size);
+    meta.appendChild(sizeSeparator);
+    meta.appendChild(sizeText);
+  }
+  const urlSeparator = document.createElement('span');
+  urlSeparator.className = 'hidden sm:inline';
+  urlSeparator.textContent = '-';
+  meta.appendChild(urlSeparator);
   meta.appendChild(urlText);
 
   titleRow.appendChild(actions);
@@ -164,6 +214,16 @@ function renderVOD(vod){
     deletionText.className = 'mt-1 text-xs text-amber-300/70';
     deletionText.textContent = 'Estimated deletion: ' + formatVODDate(deletionAt, deletionAt);
     info.appendChild(deletionText);
+  }
+  if(vodDownloadActive(vod)){
+    const rate = vodDownloadRate(vod);
+    const downloadStatus = document.createElement('div');
+    downloadStatus.className = 'mt-2 text-xs tabular-nums text-white/55';
+    const parts = ['Downloading'];
+    if(rate > 0) parts.push(formatMegabytesPerSecond(rate));
+    if(size > 0) parts.push(formatBytes(size));
+    downloadStatus.textContent = parts.join(' - ');
+    info.appendChild(downloadStatus);
   }
   row.appendChild(info);
   return row;
@@ -191,9 +251,22 @@ async function loadVODs(){
   try{
     currentVODs = await fetchJSON('/api/vods');
     applyVODFilter();
+    scheduleProgressPolling();
   }catch(err){
     listEl.textContent = 'Could not load VODs: ' + err.message;
   }
+}
+
+function scheduleProgressPolling(){
+  if(progressPollTimer){
+    clearTimeout(progressPollTimer);
+    progressPollTimer = 0;
+  }
+  if(!currentVODs.some(vodDownloadActive)) return;
+  progressPollTimer = window.setTimeout(async ()=>{
+    progressPollTimer = 0;
+    await loadVODs();
+  }, 2000);
 }
 
 async function addVOD(event){
@@ -251,6 +324,12 @@ async function downloadVOD(id, button){
       throw new Error(text.trim() || res.statusText);
     }
     setMessage('Download started for VOD ' + id, false);
+    currentVODs = currentVODs.map((vod)=>{
+      if(vodID(vod) !== id) return vod;
+      return {...vod, downloadActive: true};
+    });
+    applyVODFilter();
+    scheduleProgressPolling();
   }catch(err){
     setMessage('Download failed: ' + err.message, true);
     button.disabled = false;
