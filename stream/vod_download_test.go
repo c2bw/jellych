@@ -82,6 +82,56 @@ func TestDeleteVODDownloadReturnsNotFound(t *testing.T) {
 	}
 }
 
+func TestVODDownloaderStopPreventsNewStarts(t *testing.T) {
+	downloader := &VODDownloader{
+		dir:       t.TempDir(),
+		retention: defaultVODDownloadRetention,
+	}
+
+	if err := downloader.Stop(); err != nil {
+		t.Fatalf("expected stop to succeed, got %v", err)
+	}
+
+	err := downloader.Start(context.Background(), "123456789", "https://www.twitch.tv/videos/123456789", "Test VOD", "testchannel")
+	if !errors.Is(err, ErrVODDownloadsStopping) {
+		t.Fatalf("expected ErrVODDownloadsStopping, got %v", err)
+	}
+}
+
+func TestVODDownloaderStopPreventsResolvingDownloadFromStartingProcess(t *testing.T) {
+	downloader := &VODDownloader{retention: defaultVODDownloadRetention}
+	download := newVODDownload()
+	downloader.active = map[string]*vodDownload{"123456789": download}
+
+	if err := downloader.Stop(); err != nil {
+		t.Fatalf("expected stop to succeed, got %v", err)
+	}
+	if downloader.prepareStart("123456789", download) {
+		t.Fatal("expected shutdown to prevent resolving download from starting ffmpeg")
+	}
+}
+
+func TestFinishVODDownloadSignalsDoneAfterRemovingPartialFile(t *testing.T) {
+	downloader := &VODDownloader{retention: defaultVODDownloadRetention}
+	download := newVODDownload()
+	downloader.active = map[string]*vodDownload{"123456789": download}
+	outputPath := filepath.Join(t.TempDir(), "123456789.mkv")
+	if err := os.WriteFile(outputPath, []byte("partial"), 0644); err != nil {
+		t.Fatalf("failed to create partial output file: %v", err)
+	}
+
+	downloader.finishDownload("123456789", download, outputPath, time.Now(), errors.New("interrupted"))
+	<-download.done
+
+	assertVODDownloadTestFileExists(t, outputPath, false)
+	downloader.Lock()
+	_, active := downloader.active["123456789"]
+	downloader.Unlock()
+	if active {
+		t.Fatal("expected interrupted download to be removed from active map")
+	}
+}
+
 func TestCleanupExpiredVODDownloads(t *testing.T) {
 	dir := t.TempDir()
 	SetVODDownloadDir(dir)
@@ -206,6 +256,8 @@ func TestBuildVODDownloadArgsIncludesInputAndMetadata(t *testing.T) {
 	for _, want := range []string{
 		inputURL,
 		"copy",
+		"-progress",
+		"pipe:1",
 		"title=A great stream",
 		"artist=Streamer",
 		"matroska",
@@ -214,6 +266,36 @@ func TestBuildVODDownloadArgsIncludesInputAndMetadata(t *testing.T) {
 		if !slices.Contains(args, want) {
 			t.Fatalf("expected download args to contain %q, got %#v", want, args)
 		}
+	}
+}
+
+func TestUpdateVODDownloadProgressCalculatesByteRate(t *testing.T) {
+	download := newVODDownload()
+	vodDownloadState.Lock()
+	vodDownloadState.active = map[string]*vodDownload{"active": download}
+	vodDownloadState.Unlock()
+	t.Cleanup(func() { clearVODDownload("active", download) })
+
+	download.lastTotalSize = 1000
+	download.lastTotalSizeUpdate = time.Now().Add(-time.Second)
+	updateVODDownloadProgress("active", download, "total_size", "12345")
+	updateVODDownloadProgress("active", download, "speed", "1.5x")
+
+	got, err := GetVODDownloadProgress("active")
+	if err != nil {
+		t.Fatalf("expected progress lookup to succeed, got %v", err)
+	}
+	if !got.Active {
+		t.Fatal("expected active progress")
+	}
+	if got.TotalSize != 12345 {
+		t.Fatalf("expected total size to be recorded, got %d", got.TotalSize)
+	}
+	if got.BytesPerSecond <= 0 {
+		t.Fatalf("expected byte rate to be recorded, got %d", got.BytesPerSecond)
+	}
+	if got.Speed != "1.5x" {
+		t.Fatalf("expected speed to be recorded, got %q", got.Speed)
 	}
 }
 

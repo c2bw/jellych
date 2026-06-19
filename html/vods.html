@@ -41,16 +41,8 @@
         <h1 class="mb-4 text-base font-bold">Add VOD</h1>
         <form id="vodForm" class="flex flex-col gap-3">
           <label class="flex flex-col gap-1.5 text-sm text-white/75">
-            VOD URL
-            <input id="vodUrl" class="field" type="url" placeholder="https://www.twitch.tv/videos/123456789" required />
-          </label>
-          <label class="flex flex-col gap-1.5 text-sm text-white/75">
-            Channel
-            <input id="vodChannel" class="field" type="text" placeholder="Optional channel name" />
-          </label>
-          <label class="flex flex-col gap-1.5 text-sm text-white/75">
-            Title
-            <input id="vodTitle" class="field" type="text" placeholder="Optional display title" />
+            VOD ID
+            <input id="vodId" class="field" type="text" inputmode="numeric" minlength="10" maxlength="10" pattern="[0-9]{10}" placeholder="1234567890" required />
           </label>
           <button id="addVodBtn" class="button" type="submit">Add VOD</button>
           <div id="vodMsg" class="min-h-[20px] text-sm text-white/50"></div>
@@ -60,7 +52,12 @@
       <section class="min-w-0 rounded-lg border border-[#222] bg-[#0f0f10] p-4">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 class="text-base font-bold">Saved VODs</h2>
-          <code class="rounded border border-white/10 bg-black/40 px-2 py-1 text-xs text-white/60">/api/vods.m3u</code>
+          <div class="flex items-center gap-2">
+            <select id="vodFilter" class="field w-auto py-1.5 text-xs" aria-label="Filter VODs">
+              <option value="all">All VODs</option>
+              <option value="downloaded">Downloaded only</option>
+            </select>
+          </div>
         </div>
         <div id="vodList" class="flex min-w-0 flex-col gap-2">Loading VODs...</div>
       </section>

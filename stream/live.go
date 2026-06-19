@@ -23,6 +23,12 @@ var serverBaseURL string
 
 var liveStoreMu sync.RWMutex
 var liveStore map[string]map[string][]byte
+var defaultLiveStore = NewLiveStore(&liveStoreMu, &liveStore)
+var defaultLiveService = &LiveService{
+	store:    defaultLiveStore,
+	registry: defaultStreamRegistry,
+	start:    func(channel string) error { return startLiveChannel(channel) },
+}
 
 const (
 	liveWritePrefix      = "/_live-write/"
@@ -82,52 +88,80 @@ func newLiveWriteToken() string {
 	return hex.EncodeToString(b[:])
 }
 
-func resetLiveChannel(channel string) {
-	channel = normalizeLiveChannel(channel)
-	liveStoreMu.Lock()
-	if liveStore == nil {
-		liveStore = make(map[string]map[string][]byte)
+type LiveStore struct {
+	mu    *sync.RWMutex
+	items *map[string]map[string][]byte
+}
+
+func NewLiveStore(mu *sync.RWMutex, items *map[string]map[string][]byte) *LiveStore {
+	return &LiveStore{mu: mu, items: items}
+}
+
+func (s *LiveStore) storeMap() map[string]map[string][]byte {
+	if *s.items == nil {
+		*s.items = make(map[string]map[string][]byte)
 	}
-	liveStore[channel] = make(map[string][]byte)
-	liveStoreMu.Unlock()
+	return *s.items
+}
+
+func resetLiveChannel(channel string) {
+	defaultLiveStore.ResetChannel(channel)
+}
+
+func (s *LiveStore) ResetChannel(channel string) {
+	channel = normalizeLiveChannel(channel)
+	s.mu.Lock()
+	s.storeMap()[channel] = make(map[string][]byte)
+	s.mu.Unlock()
 }
 
 func clearLiveChannel(channel string) {
+	defaultLiveStore.ClearChannel(channel)
+}
+
+func (s *LiveStore) ClearChannel(channel string) {
 	channel = normalizeLiveChannel(channel)
-	liveStoreMu.Lock()
-	if liveStore != nil {
-		delete(liveStore, channel)
+	s.mu.Lock()
+	if items := *s.items; items != nil {
+		delete(items, channel)
 	}
-	liveStoreMu.Unlock()
+	s.mu.Unlock()
 }
 
 func storeLiveObject(channel, name string, data []byte) {
+	defaultLiveStore.StoreObject(channel, name, data)
+}
+
+func (s *LiveStore) StoreObject(channel, name string, data []byte) {
 	channel = normalizeLiveChannel(channel)
 	name = normalizeLiveObjectName(name)
 	if channel == "" || name == "" {
 		return
 	}
 
-	liveStoreMu.Lock()
-	if liveStore == nil {
-		liveStore = make(map[string]map[string][]byte)
+	s.mu.Lock()
+	items := s.storeMap()
+	if items[channel] == nil {
+		items[channel] = make(map[string][]byte)
 	}
-	if liveStore[channel] == nil {
-		liveStore[channel] = make(map[string][]byte)
-	}
-	liveStore[channel][name] = cloneBytes(data)
-	liveStoreMu.Unlock()
+	items[channel][name] = cloneBytes(data)
+	s.mu.Unlock()
 }
 
 func getLiveObject(channel, name string) []byte {
+	return defaultLiveStore.GetObject(channel, name)
+}
+
+func (s *LiveStore) GetObject(channel, name string) []byte {
 	channel = normalizeLiveChannel(channel)
 	name = normalizeLiveObjectName(name)
-	liveStoreMu.RLock()
-	defer liveStoreMu.RUnlock()
-	if liveStore == nil {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	items := *s.items
+	if items == nil {
 		return nil
 	}
-	channelStore := liveStore[channel]
+	channelStore := items[channel]
 	if channelStore == nil {
 		return nil
 	}
@@ -139,29 +173,48 @@ func getLiveObject(channel, name string) []byte {
 }
 
 func deleteLiveObject(channel, name string) {
+	defaultLiveStore.DeleteObject(channel, name)
+}
+
+func (s *LiveStore) DeleteObject(channel, name string) {
 	channel = normalizeLiveChannel(channel)
 	name = normalizeLiveObjectName(name)
-	liveStoreMu.Lock()
-	defer liveStoreMu.Unlock()
-	if liveStore == nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := *s.items
+	if items == nil {
 		return
 	}
-	if channelStore := liveStore[channel]; channelStore != nil {
+	if channelStore := items[channel]; channelStore != nil {
 		delete(channelStore, name)
 	}
 }
 
+type LiveService struct {
+	store    *LiveStore
+	registry *StreamRegistry
+	start    func(string) error
+}
+
 // LiveHandler serves in-memory HLS playlists and segments.
 func LiveHandler() http.Handler {
-	return http.HandlerFunc(handleLive)
+	return defaultLiveService.LiveHandler()
+}
+
+func (s *LiveService) LiveHandler() http.Handler {
+	return http.HandlerFunc(s.handleLive)
 }
 
 // LiveWriteHandler accepts internal ffmpeg HLS writes.
 func LiveWriteHandler() http.Handler {
-	return http.HandlerFunc(handleLiveWrite)
+	return defaultLiveService.LiveWriteHandler()
 }
 
-func handleLive(w http.ResponseWriter, r *http.Request) {
+func (s *LiveService) LiveWriteHandler() http.Handler {
+	return http.HandlerFunc(s.handleLiveWrite)
+}
+
+func (s *LiveService) handleLive(w http.ResponseWriter, r *http.Request) {
 	channel, objectName, ok := parseLivePath(r.URL.Path, liveReadPrefix)
 	if !ok {
 		http.NotFound(w, r)
@@ -170,19 +223,19 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
-		data := getLiveObject(channel, objectName)
+		data := s.store.GetObject(channel, objectName)
 		if data == nil && isLivePlaylist(objectName) {
-			if !IsChannelActive(channel) {
-				if err := startLiveChannel(channel); err != nil && !errors.Is(err, ErrAlreadyStarted) {
+			if !s.registry.IsChannelActive(channel) {
+				if err := s.start(channel); err != nil && !errors.Is(err, ErrAlreadyStarted) {
 					slog.Warn("failed to auto-start live stream for playlist request", "channel", channel, "error", err)
 				}
 			}
-			if IsChannelActive(channel) {
-				data = waitForLiveObject(r.Context(), channel, objectName, livePlaylistWaitTimeout, livePlaylistWaitPoll)
+			if s.registry.IsChannelActive(channel) {
+				data = s.waitForObject(r.Context(), channel, objectName, livePlaylistWaitTimeout, livePlaylistWaitPoll)
 			}
 		}
 		if data == nil {
-			if isLivePlaylist(objectName) && IsChannelActive(channel) {
+			if isLivePlaylist(objectName) && s.registry.IsChannelActive(channel) {
 				w.Header().Set("Retry-After", "1")
 				http.Error(w, "playlist not ready", http.StatusServiceUnavailable)
 				return
@@ -205,9 +258,9 @@ func isLivePlaylist(objectName string) bool {
 	return strings.EqualFold(objectName, "index.m3u8")
 }
 
-func waitForLiveObject(ctx context.Context, channel, objectName string, timeout, pollInterval time.Duration) []byte {
+func (s *LiveService) waitForObject(ctx context.Context, channel, objectName string, timeout, pollInterval time.Duration) []byte {
 	if timeout <= 0 {
-		return getLiveObject(channel, objectName)
+		return s.store.GetObject(channel, objectName)
 	}
 	if pollInterval <= 0 {
 		pollInterval = 100 * time.Millisecond
@@ -215,7 +268,7 @@ func waitForLiveObject(ctx context.Context, channel, objectName string, timeout,
 
 	deadline := time.Now().Add(timeout)
 	for {
-		if data := getLiveObject(channel, objectName); data != nil {
+		if data := s.store.GetObject(channel, objectName); data != nil {
 			return data
 		}
 		if time.Now().After(deadline) {
@@ -229,7 +282,7 @@ func waitForLiveObject(ctx context.Context, channel, objectName string, timeout,
 	}
 }
 
-func handleLiveWrite(w http.ResponseWriter, r *http.Request) {
+func (s *LiveService) handleLiveWrite(w http.ResponseWriter, r *http.Request) {
 	if !authorizeLiveWrite(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -254,10 +307,10 @@ func handleLiveWrite(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to read live object", http.StatusBadRequest)
 			return
 		}
-		storeLiveObject(channel, objectName, data)
+		s.store.StoreObject(channel, objectName, data)
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodDelete:
-		deleteLiveObject(channel, objectName)
+		s.store.DeleteObject(channel, objectName)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.Header().Set("Allow", "PUT, DELETE")

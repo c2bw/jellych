@@ -20,7 +20,7 @@ import (
 	"github.com/c2bw/jellych/twitch/client"
 )
 
-const version = "0.0.2"
+const version = "0.0.3"
 
 func main() {
 	// Set log level to debug for more verbose output, overridable by environment variable (e.g. LOG_LEVEL=info)
@@ -113,7 +113,12 @@ func main() {
 		stopStatus()
 	}
 	// stop stream processes
-	_ = stream.Stop()
+	if err := stream.StopVODDownloads(); err != nil {
+		slog.Warn("failed to stop VOD downloads cleanly", "error", err)
+	}
+	if err := stream.Stop(); err != nil {
+		slog.Warn("failed to stop live streams cleanly", "error", err)
+	}
 }
 
 func parseVODRetentionDays(value string) (time.Duration, error) {

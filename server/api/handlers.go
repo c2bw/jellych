@@ -16,6 +16,8 @@ import (
 	"github.com/c2bw/jellych/stream"
 )
 
+var resolveVODPlaylist = stream.ResolveVODPlaylist
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
@@ -35,7 +37,65 @@ func writeErrorf(w http.ResponseWriter, status int, format string, err error) {
 	http.Error(w, fmt.Sprintf(format, err), status)
 }
 
-func handlePing(w http.ResponseWriter, r *http.Request) {
+type handlerError struct {
+	err     error
+	status  int
+	message string
+}
+
+func writeMappedError(w http.ResponseWriter, err error, mappings []handlerError, fallbackStatus int, fallbackFormat string) {
+	for _, mapping := range mappings {
+		if errors.Is(err, mapping.err) {
+			http.Error(w, mapping.message, mapping.status)
+			return
+		}
+	}
+	writeErrorf(w, fallbackStatus, fallbackFormat, err)
+}
+
+var vodDownloadStartErrors = []handlerError{
+	{err: stream.ErrVODDownloadsDisabled, status: http.StatusServiceUnavailable, message: "vod downloads folder is not configured; start jellych with --vods <folder>"},
+	{err: stream.ErrVODDownloadAlreadyStarted, status: http.StatusConflict, message: "vod download already started"},
+	{err: stream.ErrVODDownloadAlreadyExists, status: http.StatusConflict, message: "vod already downloaded"},
+	{err: stream.ErrVODManifestRestricted, status: http.StatusForbidden, message: "vod is subscriber-only or otherwise restricted by Twitch"},
+	{err: context.DeadlineExceeded, status: http.StatusGatewayTimeout, message: "timed out resolving vod stream URL"},
+}
+
+var vodDownloadProgressErrors = []handlerError{
+	{err: stream.ErrVODDownloadsDisabled, status: http.StatusServiceUnavailable, message: "vod downloads folder is not configured; start jellych with --vods <folder>"},
+}
+
+var vodDownloadDeleteErrors = []handlerError{
+	{err: stream.ErrVODDownloadsDisabled, status: http.StatusServiceUnavailable, message: "vod downloads folder is not configured; start jellych with --vods <folder>"},
+	{err: stream.ErrVODDownloadAlreadyStarted, status: http.StatusConflict, message: "vod download is still running"},
+	{err: stream.ErrVODDownloadNotFound, status: http.StatusNotFound, message: "downloaded vod not found"},
+}
+
+var addVODErrors = []handlerError{
+	{err: ErrVODAlreadyExists, status: http.StatusConflict, message: "vod already exists"},
+}
+
+var removeVODErrors = []handlerError{
+	{err: ErrVODNotFound, status: http.StatusNotFound, message: "vod not found"},
+}
+
+var startStreamErrors = []handlerError{
+	{err: stream.ErrAlreadyStarted, status: http.StatusConflict, message: "stream already started"},
+}
+
+var addChannelErrors = []handlerError{
+	{err: ErrChannelAlreadyExists, status: http.StatusConflict, message: "channel already exists"},
+}
+
+var removeChannelErrors = []handlerError{
+	{err: ErrChannelNotFound, status: http.StatusNotFound, message: "channel not found"},
+}
+
+var vodPlaylistErrors = []handlerError{
+	{err: stream.ErrVODManifestRestricted, status: http.StatusForbidden, message: "vod is subscriber-only or otherwise restricted by Twitch"},
+}
+
+func (a *API) handlePing(w http.ResponseWriter, r *http.Request) {
 	slog.Debug("ping request received", "method", r.Method, "path", r.URL.Path)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	writeText(w, http.StatusOK, "pong")
@@ -54,143 +114,140 @@ func requireValidChannelName(w http.ResponseWriter, name string) (string, bool) 
 	return name, true
 }
 
-func handleChannels(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, GetChannels())
+func (a *API) handleChannels(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, a.state.GetChannels())
 }
 
-func handleVODs(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, buildVODResponses(GetVODs()))
+func (a *API) handleVODs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, buildVODResponses(a.state.GetVODs()))
 }
 
 type vodResponse struct {
 	VOD
 	Downloaded          bool   `json:"downloaded"`
+	DownloadActive      bool   `json:"downloadActive"`
+	DownloadSize        int64  `json:"downloadSize"`
+	DownloadRate        int64  `json:"downloadRate,omitempty"`
 	EstimatedDeletionAt string `json:"estimatedDeletionAt,omitempty"`
 }
 
 func buildVODResponses(vods []VOD) []vodResponse {
 	out := make([]vodResponse, 0, len(vods))
 	for _, vod := range vods {
-		downloaded, deletionAt, err := stream.VODDownloadStatus(vod.ID)
+		progress, err := stream.GetVODDownloadProgress(vod.ID)
 		if err != nil && !errors.Is(err, stream.ErrVODDownloadsDisabled) {
 			slog.Warn("failed to check vod download status", "id", vod.ID, "error", err)
 		}
+		downloaded := progress.Downloaded
+		downloadActive := progress.Active
 		var estimatedDeletionAt string
-		if downloaded && !deletionAt.IsZero() {
-			estimatedDeletionAt = deletionAt.Format(time.RFC3339)
+		if downloaded {
+			_, deletionAt, err := stream.VODDownloadStatus(vod.ID)
+			if err != nil && !errors.Is(err, stream.ErrVODDownloadsDisabled) {
+				slog.Warn("failed to check vod download retention status", "id", vod.ID, "error", err)
+			}
+			if !deletionAt.IsZero() {
+				estimatedDeletionAt = deletionAt.Format(time.RFC3339)
+			}
 		}
 		out = append(out, vodResponse{
 			VOD:                 vod,
 			Downloaded:          downloaded,
+			DownloadActive:      downloadActive,
+			DownloadSize:        progress.TotalSize,
+			DownloadRate:        progress.BytesPerSecond,
 			EstimatedDeletionAt: estimatedDeletionAt,
 		})
 	}
 	return out
 }
 
-func handleAddVOD(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleAddVOD(w http.ResponseWriter, r *http.Request) {
 	var vod VOD
 	if err := json.NewDecoder(r.Body).Decode(&vod); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 	vod = PrepareVOD(vod)
-	if err := AddVOD(vod); err != nil {
-		if errors.Is(err, ErrVODAlreadyExists) {
-			http.Error(w, "vod already exists", http.StatusConflict)
-			return
-		}
-		http.Error(w, "failed to add vod: "+err.Error(), http.StatusBadRequest)
+	if err := a.state.AddVOD(vod); err != nil {
+		writeMappedError(w, err, addVODErrors, http.StatusBadRequest, "failed to add vod: %v")
 		return
 	}
 
 	writeJSON(w, vod)
 }
 
-func handleRemoveVOD(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleRemoveVOD(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
-	if err := RemoveVOD(id); err != nil {
-		if errors.Is(err, ErrVODNotFound) {
-			http.Error(w, "vod not found", http.StatusNotFound)
-			return
-		}
-		writeErrorf(w, http.StatusInternalServerError, "failed to remove vod: %v", err)
+	if err := a.state.RemoveVOD(id); err != nil {
+		writeMappedError(w, err, removeVODErrors, http.StatusInternalServerError, "failed to remove vod: %v")
 		return
 	}
 
 	writeText(w, http.StatusOK, "removed")
 }
 
-func handleDownloadVOD(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleDownloadVOD(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
-	vod, ok := FindVOD(id)
+	vod, ok := a.state.FindVOD(id)
 	if !ok {
 		http.Error(w, "vod not found", http.StatusNotFound)
 		return
 	}
 
 	if err := stream.StartVODDownload(r.Context(), vod.ID, vod.URL, vod.Title, vod.Channel); err != nil {
-		switch {
-		case errors.Is(err, stream.ErrVODDownloadsDisabled):
-			http.Error(w, "vod downloads folder is not configured; start jellych with --vods <folder>", http.StatusServiceUnavailable)
-		case errors.Is(err, stream.ErrVODDownloadAlreadyStarted):
-			http.Error(w, "vod download already started", http.StatusConflict)
-		case errors.Is(err, stream.ErrVODDownloadAlreadyExists):
-			http.Error(w, "vod already downloaded", http.StatusConflict)
-		case errors.Is(err, context.DeadlineExceeded):
-			http.Error(w, "timed out resolving vod stream URL", http.StatusGatewayTimeout)
-		default:
-			writeErrorf(w, http.StatusInternalServerError, "failed to start vod download: %v", err)
-		}
+		writeMappedError(w, err, vodDownloadStartErrors, http.StatusInternalServerError, "failed to start vod download: %v")
 		return
 	}
 
 	writeText(w, http.StatusAccepted, "download started")
 }
 
-func handleDeleteVODDownload(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleGetVODDownload(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
-	if _, ok := FindVOD(id); !ok {
+	if _, ok := a.state.FindVOD(id); !ok {
+		http.Error(w, "vod not found", http.StatusNotFound)
+		return
+	}
+
+	progress, err := stream.GetVODDownloadProgress(id)
+	if err != nil {
+		writeMappedError(w, err, vodDownloadProgressErrors, http.StatusInternalServerError, "failed to get vod download progress: %v")
+		return
+	}
+	writeJSON(w, progress)
+}
+
+func (a *API) handleDeleteVODDownload(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if _, ok := a.state.FindVOD(id); !ok {
 		http.Error(w, "vod not found", http.StatusNotFound)
 		return
 	}
 
 	if err := stream.DeleteVODDownload(id); err != nil {
-		switch {
-		case errors.Is(err, stream.ErrVODDownloadsDisabled):
-			http.Error(w, "vod downloads folder is not configured; start jellych with --vods <folder>", http.StatusServiceUnavailable)
-		case errors.Is(err, stream.ErrVODDownloadAlreadyStarted):
-			http.Error(w, "vod download is still running", http.StatusConflict)
-		case errors.Is(err, stream.ErrVODDownloadNotFound):
-			http.Error(w, "downloaded vod not found", http.StatusNotFound)
-		default:
-			writeErrorf(w, http.StatusInternalServerError, "failed to delete vod download: %v", err)
-		}
+		writeMappedError(w, err, vodDownloadDeleteErrors, http.StatusInternalServerError, "failed to delete vod download: %v")
 		return
 	}
 
 	writeText(w, http.StatusOK, "download deleted")
 }
 
-func handleStartStream(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleStartStream(w http.ResponseWriter, r *http.Request) {
 	channel, ok := requireValidChannelName(w, r.PathValue("channel"))
 	if !ok {
 		return
 	}
 
 	if err := stream.Start(channel); err != nil {
-		if errors.Is(err, stream.ErrAlreadyStarted) {
-			http.Error(w, "stream already started", http.StatusConflict)
-			return
-		}
-		writeErrorf(w, http.StatusInternalServerError, "failed to start: %v", err)
+		writeMappedError(w, err, startStreamErrors, http.StatusInternalServerError, "failed to start: %v")
 		return
 	}
 
 	writeText(w, http.StatusOK, "started")
 }
 
-func handleAddChannel(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleAddChannel(w http.ResponseWriter, r *http.Request) {
 	var c Channel
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -200,19 +257,15 @@ func handleAddChannel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := AddChannel(name); err != nil {
-		if errors.Is(err, ErrChannelAlreadyExists) {
-			http.Error(w, "channel already exists", http.StatusConflict)
-			return
-		}
-		writeErrorf(w, http.StatusInternalServerError, "failed to add channel: %v", err)
+	if err := a.state.AddChannel(name); err != nil {
+		writeMappedError(w, err, addChannelErrors, http.StatusInternalServerError, "failed to add channel: %v")
 		return
 	}
 
 	writeText(w, http.StatusCreated, "added")
 }
 
-func handleRemoveChannelByBody(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleRemoveChannelByBody(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Name string `json:"name"`
 	}
@@ -220,38 +273,34 @@ func handleRemoveChannelByBody(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if err := removeChannelByName(w, payload.Name); err != nil {
+	if err := a.removeChannelByName(w, payload.Name); err != nil {
 		return
 	}
 
 	writeText(w, http.StatusOK, "removed")
 }
 
-func handleRemoveChannelByPath(w http.ResponseWriter, r *http.Request) {
-	if err := removeChannelByName(w, r.PathValue("name")); err != nil {
+func (a *API) handleRemoveChannelByPath(w http.ResponseWriter, r *http.Request) {
+	if err := a.removeChannelByName(w, r.PathValue("name")); err != nil {
 		return
 	}
 
 	writeText(w, http.StatusOK, "removed")
 }
 
-func removeChannelByName(w http.ResponseWriter, name string) error {
+func (a *API) removeChannelByName(w http.ResponseWriter, name string) error {
 	validName, ok := requireValidChannelName(w, name)
 	if !ok {
 		return fmt.Errorf("invalid name")
 	}
-	if err := RemoveChannel(validName); err != nil {
-		if errors.Is(err, ErrChannelNotFound) {
-			http.Error(w, "channel not found", http.StatusNotFound)
-			return err
-		}
-		writeErrorf(w, http.StatusInternalServerError, "failed to remove channel: %v", err)
+	if err := a.state.RemoveChannel(validName); err != nil {
+		writeMappedError(w, err, removeChannelErrors, http.StatusInternalServerError, "failed to remove channel: %v")
 		return err
 	}
 	return nil
 }
 
-func handleStopChannel(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleStopChannel(w http.ResponseWriter, r *http.Request) {
 	channel, ok := requireValidChannelName(w, r.PathValue("channel"))
 	if !ok {
 		return
@@ -273,13 +322,13 @@ func isIdempotentStopError(err error) bool {
 	return errors.Is(err, stream.ErrStopTimeout) || errors.Is(err, os.ErrProcessDone)
 }
 
-func handleActiveStreams(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleActiveStreams(w http.ResponseWriter, r *http.Request) {
 	active := stream.ActiveChannels()
 	writeJSON(w, active)
 }
 
-func handleGetChannelStatus(w http.ResponseWriter, r *http.Request) {
-	statuses := GetChannelStatus()
+func (a *API) handleGetChannelStatus(w http.ResponseWriter, r *http.Request) {
+	statuses := a.state.GetChannelStatus()
 	// Log playing counts for channels that have jellych viewers > 0
 	counts := GetPlayingCounts(time.Now())
 	for _, s := range statuses {
@@ -290,17 +339,17 @@ func handleGetChannelStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, statuses)
 }
 
-func handleSetChannelStatus(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleSetChannelStatus(w http.ResponseWriter, r *http.Request) {
 	var statuses []Status
 	if err := json.NewDecoder(r.Body).Decode(&statuses); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	SetChannelStatus(statuses)
+	a.state.SetChannelStatus(statuses)
 	writeText(w, http.StatusOK, "status updated")
 }
 
-func handleRecordPlaying(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleRecordPlaying(w http.ResponseWriter, r *http.Request) {
 	channel, ok := requireValidChannelName(w, r.PathValue("channel"))
 	if !ok {
 		return
@@ -328,7 +377,7 @@ func handleRecordPlaying(w http.ResponseWriter, r *http.Request) {
 	writeText(w, http.StatusOK, "ok")
 }
 
-func handleGetPlayingCounts(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleGetPlayingCounts(w http.ResponseWriter, r *http.Request) {
 	counts := GetPlayingCounts(time.Now())
 	writeJSON(w, counts)
 }
@@ -336,9 +385,9 @@ func handleGetPlayingCounts(w http.ResponseWriter, r *http.Request) {
 // handleJellyfinWebhook accepts simple JSON webhook POSTs from Jellyfin or
 // any external service indicating a playback start/stop for a channel.
 // Expected payload (flexible): { "action": "start"|"stop", "channel": "name", "sessionId": "..." }
-func handleJellyfinWebhook(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleJellyfinWebhook(w http.ResponseWriter, r *http.Request) {
 	slog.Debug("jellyfin webhook: received request")
-	if !authorizeJellyfinWebhook(w, r) {
+	if !a.authorizeJellyfinWebhook(w, r) {
 		slog.Warn("jellyfin webhook: authorization failed")
 		return
 	}
@@ -388,8 +437,8 @@ func handleJellyfinWebhook(w http.ResponseWriter, r *http.Request) {
 	writeText(w, http.StatusOK, "ok")
 }
 
-func authorizeJellyfinWebhook(w http.ResponseWriter, r *http.Request) bool {
-	expected := jellyfinWebhookSecret()
+func (a *API) authorizeJellyfinWebhook(w http.ResponseWriter, r *http.Request) bool {
+	expected := a.state.jellyfinWebhookSecret()
 	if expected == "" {
 		slog.Error("jellyfin webhook: secret not configured")
 		http.Error(w, "jellyfin webhook secret is not configured", http.StatusServiceUnavailable)
@@ -409,7 +458,7 @@ func authorizeJellyfinWebhook(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func handleStreamReady(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleStreamReady(w http.ResponseWriter, r *http.Request) {
 	channel, ok := requireValidChannelName(w, r.PathValue("channel"))
 	if !ok {
 		return
@@ -441,21 +490,21 @@ func handleStreamReady(w http.ResponseWriter, r *http.Request) {
 // handleGetM3U returns a generated M3U playlist containing all configured
 // channels with metadata indicating online/offline status. The playlist
 // entries point to the HLS playlists served under /live/<channel>/index.m3u8.
-func handleGetM3U(w http.ResponseWriter, r *http.Request) {
-	playlist := BuildM3U(GetChannels(), GetChannelStatus(), GetChannelLogos())
+func (a *API) handleGetM3U(w http.ResponseWriter, r *http.Request) {
+	playlist := BuildM3U(a.state.GetChannels(), a.state.GetChannelStatus(), a.state.GetChannelLogos())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(playlist))
 }
 
-func handleGetVODM3U(w http.ResponseWriter, r *http.Request) {
-	playlist := BuildVODM3U(GetVODs())
+func (a *API) handleGetVODM3U(w http.ResponseWriter, r *http.Request) {
+	playlist := BuildVODM3U(a.state.GetVODs())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(playlist))
 }
 
-func handleGetVODPlaylist(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleGetVODPlaylist(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
-	vod, ok := FindVOD(id)
+	vod, ok := a.state.FindVOD(id)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -463,10 +512,14 @@ func handleGetVODPlaylist(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	playlist, err := stream.ResolveVODPlaylist(ctx, vod.URL)
+	playlist, err := resolveVODPlaylist(ctx, vod.URL)
 	if err != nil {
-		slog.Warn("failed to resolve vod playlist", "id", id, "error", err)
-		writeErrorf(w, http.StatusBadGateway, "failed to resolve vod playlist: %v", err)
+		if !errors.Is(err, stream.ErrVODManifestRestricted) {
+			slog.Warn("failed to resolve vod playlist", "id", id, "error", err)
+		} else {
+			slog.Warn("vod playlist is restricted by Twitch", "id", id, "error", err)
+		}
+		writeMappedError(w, err, vodPlaylistErrors, http.StatusBadGateway, "failed to resolve vod playlist: %v")
 		return
 	}
 
