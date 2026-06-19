@@ -63,3 +63,10 @@ volumes:
 - Dashboard > Scheduled Tasks > Refresh Guide -> Every 15 minutes
 - *OPTIONAL: create a library for the VODs folder*
 - Install Jellyfin plugin: https://github.com/c2bw/jellyfin-plugin-jellych
+
+#### Jellyfin VODs library setup
+
+The VODs library is optional, but it allows you to watch Twitch VODs in Jellyfin. To set it up, create a new library in Jellyfin and point it to the folder where VODs are saved (the `-vods` folder). After that, configure the library:
+
+- Dashboard > Libraries > Manage Library -> remove all metadata downloaders; select only `screen grabber` for the remaining options
+- Select `Prefer embedded titles over filenames` to have the VOD title displayed in Jellyfin instead of the filename (requires rescan if the VODs were already downloaded)
