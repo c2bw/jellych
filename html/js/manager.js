@@ -1,7 +1,7 @@
 import { channelNameOf } from './utils.js';
 
 export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn, managerMsgEl, player, stats }){
-  const MIN_SEGMENTS_TO_PLAY = 3;
+  const MIN_SEGMENTS_TO_PLAY = 4;
   const MAX_WAIT_MS = 45000;
   const POLL_MS = 250;
   const PLAY_HEARTBEAT_MS = 10000;

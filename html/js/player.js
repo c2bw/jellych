@@ -47,7 +47,10 @@ export class Player {
     }
 
     if(window.Hls && Hls.isSupported()){
-      const hls = new Hls();
+      const hls = new Hls({
+        liveSyncDurationCount: 4,
+        liveMaxLatencyDurationCount: 8,
+      });
       this.hls = hls;
       hls.loadSource(url);
       hls.attachMedia(this.video);
