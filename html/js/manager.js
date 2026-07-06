@@ -4,7 +4,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
   const MIN_SEGMENTS_TO_PLAY = 4;
   const MAX_WAIT_MS = 45000;
   const POLL_MS = 250;
-  const PLAY_HEARTBEAT_MS = 10000;
+  const PLAY_HEARTBEAT_MS = 5000;
 
   const statusMeta = new Map();
   const playCounts = new Map();
@@ -13,6 +13,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
   let playingChannel = null;
   let playHeartbeatId = null;
   let playTargetChannel = null;
+  let suppressPauseHandling = false;
   const video = player && player.video ? player.video : null;
 
   function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
@@ -110,8 +111,35 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
     setPlaying(channelName, true);
     setPlayButtonState(playPauseBtn, true);
     playTargetChannel = channelName;
-    player.play(url);
+    suppressPauseHandling = true;
+    try{
+      player.play(url);
+    } finally {
+      setTimeout(()=>{ suppressPauseHandling = false; }, 0);
+    }
     stats.start();
+  }
+
+  function recoverBufferedPlayback(){
+    if(!playTargetChannel) return;
+    startPlaybackTracking(playTargetChannel);
+    player.resume();
+  }
+
+  function stopCurrentPlayback(channelName, clearStats){
+    if(suppressPauseHandling) return;
+    suppressPauseHandling = true;
+    const targetChannel = channelName || playTargetChannel;
+    try{
+      player.stop();
+      if(targetChannel) setPlaying(targetChannel, false);
+      stats.stop();
+      if(clearStats) stats.clear();
+      playTargetChannel = null;
+      stopPlaybackTracking();
+    } finally {
+      setTimeout(()=>{ suppressPauseHandling = false; }, 0);
+    }
   }
 
   function formatViewers(count){
@@ -164,8 +192,17 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
   }
 
   if(video){
+    video.addEventListener('play', ()=>{
+      if(playTargetChannel && player.notePlaybackWanted) player.notePlaybackWanted();
+    });
     video.addEventListener('playing', ()=>{ if(playTargetChannel){ startPlaybackTracking(playTargetChannel); } });
-    video.addEventListener('pause', ()=>{ stopPlaybackTracking(); });
+    video.addEventListener('waiting', recoverBufferedPlayback);
+    video.addEventListener('stalled', recoverBufferedPlayback);
+    video.addEventListener('pause', ()=>{
+      if(suppressPauseHandling) return;
+      if(player.pause) player.pause();
+      stopPlaybackTracking();
+    });
     video.addEventListener('ended', ()=>{ stopPlaybackTracking(); });
     video.addEventListener('emptied', ()=>{ stopPlaybackTracking(); });
     window.addEventListener('beforeunload', ()=>{ stopPlaybackTracking(); });
@@ -240,11 +277,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
         const url = '/live/' + encodeURIComponent(channelKey) + '/index.m3u8';
         playWhenReady(channelKey, url, playPause);
       } else {
-        player.stop();
-        setPlaying(channelKey, false);
-        stats.stop();
-        playTargetChannel = null;
-        stopPlaybackTracking();
+        stopCurrentPlayback(channelKey, false);
       }
     };
 
@@ -425,12 +458,15 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
     try{
       const res = await fetch('/api/stop/' + encodeURIComponent(channelName), { method: 'POST' });
       if(!res.ok){ const text = await res.text(); throw new Error(text || res.statusText); }
+      const isCurrentPlayback = playTargetChannel === channelName;
       setStartState(channelName, false);
-      setPlaying(channelName, false);
-      setControlsDisabled(startBtn, playPauseBtn, false);
-      player.stop(); stats.stop(); stats.clear();
-      playTargetChannel = null;
-      stopPlaybackTracking();
+      setControlsDisabled(startBtn, null, false);
+      if(isCurrentPlayback){
+        stopCurrentPlayback(channelName, true);
+      } else {
+        setPlayButtonState(playPauseBtn, false);
+      }
+      if(playPauseBtn) playPauseBtn.disabled = true;
     }catch(err){ console.error('stop error', err); setControlsDisabled(startBtn, playPauseBtn, false); alert('Failed to stop stream: ' + err); }
   }
 

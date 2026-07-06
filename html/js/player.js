@@ -9,6 +9,10 @@ function safePlay(video){
   video.play().catch(()=>{});
 }
 
+function safeStartLoad(hls){
+  try{ hls.startLoad(-1); }catch(e){ /* ignore */ }
+}
+
 function startBandwidthObserver(){
   if(bandwidthObserverStarted) return;
   bandwidthObserverStarted = true;
@@ -35,11 +39,15 @@ export class Player {
   constructor(video){
     this.video = video;
     this.hls = null;
+    this.currentUrl = '';
+    this.wantsPlayback = false;
     startBandwidthObserver();
   }
 
   play(url){
     this.stop();
+    this.currentUrl = url;
+    this.wantsPlayback = true;
     if(this.video.canPlayType && this.video.canPlayType('application/vnd.apple.mpegurl')){
       this.video.src = url;
       safePlay(this.video);
@@ -50,11 +58,35 @@ export class Player {
       const hls = new Hls({
         liveSyncDurationCount: 4,
         liveMaxLatencyDurationCount: 8,
+        manifestLoadingMaxRetry: 10,
+        manifestLoadingRetryDelay: 1000,
+        levelLoadingMaxRetry: 10,
+        levelLoadingRetryDelay: 1000,
+        fragLoadingMaxRetry: 10,
+        fragLoadingRetryDelay: 1000,
       });
       this.hls = hls;
       hls.loadSource(url);
       hls.attachMedia(this.video);
       hls.on(Hls.Events.MANIFEST_PARSED, ()=>safePlay(this.video));
+      hls.on(Hls.Events.ERROR, (_, data)=>{
+        if(!this.wantsPlayback || this.hls !== hls) return;
+        if(!data || !data.fatal){
+          if(data && data.type === Hls.ErrorTypes.NETWORK_ERROR) safeStartLoad(hls);
+          return;
+        }
+        if(data.type === Hls.ErrorTypes.NETWORK_ERROR){
+          safeStartLoad(hls);
+          safePlay(this.video);
+        } else if(data.type === Hls.ErrorTypes.MEDIA_ERROR){
+          try{ hls.recoverMediaError(); }catch(e){ /* ignore */ }
+          safePlay(this.video);
+        } else {
+          hls.destroy();
+          this.hls = null;
+          if(this.currentUrl) this.play(this.currentUrl);
+        }
+      });
       return;
     }
 
@@ -62,9 +94,27 @@ export class Player {
   }
 
   stop(){
+    this.wantsPlayback = false;
+    this.currentUrl = '';
     if(this.hls){ try{ this.hls.destroy(); }catch(e){} this.hls = null; }
     try{ this.video.pause(); }catch(e){}
     try{ this.video.removeAttribute('src'); this.video.load(); }catch(e){}
+  }
+
+  pause(){
+    this.wantsPlayback = false;
+  }
+
+  notePlaybackWanted(){
+    this.wantsPlayback = true;
+    if(this.hls) safeStartLoad(this.hls);
+  }
+
+  resume(){
+    if(this.wantsPlayback){
+      if(this.hls) safeStartLoad(this.hls);
+      safePlay(this.video);
+    }
   }
 
   getBandwidthEstimate(){

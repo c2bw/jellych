@@ -58,13 +58,14 @@ export function initStats({ video, player, statsOverlay, statsState, statsGrid }
   function updateStats(){
     if(video.readyState === 0 && !video.currentSrc && !video.src) { clearStats(); return; }
     const bandwidthEstimate = player ? player.getBandwidthEstimate() : NaN;
+    const waitingForData = video.readyState > 0 && video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA;
     const items = [
       { label: 'Current', value: formatTime(video.currentTime || 0) },
       { label: 'Buffered', value: formatTime(getBufferedAhead()) },
       { label: 'Dropped frames', value: getDroppedFrames() },
       { label: 'Bandwidth', value: formatBandwidth(bandwidthEstimate) },
     ];
-    renderStats(items, video.paused ? 'Paused' : 'Playing');
+    renderStats(items, waitingForData ? 'Buffering' : (video.paused ? 'Paused' : 'Playing'));
   }
 
   function start(){ stop(); updateStats(); timer = setInterval(updateStats, 500); }
