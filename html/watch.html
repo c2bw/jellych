@@ -64,7 +64,12 @@
       </div>
 
       <div class="flex-1 min-w-0">
-        <video id="player" controls playsinline class="w-full h-auto bg-black rounded-md"></video>
+        <div class="group relative overflow-hidden rounded-md bg-black">
+          <div id="playerTitle" class="pointer-events-none absolute inset-x-0 top-0 z-10 hidden bg-gradient-to-b from-black/80 to-transparent px-4 pb-8 pt-3 text-base font-semibold text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+            <div class="truncate"></div>
+          </div>
+          <video id="player" controls playsinline class="w-full h-auto bg-black"></video>
+        </div>
       </div>
     </div>
   </div>

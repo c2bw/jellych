@@ -1,12 +1,13 @@
 import { channelNameOf } from './utils.js';
 
-export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn, managerMsgEl, player, stats }){
+export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn, managerMsgEl, player, stats, playerTitleEl }){
   const MIN_SEGMENTS_TO_PLAY = 4;
   const MAX_WAIT_MS = 45000;
   const POLL_MS = 250;
   const PLAY_HEARTBEAT_MS = 5000;
 
   const statusMeta = new Map();
+  const statusDetails = new Map();
   const playCounts = new Map();
   const activeStreams = new Set();
   const channelEls = new Map();
@@ -107,10 +108,27 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
     button.classList.toggle('btn-playing', playing);
   }
 
+  function setPlayerTitle(channelName){
+    if(!playerTitleEl) return;
+    const titleTextEl = playerTitleEl.firstElementChild || playerTitleEl;
+    const details = statusDetails.get(channelName) || {};
+    const title = details.title || '';
+    titleTextEl.textContent = title;
+    playerTitleEl.classList.toggle('hidden', !title);
+  }
+
+  function clearPlayerTitle(){
+    if(!playerTitleEl) return;
+    const titleTextEl = playerTitleEl.firstElementChild || playerTitleEl;
+    titleTextEl.textContent = '';
+    playerTitleEl.classList.add('hidden');
+  }
+
   function beginPlayback(channelName, url, playPauseBtn){
     setPlaying(channelName, true);
     setPlayButtonState(playPauseBtn, true);
     playTargetChannel = channelName;
+    setPlayerTitle(channelName);
     suppressPauseHandling = true;
     try{
       player.play(url);
@@ -136,6 +154,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
       stats.stop();
       if(clearStats) stats.clear();
       playTargetChannel = null;
+      clearPlayerTitle();
       stopPlaybackTracking();
     } finally {
       setTimeout(()=>{ suppressPauseHandling = false; }, 0);
@@ -317,10 +336,15 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
       const online = !!s.online;
       statusMap.set(name, online);
       const game = s.game || s.Game || '';
+      const title = s.title || s.Title || '';
       const viewers = Number.isFinite(s.viewers) ? s.viewers : Number(s.Viewers);
-      const meta = online ? (formatViewers(viewers) + ' · ' + (game || 'Unknown')) : 'offline';
+      const parts = [formatViewers(viewers), game || 'Unknown'];
+      const meta = online ? parts.join(' · ') : 'offline';
       statusMeta.set(name, meta);
+      statusDetails.set(name, { title, game, viewers, online });
     });
+
+    if(playTargetChannel) setPlayerTitle(playTargetChannel);
 
     for(const [key] of channelEls){
       if(statusMap.has(key)) setOfflineState(key, !statusMap.get(key));
