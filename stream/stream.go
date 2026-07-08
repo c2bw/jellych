@@ -353,6 +353,7 @@ func buildFFmpegHLSArgs(channel, inputURL, playlistURL, publicBaseURL string) []
 		"-headers", liveWriteTokenHeader + ": " + getLiveWriteToken() + "\r\n",
 		"-hls_time", "1",
 		"-hls_list_size", "30",
+		"-hls_delete_threshold", "30",
 		"-hls_flags", "delete_segments",
 	}
 

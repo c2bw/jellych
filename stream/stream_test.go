@@ -21,6 +21,18 @@ func TestBuildFFmpegHLSArgsIncludesPublicBaseURL(t *testing.T) {
 	}
 }
 
+func TestBuildFFmpegHLSArgsKeepsTrailingSegments(t *testing.T) {
+	args := buildFFmpegHLSArgs("testchannel", "https://example.test/upstream.m3u8", "http://127.0.0.1/_live-write/testchannel/index.m3u8", "")
+
+	thresholdIndex := slices.Index(args, "-hls_delete_threshold")
+	if thresholdIndex == -1 || thresholdIndex+1 >= len(args) {
+		t.Fatal("expected -hls_delete_threshold argument")
+	}
+	if got, want := args[thresholdIndex+1], "30"; got != want {
+		t.Fatalf("expected hls delete threshold %q, got %q", want, got)
+	}
+}
+
 func TestBuildFFmpegHLSArgsOmitsEmptyPublicBaseURL(t *testing.T) {
 	args := buildFFmpegHLSArgs("testchannel", "https://example.test/upstream.m3u8", "http://127.0.0.1/_live-write/testchannel/index.m3u8", " ")
 
