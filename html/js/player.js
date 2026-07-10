@@ -13,6 +13,11 @@ function safeStartLoad(hls){
   try{ hls.startLoad(-1); }catch(e){ /* ignore */ }
 }
 
+function cacheBustedUrl(url){
+  const separator = url.includes('?') ? '&' : '?';
+  return url + separator + '_jellych_live=' + Date.now();
+}
+
 function startBandwidthObserver(){
   if(bandwidthObserverStarted) return;
   bandwidthObserverStarted = true;
@@ -41,7 +46,24 @@ export class Player {
     this.hls = null;
     this.currentUrl = '';
     this.wantsPlayback = false;
+    this.networkRecoveryTimer = null;
     startBandwidthObserver();
+  }
+
+  recoverNetworkError(hls){
+    if(!this.wantsPlayback || this.hls !== hls || this.networkRecoveryTimer) return;
+    try{ hls.stopLoad(); }catch(e){ /* ignore */ }
+    this.networkRecoveryTimer = setTimeout(()=>{
+      this.networkRecoveryTimer = null;
+      if(!this.wantsPlayback || this.hls !== hls || !this.currentUrl) return;
+      try{
+        // Reloading the manifest resets a stale fragment position while keeping
+        // the MediaSource attached, so recovery does not look like a user pause.
+        hls.loadSource(cacheBustedUrl(this.currentUrl));
+        safeStartLoad(hls);
+        safePlay(this.video);
+      }catch(e){ /* let the next error retry recovery */ }
+    }, 500);
   }
 
   play(url){
@@ -71,20 +93,18 @@ export class Player {
       hls.on(Hls.Events.MANIFEST_PARSED, ()=>safePlay(this.video));
       hls.on(Hls.Events.ERROR, (_, data)=>{
         if(!this.wantsPlayback || this.hls !== hls) return;
-        if(!data || !data.fatal){
-          if(data && data.type === Hls.ErrorTypes.NETWORK_ERROR) safeStartLoad(hls);
+        if(!data) return;
+        if(data.type === Hls.ErrorTypes.NETWORK_ERROR){
+          const status = data.response && Number(data.response.code || data.response.status);
+          if(data.fatal || status === 404) this.recoverNetworkError(hls);
           return;
         }
-        if(data.type === Hls.ErrorTypes.NETWORK_ERROR){
-          safeStartLoad(hls);
-          safePlay(this.video);
-        } else if(data.type === Hls.ErrorTypes.MEDIA_ERROR){
+        if(!data.fatal) return;
+        if(data.type === Hls.ErrorTypes.MEDIA_ERROR){
           try{ hls.recoverMediaError(); }catch(e){ /* ignore */ }
           safePlay(this.video);
         } else {
-          hls.destroy();
-          this.hls = null;
-          if(this.currentUrl) this.play(this.currentUrl);
+          this.recoverNetworkError(hls);
         }
       });
       return;
@@ -96,6 +116,7 @@ export class Player {
   stop(){
     this.wantsPlayback = false;
     this.currentUrl = '';
+    if(this.networkRecoveryTimer){ clearTimeout(this.networkRecoveryTimer); this.networkRecoveryTimer = null; }
     if(this.hls){ try{ this.hls.destroy(); }catch(e){} this.hls = null; }
     try{ this.video.pause(); }catch(e){}
     try{ this.video.removeAttribute('src'); this.video.load(); }catch(e){}
@@ -103,6 +124,7 @@ export class Player {
 
   pause(){
     this.wantsPlayback = false;
+    if(this.networkRecoveryTimer){ clearTimeout(this.networkRecoveryTimer); this.networkRecoveryTimer = null; }
   }
 
   notePlaybackWanted(){

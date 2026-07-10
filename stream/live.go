@@ -31,10 +31,11 @@ var defaultLiveService = &LiveService{
 }
 
 const (
-	liveWritePrefix      = "/_live-write/"
-	liveReadPrefix       = "/live/"
-	liveWriteTokenHeader = "X-Jellych-Live-Write-Token"
-	maxLiveObjectBytes   = 64 << 20
+	liveWritePrefix        = "/_live-write/"
+	liveReadPrefix         = "/live/"
+	liveWriteTokenHeader   = "X-Jellych-Live-Write-Token"
+	maxLiveObjectBytes     = 64 << 20
+	liveSegmentDeleteGrace = 30 * time.Second
 )
 
 var liveWriteToken = newLiveWriteToken()
@@ -89,12 +90,21 @@ func newLiveWriteToken() string {
 }
 
 type LiveStore struct {
-	mu    *sync.RWMutex
-	items *map[string]map[string][]byte
+	mu          *sync.RWMutex
+	items       *map[string]map[string][]byte
+	deleteAfter map[string]map[string]time.Time
+	deleteGrace time.Duration
+	now         func() time.Time
 }
 
 func NewLiveStore(mu *sync.RWMutex, items *map[string]map[string][]byte) *LiveStore {
-	return &LiveStore{mu: mu, items: items}
+	return &LiveStore{
+		mu:          mu,
+		items:       items,
+		deleteAfter: make(map[string]map[string]time.Time),
+		deleteGrace: liveSegmentDeleteGrace,
+		now:         time.Now,
+	}
 }
 
 func (s *LiveStore) storeMap() map[string]map[string][]byte {
@@ -112,6 +122,7 @@ func (s *LiveStore) ResetChannel(channel string) {
 	channel = normalizeLiveChannel(channel)
 	s.mu.Lock()
 	s.storeMap()[channel] = make(map[string][]byte)
+	delete(s.deleteAfter, channel)
 	s.mu.Unlock()
 }
 
@@ -125,6 +136,7 @@ func (s *LiveStore) ClearChannel(channel string) {
 	if items := *s.items; items != nil {
 		delete(items, channel)
 	}
+	delete(s.deleteAfter, channel)
 	s.mu.Unlock()
 }
 
@@ -140,11 +152,18 @@ func (s *LiveStore) StoreObject(channel, name string, data []byte) {
 	}
 
 	s.mu.Lock()
+	s.purgeDeletedLocked(channel, s.now())
 	items := s.storeMap()
 	if items[channel] == nil {
 		items[channel] = make(map[string][]byte)
 	}
 	items[channel][name] = cloneBytes(data)
+	if pending := s.deleteAfter[channel]; pending != nil {
+		delete(pending, name)
+		if len(pending) == 0 {
+			delete(s.deleteAfter, channel)
+		}
+	}
 	s.mu.Unlock()
 }
 
@@ -164,6 +183,11 @@ func (s *LiveStore) GetObject(channel, name string) []byte {
 	channelStore := items[channel]
 	if channelStore == nil {
 		return nil
+	}
+	if pending := s.deleteAfter[channel]; pending != nil {
+		if deadline, ok := pending[name]; ok && !s.now().Before(deadline) {
+			return nil
+		}
 	}
 	data, ok := channelStore[name]
 	if !ok {
@@ -185,8 +209,45 @@ func (s *LiveStore) DeleteObject(channel, name string) {
 	if items == nil {
 		return
 	}
-	if channelStore := items[channel]; channelStore != nil {
-		delete(channelStore, name)
+	channelStore := items[channel]
+	if channelStore == nil {
+		return
+	}
+
+	now := s.now()
+	s.purgeDeletedLocked(channel, now)
+	if _, ok := channelStore[name]; !ok {
+		return
+	}
+	if isLiveSegment(name) && s.deleteGrace > 0 {
+		if s.deleteAfter[channel] == nil {
+			s.deleteAfter[channel] = make(map[string]time.Time)
+		}
+		if _, pending := s.deleteAfter[channel][name]; !pending {
+			s.deleteAfter[channel][name] = now.Add(s.deleteGrace)
+		}
+		return
+	}
+	delete(channelStore, name)
+}
+
+func (s *LiveStore) purgeDeletedLocked(channel string, now time.Time) {
+	pending := s.deleteAfter[channel]
+	if pending == nil {
+		return
+	}
+	channelStore := (*s.items)[channel]
+	for name, deadline := range pending {
+		if now.Before(deadline) {
+			continue
+		}
+		if channelStore != nil {
+			delete(channelStore, name)
+		}
+		delete(pending, name)
+	}
+	if len(pending) == 0 {
+		delete(s.deleteAfter, channel)
 	}
 }
 
@@ -215,6 +276,10 @@ func (s *LiveService) LiveWriteHandler() http.Handler {
 }
 
 func (s *LiveService) handleLive(w http.ResponseWriter, r *http.Request) {
+	// Playlists and segment names are reused while a channel runs. In
+	// particular, never let a browser or reverse proxy cache a transient 404.
+	w.Header().Set("Cache-Control", "no-store")
+
 	channel, objectName, ok := parseLivePath(r.URL.Path, liveReadPrefix)
 	if !ok {
 		http.NotFound(w, r)
@@ -256,6 +321,15 @@ func (s *LiveService) handleLive(w http.ResponseWriter, r *http.Request) {
 
 func isLivePlaylist(objectName string) bool {
 	return strings.EqualFold(objectName, "index.m3u8")
+}
+
+func isLiveSegment(objectName string) bool {
+	switch strings.ToLower(filepath.Ext(objectName)) {
+	case ".ts", ".m4s", ".aac", ".mp4":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *LiveService) waitForObject(ctx context.Context, channel, objectName string, timeout, pollInterval time.Duration) []byte {

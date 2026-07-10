@@ -354,6 +354,8 @@ func buildFFmpegHLSArgs(channel, inputURL, playlistURL, publicBaseURL string) []
 		"-hls_time", "1",
 		"-hls_list_size", "30",
 		"-hls_delete_threshold", "30",
+		"-hls_start_number_source", "epoch",
+		"-hls_allow_cache", "0",
 		"-hls_flags", "delete_segments",
 	}
 
