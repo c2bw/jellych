@@ -38,10 +38,7 @@ func Start(configPath string) (*Manager, error) {
 	if err := m.loadChannels(); err != nil {
 		return nil, err
 	}
-	if err := m.loadVODs(); err != nil {
-		return nil, err
-	}
-	if err := m.loadVODBlacklist(); err != nil {
+	if err := m.loadVODState(); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -193,10 +190,10 @@ func (m *Manager) addImportedVODs(items []api.VOD) (int, error) {
 		return 0, nil
 	}
 
-	backup := m.vods
+	backup := m.snapshotVODStateLocked()
 	m.vods = next
-	if err := m.saveVODs(m.vods); err != nil {
-		m.vods = backup
+	if err := m.saveVODStateLocked(); err != nil {
+		m.restoreVODStateLocked(backup)
 		m.mu.Unlock()
 		return 0, err
 	}

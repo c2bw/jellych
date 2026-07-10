@@ -2,6 +2,7 @@ package manager
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,6 +18,12 @@ import (
 const channelsFile = "channels.json"
 const vodsFile = "vods.json"
 const vodBlacklistFile = "vods_blacklist.json"
+const vodStateFile = "vod_state.json"
+
+type persistedVODState struct {
+	VODs      []api.VOD `json:"vods"`
+	Blacklist []string  `json:"blacklist"`
+}
 
 func (m *Manager) loadChannels() error {
 	var channels []channel.Info
@@ -54,59 +61,73 @@ func (m *Manager) loadChannels() error {
 	return nil
 }
 
-func (m *Manager) loadVODs() error {
-	var vods []api.VOD
-	b, err := loadOrCreate(m.configPath, vodsFile, []byte("[]"))
+func (m *Manager) loadVODState() error {
+	joined := filepath.Join(m.configPath, vodStateFile)
+	b, err := os.ReadFile(joined)
+	migrated := false
+	if errors.Is(err, os.ErrNotExist) {
+		b, err = m.readLegacyVODState()
+		migrated = true
+	}
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(b, &vods); err != nil {
-		slog.Error("failed to parse vods", "error", err)
-		return err
+
+	var state persistedVODState
+	if err := json.Unmarshal(b, &state); err != nil {
+		return fmt.Errorf("failed to parse %s: %w", vodStateFile, err)
 	}
-	vods, changed, err := normalizeVODConfig(vods)
+	vods, vodsChanged, err := normalizeVODConfig(state.VODs)
 	if err != nil {
 		return err
 	}
+	blacklist, blacklistChanged, err := normalizeVODBlacklist(state.Blacklist)
+	if err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	m.vods = vods
-	m.mu.Unlock()
-	if changed {
-		if err := m.saveVODs(vods); err != nil {
-			return err
-		}
+	m.vodBlacklist = blacklist
+	if migrated || vodsChanged || blacklistChanged {
+		err = m.saveVODStateLocked()
 	}
-	slog.Info("loaded vods", "count", len(vods))
+	m.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	slog.Info("loaded vod state", "vods", len(vods), "blacklist", len(blacklist), "migrated", migrated)
 	return nil
 }
 
-func (m *Manager) loadVODBlacklist() error {
-	b, err := loadOrCreate(m.configPath, vodBlacklistFile, []byte("[]"))
-	if err != nil {
-		return err
-	}
-	var ids []string
-	if err := json.Unmarshal(b, &ids); err != nil {
-		slog.Error("failed to parse vod blacklist", "error", err)
-		return err
-	}
-	blacklist, changed, err := normalizeVODBlacklist(ids)
-	if err != nil {
-		return err
-	}
-	m.mu.Lock()
-	m.vodBlacklist = blacklist
-	m.mu.Unlock()
-	if changed {
-		m.mu.Lock()
-		err = m.saveVODBlacklistLocked()
-		m.mu.Unlock()
-		if err != nil {
-			return err
+func (m *Manager) readLegacyVODState() ([]byte, error) {
+	readLegacy := func(file string) ([]byte, error) {
+		b, err := os.ReadFile(filepath.Join(m.configPath, file))
+		if errors.Is(err, os.ErrNotExist) {
+			return []byte("[]"), nil
 		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to read legacy %s: %w", file, err)
+		}
+		return b, nil
 	}
-	slog.Info("loaded vod blacklist", "count", len(blacklist))
-	return nil
+
+	vodData, err := readLegacy(vodsFile)
+	if err != nil {
+		return nil, err
+	}
+	blacklistData, err := readLegacy(vodBlacklistFile)
+	if err != nil {
+		return nil, err
+	}
+	var state persistedVODState
+	if err := json.Unmarshal(vodData, &state.VODs); err != nil {
+		return nil, fmt.Errorf("failed to parse legacy %s: %w", vodsFile, err)
+	}
+	if err := json.Unmarshal(blacklistData, &state.Blacklist); err != nil {
+		return nil, fmt.Errorf("failed to parse legacy %s: %w", vodBlacklistFile, err)
+	}
+	return json.Marshal(state)
 }
 
 func normalizeChannelConfig(channels []channel.Info) ([]channel.Info, bool, error) {
@@ -187,20 +208,12 @@ func (m *Manager) saveChannels(channels []channel.Info) error {
 	return saveJSON(m.configPath, channelsFile, "channels", channels)
 }
 
-func (m *Manager) saveVODs(vods []api.VOD) error {
-	return saveJSON(m.configPath, vodsFile, "vods", vods)
-}
-
-func (m *Manager) saveVODBlacklistLocked() error {
-	ids := setToSortedStrings(m.vodBlacklist)
-	return saveJSON(m.configPath, vodBlacklistFile, "vod blacklist", ids)
-}
-
 func (m *Manager) saveVODStateLocked() error {
-	if err := m.saveVODs(m.vods); err != nil {
-		return err
+	state := persistedVODState{
+		VODs:      append([]api.VOD{}, m.vods...),
+		Blacklist: setToSortedStrings(m.vodBlacklist),
 	}
-	return m.saveVODBlacklistLocked()
+	return saveJSONValue(m.configPath, vodStateFile, "vod state", state)
 }
 
 func (m *Manager) snapshotVODStateLocked() vodState {
@@ -216,6 +229,10 @@ func (m *Manager) restoreVODStateLocked(state vodState) {
 }
 
 func saveJSON[T any](base, file, label string, value []T) error {
+	return saveJSONValue(base, file, label, value)
+}
+
+func saveJSONValue(base, file, label string, value any) error {
 	b, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		slog.Error("failed to serialize "+label, "error", err)
@@ -224,7 +241,7 @@ func saveJSON[T any](base, file, label string, value []T) error {
 	if err := writeToFile(base, file, b); err != nil {
 		return err
 	}
-	slog.Info("saved "+label, "count", len(value))
+	slog.Info("saved " + label)
 	return nil
 }
 
@@ -257,7 +274,7 @@ func loadOrCreate(base, file string, defaultData []byte) ([]byte, error) {
 				slog.Error("failed to create directory", "path", base, "file", file, "error", err)
 				return nil, err
 			}
-			if err := os.WriteFile(joined, defaultData, 0644); err != nil {
+			if err := writeToFile(base, file, defaultData); err != nil {
 				slog.Error("failed to create file", "path", joined, "error", err)
 				return nil, err
 			} else {
@@ -273,8 +290,34 @@ func loadOrCreate(base, file string, defaultData []byte) ([]byte, error) {
 
 func writeToFile(base, file string, data []byte) error {
 	joined := filepath.Join(base, file)
-	if err := os.WriteFile(joined, data, 0644); err != nil {
-		slog.Error("failed to write file", "path", joined, "error", err)
+	dir := filepath.Dir(joined)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(file)+"-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary config file: %w", err)
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+
+	if err := temp.Chmod(0644); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("failed to set temporary config permissions: %w", err)
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("failed to write temporary config file: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("failed to sync temporary config file: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary config file: %w", err)
+	}
+	if err := os.Rename(tempPath, joined); err != nil {
+		slog.Error("failed to replace file", "path", joined, "error", err)
 		return err
 	}
 	return nil

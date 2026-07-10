@@ -250,6 +250,55 @@ func TestDownloadVODRequiresConfiguredFolder(t *testing.T) {
 	}
 }
 
+func TestRemoveVODCascadesDownloadedArtifacts(t *testing.T) {
+	resetAPIStateForTest(t)
+	dir := t.TempDir()
+	stream.SetVODDownloadDir(dir)
+	SetVODs([]VOD{{
+		ID:  "123456789",
+		URL: "https://www.twitch.tv/videos/123456789",
+	}})
+	path := filepath.Join(dir, "123456789.mkv")
+	if err := os.WriteFile(path, []byte("downloaded"), 0644); err != nil {
+		t.Fatalf("failed to create downloaded vod file: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/vods/123456789", nil)
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if _, ok := FindVOD("123456789"); ok {
+		t.Fatal("expected vod metadata to be removed")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected downloaded file to be removed, got %v", err)
+	}
+}
+
+func TestDeleteVODDownloadDoesNotRequireMetadata(t *testing.T) {
+	resetAPIStateForTest(t)
+	dir := t.TempDir()
+	stream.SetVODDownloadDir(dir)
+	path := filepath.Join(dir, "123456789.mkv")
+	if err := os.WriteFile(path, []byte("orphaned"), 0644); err != nil {
+		t.Fatalf("failed to create orphaned vod file: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/vods/123456789/download", nil)
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected orphaned file to be removed, got %v", err)
+	}
+}
+
 func TestGetVODPlaylistReturnsForbiddenForRestrictedManifest(t *testing.T) {
 	resetAPIStateForTest(t)
 	SetVODs([]VOD{{

@@ -2,6 +2,7 @@ package manager
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,20 +168,54 @@ func TestStartRewritesNormalizedVODConfig(t *testing.T) {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
 
-	rewritten, err := os.ReadFile(filepath.Join(tmp, vodsFile))
-	if err != nil {
-		t.Fatalf("failed to read rewritten vods file: %v", err)
-	}
-
-	var got []api.VOD
-	if err := json.Unmarshal(rewritten, &got); err != nil {
-		t.Fatalf("failed to parse rewritten vods file: %v", err)
-	}
+	state := readPersistedVODState(t, tmp)
+	got := state.VODs
 	if len(got) != 1 {
 		t.Fatalf("expected one vod, got %d", len(got))
 	}
 	if got[0].ID != "123456789" {
 		t.Fatalf("expected derived vod id, got %q", got[0].ID)
+	}
+}
+
+func TestStartPersistsVODsAndBlacklistInSingleStateFile(t *testing.T) {
+	tmp := t.TempDir()
+	if _, err := Start(tmp); err != nil {
+		t.Fatalf("expected Start to succeed, got %v", err)
+	}
+
+	state := readPersistedVODState(t, tmp)
+	if state.VODs == nil || state.Blacklist == nil {
+		t.Fatalf("expected initialized vod state arrays, got %#v", state)
+	}
+	for _, legacy := range []string{vodsFile, vodBlacklistFile} {
+		if _, err := os.Stat(filepath.Join(tmp, legacy)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected legacy file %s to remain absent, got %v", legacy, err)
+		}
+	}
+}
+
+func TestAddVODRollsBackWhenAtomicStateWriteFails(t *testing.T) {
+	tmp := t.TempDir()
+	m, err := Start(tmp)
+	if err != nil {
+		t.Fatalf("expected Start to succeed, got %v", err)
+	}
+	invalidBase := filepath.Join(tmp, "not-a-directory")
+	if err := os.WriteFile(invalidBase, []byte("x"), 0644); err != nil {
+		t.Fatalf("failed to create invalid config base: %v", err)
+	}
+	m.configPath = invalidBase
+
+	err = m.AddVOD(api.VOD{ID: "123", URL: "https://www.twitch.tv/videos/123", Title: "Test"})
+	if err == nil {
+		t.Fatal("expected atomic state write to fail")
+	}
+	if got := m.ListVODs(); len(got) != 0 {
+		t.Fatalf("expected in-memory vod state rollback, got %#v", got)
+	}
+	if state := readPersistedVODState(t, tmp); len(state.VODs) != 0 || len(state.Blacklist) != 0 {
+		t.Fatalf("expected persisted state to remain unchanged, got %#v", state)
 	}
 }
 
@@ -273,14 +308,7 @@ func TestRemoveVODBlacklistsAndSkipsFutureImports(t *testing.T) {
 		t.Fatalf("expected remove to succeed, got %v", err)
 	}
 
-	blacklistData, err := os.ReadFile(filepath.Join(tmp, vodBlacklistFile))
-	if err != nil {
-		t.Fatalf("failed to read vod blacklist: %v", err)
-	}
-	var blacklist []string
-	if err := json.Unmarshal(blacklistData, &blacklist); err != nil {
-		t.Fatalf("failed to parse vod blacklist: %v", err)
-	}
+	blacklist := readPersistedVODState(t, tmp).Blacklist
 	if len(blacklist) != 1 || blacklist[0] != "123" {
 		t.Fatalf("expected blacklist to contain removed VOD, got %#v", blacklist)
 	}
@@ -354,14 +382,7 @@ func TestAddVODRemovesIDFromBlacklist(t *testing.T) {
 		t.Fatalf("expected manual add to succeed, got %v", err)
 	}
 
-	blacklistData, err := os.ReadFile(filepath.Join(tmp, vodBlacklistFile))
-	if err != nil {
-		t.Fatalf("failed to read vod blacklist: %v", err)
-	}
-	var blacklist []string
-	if err := json.Unmarshal(blacklistData, &blacklist); err != nil {
-		t.Fatalf("failed to parse vod blacklist: %v", err)
-	}
+	blacklist := readPersistedVODState(t, tmp).Blacklist
 	if len(blacklist) != 0 {
 		t.Fatalf("expected manual add to unblacklist VOD, got %#v", blacklist)
 	}
@@ -404,4 +425,17 @@ func TestVODFromTwitchVideoFallsBackToCreatedAt(t *testing.T) {
 	if vod.Date != "2026-06-01T10:00:00Z" {
 		t.Fatalf("expected created date fallback, got %q", vod.Date)
 	}
+}
+
+func readPersistedVODState(t *testing.T, dir string) persistedVODState {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, vodStateFile))
+	if err != nil {
+		t.Fatalf("failed to read persisted vod state: %v", err)
+	}
+	var state persistedVODState
+	if err := json.Unmarshal(b, &state); err != nil {
+		t.Fatalf("failed to parse persisted vod state: %v", err)
+	}
+	return state
 }

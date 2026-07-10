@@ -57,6 +57,7 @@ var vodDownloadStartErrors = []handlerError{
 	{err: stream.ErrVODDownloadsDisabled, status: http.StatusServiceUnavailable, message: "vod downloads folder is not configured; start jellych with --vods <folder>"},
 	{err: stream.ErrVODDownloadAlreadyStarted, status: http.StatusConflict, message: "vod download already started"},
 	{err: stream.ErrVODDownloadAlreadyExists, status: http.StatusConflict, message: "vod already downloaded"},
+	{err: stream.ErrVODRemovalInProgress, status: http.StatusConflict, message: "vod removal in progress"},
 	{err: stream.ErrVODManifestRestricted, status: http.StatusForbidden, message: "vod is subscriber-only or otherwise restricted by Twitch"},
 	{err: context.DeadlineExceeded, status: http.StatusGatewayTimeout, message: "timed out resolving vod stream URL"},
 }
@@ -77,6 +78,7 @@ var addVODErrors = []handlerError{
 
 var removeVODErrors = []handlerError{
 	{err: ErrVODNotFound, status: http.StatusNotFound, message: "vod not found"},
+	{err: stream.ErrVODRemovalInProgress, status: http.StatusConflict, message: "vod removal already in progress"},
 }
 
 var startStreamErrors = []handlerError{
@@ -179,7 +181,13 @@ func (a *API) handleAddVOD(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleRemoveVOD(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
-	if err := a.state.RemoveVOD(id); err != nil {
+	if _, ok := a.state.FindVOD(id); !ok {
+		http.Error(w, "vod not found", http.StatusNotFound)
+		return
+	}
+	if err := stream.RemoveVODWithArtifacts(id, func() error {
+		return a.state.RemoveVOD(id)
+	}); err != nil {
 		writeMappedError(w, err, removeVODErrors, http.StatusInternalServerError, "failed to remove vod: %v")
 		return
 	}
@@ -220,11 +228,6 @@ func (a *API) handleGetVODDownload(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleDeleteVODDownload(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
-	if _, ok := a.state.FindVOD(id); !ok {
-		http.Error(w, "vod not found", http.StatusNotFound)
-		return
-	}
-
 	if err := stream.DeleteVODDownload(id); err != nil {
 		writeMappedError(w, err, vodDownloadDeleteErrors, http.StatusInternalServerError, "failed to delete vod download: %v")
 		return

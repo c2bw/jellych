@@ -22,11 +22,13 @@ var ErrVODDownloadAlreadyStarted = errors.New("vod download already started")
 var ErrVODDownloadAlreadyExists = errors.New("vod download already exists")
 var ErrVODDownloadNotFound = errors.New("vod download not found")
 var ErrVODDownloadsStopping = errors.New("vod downloads stopping")
+var ErrVODRemovalInProgress = errors.New("vod removal in progress")
 
 const vodURLResolutionTimeout = 20 * time.Second
 const vodDownloadCleanupInterval = time.Hour
 const defaultVODDownloadRetention = 30 * 24 * time.Hour
 const vodDownloadStopTimeout = 5 * time.Second
+const vodPartialDirName = ".jellych-partials"
 
 var vodDownloadIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
@@ -35,7 +37,11 @@ type vodDownload struct {
 	lastTotalSize       int64
 	lastTotalSizeUpdate time.Time
 	cmd                 *exec.Cmd
-	done                chan error
+	done                chan struct{}
+	cancel              context.CancelFunc
+	stopping            bool
+	finishOnce          sync.Once
+	tempPath            string
 	outputPath          string
 	startedAt           time.Time
 }
@@ -57,6 +63,7 @@ type VODDownloader struct {
 	dir       string
 	retention time.Duration
 	active    map[string]*vodDownload
+	removing  map[string]struct{}
 	stopping  bool
 }
 
@@ -147,7 +154,7 @@ func (d *VODDownloader) Status(id string) (bool, time.Time, error) {
 
 	info, err := os.Stat(outputPath)
 	if err == nil {
-		if !info.Mode().IsRegular() {
+		if !info.Mode().IsRegular() || info.Size() == 0 {
 			return false, time.Time{}, nil
 		}
 		return true, info.ModTime().Add(retention), nil
@@ -221,65 +228,83 @@ func (d *VODDownloader) Start(ctx context.Context, id, vodURL, title, channel st
 	if d.active == nil {
 		d.active = make(map[string]*vodDownload)
 	}
+	if _, ok := d.removing[id]; ok {
+		d.Unlock()
+		return ErrVODRemovalInProgress
+	}
 	if _, ok := d.active[id]; ok {
 		d.Unlock()
 		return ErrVODDownloadAlreadyStarted
 	}
 	outputPath := vodDownloadPath(dir, id)
-	if _, err := os.Stat(outputPath); err == nil {
-		d.Unlock()
-		return ErrVODDownloadAlreadyExists
+	if info, err := os.Stat(outputPath); err == nil {
+		if info.Mode().IsRegular() && info.Size() == 0 {
+			if err := os.Remove(outputPath); err != nil {
+				d.Unlock()
+				return fmt.Errorf("failed to remove empty vod output file: %w", err)
+			}
+		} else {
+			d.Unlock()
+			return ErrVODDownloadAlreadyExists
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		d.Unlock()
 		return fmt.Errorf("failed to check vod output file: %w", err)
 	}
+	downloadCtx, cancel := context.WithCancel(ctx)
 	download := newVODDownload()
+	download.cancel = cancel
 	d.active[id] = download
 	d.Unlock()
 
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		d.clear(id, download)
+	if err := os.MkdirAll(vodPartialDir(dir), 0755); err != nil {
+		d.finishDownload(id, download, "", outputPath, time.Now(), fmt.Errorf("failed to create vods folder: %w", err))
 		return fmt.Errorf("failed to create vods folder: %w", err)
 	}
 
-	inputURL, err := resolveVODDownloadURL(ctx, vodURL)
+	inputURL, err := resolveVODDownloadURL(downloadCtx, vodURL)
 	if err != nil {
-		d.clear(id, download)
+		d.finishDownload(id, download, "", outputPath, time.Now(), err)
 		return err
 	}
 	if !d.prepareStart(id, download) {
-		d.clear(id, download)
-		return ErrVODDownloadsStopping
+		err := ErrVODDownloadsStopping
+		d.finishDownload(id, download, "", outputPath, time.Now(), err)
+		return err
 	}
 
-	cmd := exec.Command("ffmpeg", buildVODDownloadArgs(inputURL, outputPath, title, channel)...)
+	tempPath, err := d.createPartialFile(id, download, dir)
+	if err != nil {
+		d.finishDownload(id, download, "", outputPath, time.Now(), err)
+		return err
+	}
+
+	cmd := exec.Command("ffmpeg", buildVODDownloadArgs(inputURL, tempPath, title, channel)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		d.clear(id, download)
+		d.finishDownload(id, download, tempPath, outputPath, time.Now(), err)
 		return fmt.Errorf("failed to get ffmpeg progress pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		d.clear(id, download)
+		d.finishDownload(id, download, tempPath, outputPath, time.Now(), err)
 		return fmt.Errorf("failed to get ffmpeg stderr pipe: %w", err)
 	}
 
 	startedAt := time.Now()
 	d.Lock()
-	if d.stopping || d.active == nil || d.active[id] != download {
+	if d.stopping || download.stopping || d.active == nil || d.active[id] != download {
 		d.Unlock()
-		d.clear(id, download)
-		return ErrVODDownloadsStopping
+		d.finishDownload(id, download, tempPath, outputPath, startedAt, context.Canceled)
+		return context.Canceled
 	}
 	download.cmd = cmd
+	download.tempPath = tempPath
 	download.outputPath = outputPath
 	download.startedAt = startedAt
 	if err := cmd.Start(); err != nil {
-		_ = os.Remove(outputPath)
-		if d.active != nil && d.active[id] == download {
-			delete(d.active, id)
-		}
 		d.Unlock()
+		d.finishDownload(id, download, tempPath, outputPath, startedAt, err)
 		return fmt.Errorf("failed to start ffmpeg: %w", err)
 	}
 	d.Unlock()
@@ -288,7 +313,7 @@ func (d *VODDownloader) Start(ctx context.Context, id, vodURL, title, channel st
 	go d.readProgress(id, download, stdout)
 	go logCommandOutput("ffmpeg-vod", id, stderr)
 	go func() {
-		d.finishDownload(id, download, outputPath, startedAt, cmd.Wait())
+		d.finishDownload(id, download, tempPath, outputPath, startedAt, cmd.Wait())
 	}()
 
 	slog.Info("vod download started", "id", id, "output", outputPath, "ffmpeg_pid", cmd.Process.Pid)
@@ -306,17 +331,21 @@ func (d *VODDownloader) Stop() error {
 	d.stopping = true
 	active := make(map[string]*vodDownload, len(d.active))
 	for id, download := range d.active {
+		download.stopping = true
+		if download.cancel != nil {
+			download.cancel()
+		}
 		active[id] = download
 	}
 	d.Unlock()
 
-	var lastErr error
+	var stopErrs []error
 	for id, download := range active {
-		if err := stopVODDownload(id, download); err != nil {
-			lastErr = err
+		if err := d.stopDownload(id, download); err != nil {
+			stopErrs = append(stopErrs, err)
 		}
 	}
-	return lastErr
+	return errors.Join(stopErrs...)
 }
 
 // DeleteVODDownload removes a previously downloaded VOD file from disk.
@@ -354,6 +383,58 @@ func (d *VODDownloader) Delete(id string) error {
 	return nil
 }
 
+// RemoveVODWithArtifacts serializes removal for id, stops any active
+// download, deletes partial and completed artifacts, then removes metadata.
+func RemoveVODWithArtifacts(id string, removeMetadata func() error) error {
+	return vodDownloadState.RemoveWithArtifacts(id, removeMetadata)
+}
+
+func (d *VODDownloader) RemoveWithArtifacts(id string, removeMetadata func() error) error {
+	id = strings.TrimSpace(id)
+	if !vodDownloadIDRE.MatchString(id) {
+		return fmt.Errorf("invalid vod id")
+	}
+	if removeMetadata == nil {
+		return fmt.Errorf("remove metadata callback is required")
+	}
+
+	d.Lock()
+	if d.removing == nil {
+		d.removing = make(map[string]struct{})
+	}
+	if _, exists := d.removing[id]; exists {
+		d.Unlock()
+		return ErrVODRemovalInProgress
+	}
+	d.removing[id] = struct{}{}
+	download := d.active[id]
+	if download != nil {
+		download.stopping = true
+		if download.cancel != nil {
+			download.cancel()
+		}
+	}
+	dir := d.dir
+	d.Unlock()
+	defer func() {
+		d.Lock()
+		delete(d.removing, id)
+		d.Unlock()
+	}()
+
+	if download != nil {
+		if err := d.stopDownload(id, download); err != nil {
+			return err
+		}
+	}
+	if dir != "" {
+		if err := d.removeArtifacts(dir, id); err != nil {
+			return err
+		}
+	}
+	return removeMetadata()
+}
+
 func clearVODDownload(id string, download *vodDownload) {
 	vodDownloadState.clear(id, download)
 }
@@ -369,7 +450,7 @@ func (d *VODDownloader) clear(id string, download *vodDownload) {
 func (d *VODDownloader) prepareStart(id string, download *vodDownload) bool {
 	d.Lock()
 	defer d.Unlock()
-	return !d.stopping && d.active != nil && d.active[id] == download
+	return !d.stopping && !download.stopping && d.active != nil && d.active[id] == download
 }
 
 func newVODDownload() *vodDownload {
@@ -380,44 +461,154 @@ func newVODDownload() *vodDownload {
 		StartedAt: now,
 		UpdatedAt: now,
 	}
-	return &vodDownload{progress: progress, done: make(chan error, 1)}
+	return &vodDownload{progress: progress, done: make(chan struct{})}
 }
 
-func (d *VODDownloader) finishDownload(id string, download *vodDownload, outputPath string, startedAt time.Time, err error) {
+func (d *VODDownloader) createPartialFile(id string, download *vodDownload, dir string) (string, error) {
+	d.Lock()
+	defer d.Unlock()
+	if d.stopping || download.stopping || d.active == nil || d.active[id] != download {
+		return "", ErrVODDownloadsStopping
+	}
+	file, err := os.CreateTemp(vodPartialDir(dir), id+"-*.part")
 	if err != nil {
-		d.clear(id, download)
-		_ = os.Remove(outputPath)
-		slog.Error("vod download exited", "id", id, "output", outputPath, "elapsed", time.Since(startedAt), "error", err)
-		download.done <- err
-		close(download.done)
-		return
+		return "", fmt.Errorf("failed to create partial vod file: %w", err)
 	}
-	completedAt := time.Now()
-	if err := os.Chtimes(outputPath, completedAt, completedAt); err != nil {
-		slog.Error("failed to record vod download completion time", "id", id, "output", outputPath, "error", err)
+	path := file.Name()
+	if err := file.Chmod(0644); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("failed to set partial vod permissions: %w", err)
 	}
-	d.clear(id, download)
-	slog.Info("vod download finished", "id", id, "output", outputPath, "elapsed", time.Since(startedAt))
-	download.done <- err
-	close(download.done)
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("failed to close partial vod file: %w", err)
+	}
+	download.tempPath = path
+	return path, nil
 }
 
-func stopVODDownload(id string, download *vodDownload) error {
-	if download == nil || download.cmd == nil || download.cmd.Process == nil || download.done == nil {
+func (d *VODDownloader) finishDownload(id string, download *vodDownload, tempPath, outputPath string, startedAt time.Time, runErr error) {
+	download.finishOnce.Do(func() {
+		d.Lock()
+		stopping := download.stopping
+		d.Unlock()
+
+		err := runErr
+		if err == nil && stopping {
+			err = context.Canceled
+		}
+		if err == nil {
+			err = finalizeVODDownload(tempPath, outputPath)
+		}
+		if err != nil {
+			if tempPath != "" {
+				_ = os.Remove(tempPath)
+			}
+			if stopping && errors.Is(err, context.Canceled) {
+				slog.Info("vod download canceled", "id", id, "output", outputPath, "elapsed", time.Since(startedAt))
+			} else {
+				slog.Error("vod download exited", "id", id, "output", outputPath, "elapsed", time.Since(startedAt), "error", err)
+			}
+		} else {
+			completedAt := time.Now()
+			if err := os.Chtimes(outputPath, completedAt, completedAt); err != nil {
+				slog.Error("failed to record vod download completion time", "id", id, "output", outputPath, "error", err)
+			}
+			slog.Info("vod download finished", "id", id, "output", outputPath, "elapsed", time.Since(startedAt))
+		}
+
+		d.clear(id, download)
+		if download.cancel != nil {
+			download.cancel()
+		}
+		close(download.done)
+	})
+}
+
+func finalizeVODDownload(tempPath, outputPath string) error {
+	if tempPath == "" {
+		return fmt.Errorf("partial vod path is missing")
+	}
+	info, err := os.Stat(tempPath)
+	if err != nil {
+		return fmt.Errorf("failed to inspect partial vod file: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return fmt.Errorf("partial vod file is empty or not regular")
+	}
+	file, err := os.OpenFile(tempPath, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("failed to open partial vod file: %w", err)
+	}
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	if syncErr != nil {
+		return fmt.Errorf("failed to sync partial vod file: %w", syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("failed to close partial vod file: %w", closeErr)
+	}
+	if _, err := os.Stat(outputPath); err == nil {
+		return ErrVODDownloadAlreadyExists
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to check final vod file: %w", err)
+	}
+	if err := os.Rename(tempPath, outputPath); err != nil {
+		return fmt.Errorf("failed to finalize vod download: %w", err)
+	}
+	return nil
+}
+
+func (d *VODDownloader) stopDownload(id string, download *vodDownload) error {
+	if download == nil || download.done == nil {
 		return nil
 	}
 
-	_ = download.cmd.Process.Signal(os.Interrupt)
-	if waitForDone(download.done, time.Now().Add(vodDownloadStopTimeout)) {
-		slog.Info("vod download stopped", "id", id, "output", download.outputPath, "elapsed", time.Since(download.startedAt))
-		return nil
+	d.Lock()
+	download.stopping = true
+	if download.cancel != nil {
+		download.cancel()
+	}
+	cmd := download.cmd
+	done := download.done
+	outputPath := download.outputPath
+	startedAt := download.startedAt
+	d.Unlock()
+
+	if cmd == nil || cmd.Process == nil {
+		if waitForVODDownloadDone(done, vodDownloadStopTimeout) {
+			return nil
+		}
+		return fmt.Errorf("%w: timed out stopping vod download startup %s", ErrStopTimeout, id)
 	}
 
-	_ = download.cmd.Process.Kill()
-	if waitForDone(download.done, time.Now().Add(vodDownloadStopTimeout)) {
-		return fmt.Errorf("%w: timed out stopping vod download %s; killed", ErrStopTimeout, id)
+	signalErr := cmd.Process.Signal(os.Interrupt)
+	if signalErr == nil || errors.Is(signalErr, os.ErrProcessDone) {
+		if waitForVODDownloadDone(done, vodDownloadStopTimeout) {
+			slog.Info("vod download stopped", "id", id, "output", outputPath, "elapsed", time.Since(startedAt))
+			return nil
+		}
 	}
-	return fmt.Errorf("%w: timed out stopping vod download %s; kill did not complete", ErrStopTimeout, id)
+	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("failed to kill vod download %s: %w", id, err)
+	}
+	if !waitForVODDownloadDone(done, vodDownloadStopTimeout) {
+		return fmt.Errorf("%w: killed vod download %s did not exit", ErrStopTimeout, id)
+	}
+	slog.Warn("vod download required forced kill", "id", id, "output", outputPath)
+	return nil
+}
+
+func waitForVODDownloadDone(done <-chan struct{}, timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func (d *VODDownloader) setProgressState(id string, download *vodDownload, state string) {
@@ -488,6 +679,49 @@ func vodDownloadPath(dir, id string) string {
 	return filepath.Join(dir, id+".mkv")
 }
 
+func vodPartialDir(dir string) string {
+	return filepath.Join(dir, vodPartialDirName)
+}
+
+func (d *VODDownloader) removeArtifacts(dir, id string) error {
+	var removeErrs []error
+	outputPath := vodDownloadPath(dir, id)
+	if err := os.Remove(outputPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		removeErrs = append(removeErrs, fmt.Errorf("failed to delete completed vod: %w", err))
+	}
+
+	partialDir := vodPartialDir(dir)
+	entries, err := os.ReadDir(partialDir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			removeErrs = append(removeErrs, fmt.Errorf("failed to read partial vod folder: %w", err))
+		}
+		return errors.Join(removeErrs...)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || vodPartialID(entry.Name()) != id {
+			continue
+		}
+		path := filepath.Join(partialDir, entry.Name())
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			removeErrs = append(removeErrs, fmt.Errorf("failed to delete partial vod %q: %w", entry.Name(), err))
+		}
+	}
+	return errors.Join(removeErrs...)
+}
+
+func vodPartialID(name string) string {
+	if filepath.Ext(name) != ".part" {
+		return ""
+	}
+	base := strings.TrimSuffix(name, ".part")
+	separator := strings.LastIndexByte(base, '-')
+	if separator <= 0 || separator == len(base)-1 {
+		return ""
+	}
+	return base[:separator]
+}
+
 func (d *VODDownloader) completedFile(id string) (bool, int64, error) {
 	id = strings.TrimSpace(id)
 	if !vodDownloadIDRE.MatchString(id) {
@@ -511,7 +745,7 @@ func (d *VODDownloader) completedFile(id string) (bool, int64, error) {
 
 	info, err := os.Stat(outputPath)
 	if err == nil {
-		if !info.Mode().IsRegular() {
+		if !info.Mode().IsRegular() || info.Size() == 0 {
 			return false, 0, nil
 		}
 		return true, info.Size(), nil
@@ -557,14 +791,19 @@ func (d *VODDownloader) cleanupExpired(now time.Time) (int, error) {
 		return 0, fmt.Errorf("vod downloads path is not a directory: %s", dir)
 	}
 
+	partialDeleted, partialErr := d.cleanupInterruptedPartials(dir)
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return 0, fmt.Errorf("failed to read vod downloads folder: %w", err)
+		return partialDeleted, errors.Join(partialErr, fmt.Errorf("failed to read vod downloads folder: %w", err))
 	}
 
 	cutoff := now.Add(-retention)
-	deleted := 0
+	deleted := partialDeleted
 	var cleanupErrs []error
+	if partialErr != nil {
+		cleanupErrs = append(cleanupErrs, partialErr)
+	}
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -586,7 +825,7 @@ func (d *VODDownloader) cleanupExpired(now time.Time) (int, error) {
 		if !info.Mode().IsRegular() {
 			continue
 		}
-		if !info.ModTime().Before(cutoff) {
+		if info.Size() > 0 && !info.ModTime().Before(cutoff) {
 			continue
 		}
 
@@ -603,6 +842,56 @@ func (d *VODDownloader) cleanupExpired(now time.Time) (int, error) {
 		slog.Info("expired vod download deleted", "id", id, "output", path, "age", now.Sub(info.ModTime()))
 	}
 	return deleted, errors.Join(cleanupErrs...)
+}
+
+func (d *VODDownloader) cleanupInterruptedPartials(dir string) (int, error) {
+	partialDir := vodPartialDir(dir)
+	entries, err := os.ReadDir(partialDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to read interrupted vod downloads: %w", err)
+	}
+
+	deleted := 0
+	var cleanupErrs []error
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".part" {
+			continue
+		}
+		path := filepath.Join(partialDir, entry.Name())
+		removed, err := d.removeInterruptedPartial(dir, path)
+		if err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("failed to delete interrupted download %q: %w", entry.Name(), err))
+			continue
+		}
+		if removed {
+			deleted++
+			slog.Info("interrupted vod download deleted", "output", path)
+		}
+	}
+	return deleted, errors.Join(cleanupErrs...)
+}
+
+func (d *VODDownloader) removeInterruptedPartial(dir, path string) (bool, error) {
+	d.Lock()
+	defer d.Unlock()
+	if d.dir != dir {
+		return false, nil
+	}
+	for _, download := range d.active {
+		if download != nil && download.tempPath == path {
+			return false, nil
+		}
+	}
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func removeExpiredVODDownload(dir, id, path string) (bool, error) {
@@ -657,6 +946,7 @@ func buildVODDownloadArgs(inputURL, outputPath, title, channel string) []string 
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "warning",
+		"-y",
 		"-nostdin",
 		"-nostats",
 		"-progress", "pipe:1",

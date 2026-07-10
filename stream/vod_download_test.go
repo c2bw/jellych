@@ -40,6 +40,16 @@ func TestVODDownloadExists(t *testing.T) {
 	}
 
 	path := filepath.Join(dir, "123456789.mkv")
+	if err := os.WriteFile(path, nil, 0644); err != nil {
+		t.Fatalf("failed to create empty interrupted file: %v", err)
+	}
+	exists, err = VODDownloadExists("123456789")
+	if err != nil {
+		t.Fatalf("expected empty download check to succeed, got %v", err)
+	}
+	if exists {
+		t.Fatal("did not expect empty file to count as downloaded")
+	}
 	if err := os.WriteFile(path, []byte("downloaded"), 0644); err != nil {
 		t.Fatalf("failed to create downloaded vod file: %v", err)
 	}
@@ -101,7 +111,13 @@ func TestVODDownloaderStopPreventsNewStarts(t *testing.T) {
 func TestVODDownloaderStopPreventsResolvingDownloadFromStartingProcess(t *testing.T) {
 	downloader := &VODDownloader{retention: defaultVODDownloadRetention}
 	download := newVODDownload()
+	ctx, cancel := context.WithCancel(context.Background())
+	download.cancel = cancel
 	downloader.active = map[string]*vodDownload{"123456789": download}
+	go func() {
+		<-ctx.Done()
+		downloader.finishDownload("123456789", download, "", "", time.Now(), ctx.Err())
+	}()
 
 	if err := downloader.Stop(); err != nil {
 		t.Fatalf("expected stop to succeed, got %v", err)
@@ -115,20 +131,142 @@ func TestFinishVODDownloadSignalsDoneAfterRemovingPartialFile(t *testing.T) {
 	downloader := &VODDownloader{retention: defaultVODDownloadRetention}
 	download := newVODDownload()
 	downloader.active = map[string]*vodDownload{"123456789": download}
-	outputPath := filepath.Join(t.TempDir(), "123456789.mkv")
-	if err := os.WriteFile(outputPath, []byte("partial"), 0644); err != nil {
+	dir := t.TempDir()
+	tempPath := filepath.Join(dir, "123456789.part")
+	outputPath := filepath.Join(dir, "123456789.mkv")
+	if err := os.WriteFile(tempPath, []byte("partial"), 0644); err != nil {
 		t.Fatalf("failed to create partial output file: %v", err)
 	}
 
-	downloader.finishDownload("123456789", download, outputPath, time.Now(), errors.New("interrupted"))
+	downloader.finishDownload("123456789", download, tempPath, outputPath, time.Now(), errors.New("interrupted"))
 	<-download.done
 
+	assertVODDownloadTestFileExists(t, tempPath, false)
 	assertVODDownloadTestFileExists(t, outputPath, false)
 	downloader.Lock()
 	_, active := downloader.active["123456789"]
 	downloader.Unlock()
 	if active {
 		t.Fatal("expected interrupted download to be removed from active map")
+	}
+}
+
+func TestFinishVODDownloadAtomicallyFinalizesSuccessfulFile(t *testing.T) {
+	dir := t.TempDir()
+	tempPath := filepath.Join(dir, "123456789.part")
+	outputPath := filepath.Join(dir, "123456789.mkv")
+	if err := os.WriteFile(tempPath, []byte("complete vod"), 0644); err != nil {
+		t.Fatalf("failed to create partial output file: %v", err)
+	}
+
+	downloader := &VODDownloader{retention: defaultVODDownloadRetention}
+	download := newVODDownload()
+	downloader.active = map[string]*vodDownload{"123456789": download}
+	downloader.finishDownload("123456789", download, tempPath, outputPath, time.Now(), nil)
+	<-download.done
+
+	assertVODDownloadTestFileExists(t, tempPath, false)
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("failed to read finalized vod: %v", err)
+	}
+	if got, want := string(data), "complete vod"; got != want {
+		t.Fatalf("expected finalized data %q, got %q", want, got)
+	}
+}
+
+func TestInterruptedPartialIsNotReportedAsDownloadedAndIsCleaned(t *testing.T) {
+	dir := t.TempDir()
+	partialDir := vodPartialDir(dir)
+	if err := os.MkdirAll(partialDir, 0755); err != nil {
+		t.Fatalf("failed to create partial directory: %v", err)
+	}
+	partialPath := filepath.Join(partialDir, "123456789-crashed.part")
+	if err := os.WriteFile(partialPath, []byte("partial"), 0644); err != nil {
+		t.Fatalf("failed to create interrupted partial: %v", err)
+	}
+
+	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
+	downloaded, _, err := downloader.Status("123456789")
+	if err != nil {
+		t.Fatalf("failed to check interrupted download: %v", err)
+	}
+	if downloaded {
+		t.Fatal("interrupted partial was reported as downloaded")
+	}
+	deleted, err := downloader.cleanupExpired(time.Now())
+	if err != nil {
+		t.Fatalf("failed to reconcile interrupted download: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected one interrupted partial to be deleted, got %d", deleted)
+	}
+	assertVODDownloadTestFileExists(t, partialPath, false)
+}
+
+func TestRemoveVODWithArtifactsDeletesFilesBeforeMetadata(t *testing.T) {
+	dir := t.TempDir()
+	partialDir := vodPartialDir(dir)
+	if err := os.MkdirAll(partialDir, 0755); err != nil {
+		t.Fatalf("failed to create partial directory: %v", err)
+	}
+	outputPath := filepath.Join(dir, "123456789.mkv")
+	partialPath := filepath.Join(partialDir, "123456789-crashed.part")
+	for path, data := range map[string]string{outputPath: "complete", partialPath: "partial"} {
+		if err := os.WriteFile(path, []byte(data), 0644); err != nil {
+			t.Fatalf("failed to create test artifact %s: %v", path, err)
+		}
+	}
+
+	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
+	metadataRemoved := false
+	err := downloader.RemoveWithArtifacts("123456789", func() error {
+		assertVODDownloadTestFileExists(t, outputPath, false)
+		assertVODDownloadTestFileExists(t, partialPath, false)
+		metadataRemoved = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected cascade removal to succeed, got %v", err)
+	}
+	if !metadataRemoved {
+		t.Fatal("expected metadata removal callback")
+	}
+}
+
+func TestRemoveVODWithArtifactsCancelsActiveDownloadAndBlocksRestart(t *testing.T) {
+	dir := t.TempDir()
+	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
+	download := newVODDownload()
+	ctx, cancel := context.WithCancel(context.Background())
+	download.cancel = cancel
+	downloader.active = map[string]*vodDownload{"123456789": download}
+	finished := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		downloader.finishDownload("123456789", download, "", filepath.Join(dir, "123456789.mkv"), time.Now(), ctx.Err())
+		close(finished)
+	}()
+
+	metadataStarted := make(chan struct{})
+	releaseMetadata := make(chan struct{})
+	removeErr := make(chan error, 1)
+	go func() {
+		removeErr <- downloader.RemoveWithArtifacts("123456789", func() error {
+			close(metadataStarted)
+			<-releaseMetadata
+			return nil
+		})
+	}()
+
+	<-metadataStarted
+	<-finished
+	if err := downloader.Start(context.Background(), "123456789", "https://www.twitch.tv/videos/123456789", "Test", "channel"); !errors.Is(err, ErrVODRemovalInProgress) {
+		t.Fatalf("expected restart during metadata removal to fail, got %v", err)
+	}
+	close(releaseMetadata)
+	if err := <-removeErr; err != nil {
+		t.Fatalf("expected active cascade removal to succeed, got %v", err)
 	}
 }
 
@@ -256,6 +394,7 @@ func TestBuildVODDownloadArgsIncludesInputAndMetadata(t *testing.T) {
 	for _, want := range []string{
 		inputURL,
 		"copy",
+		"-y",
 		"-progress",
 		"pipe:1",
 		"title=A great stream",
