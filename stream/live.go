@@ -41,6 +41,8 @@ var liveWriteToken = newLiveWriteToken()
 var (
 	livePlaylistWaitTimeout = 15 * time.Second
 	livePlaylistWaitPoll    = 200 * time.Millisecond
+	liveSegmentWaitTimeout  = 2 * time.Second
+	liveSegmentWaitPoll     = 50 * time.Millisecond
 )
 
 // SetLiveBaseURL configures the local HTTP base URL used by ffmpeg.
@@ -278,6 +280,15 @@ func (s *LiveService) handleLive(w http.ResponseWriter, r *http.Request) {
 			}
 			if s.registry.IsChannelActive(channel) {
 				data = s.waitForObject(r.Context(), channel, objectName, livePlaylistWaitTimeout, livePlaylistWaitPoll)
+			}
+		}
+		if data == nil && isLiveSegment(objectName) && s.registry.IsChannelActive(channel) {
+			waitStarted := time.Now()
+			data = s.waitForObject(r.Context(), channel, objectName, liveSegmentWaitTimeout, liveSegmentWaitPoll)
+			if data != nil {
+				slog.Info("served delayed live segment", "channel", channel, "segment", objectName, "wait", time.Since(waitStarted))
+			} else if r.Context().Err() == nil {
+				slog.Warn("live segment still missing after wait", "channel", channel, "segment", objectName, "wait", time.Since(waitStarted))
 			}
 		}
 		if data == nil {

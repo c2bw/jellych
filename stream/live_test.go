@@ -120,6 +120,41 @@ func TestLiveHandlerPreventsCachingMissingSegments(t *testing.T) {
 	}
 }
 
+func TestLiveHandlerWaitsForActiveSegment(t *testing.T) {
+	var storeMu sync.RWMutex
+	var items map[string]map[string][]byte
+	store := NewLiveStore(&storeMu, &items)
+
+	var registryMu sync.Mutex
+	managers := map[string]*manager{
+		"testchannel": {started: true},
+	}
+	service := &LiveService{
+		store:    store,
+		registry: NewStreamRegistry(&registryMu, &managers),
+		start:    func(string) error { return nil },
+	}
+
+	stored := make(chan struct{})
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		store.StoreObject("testchannel", "segment0.ts", []byte("segment data"))
+		close(stored)
+	}()
+
+	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/segment0.ts", nil)
+	rec := httptest.NewRecorder()
+	service.LiveHandler().ServeHTTP(rec, req)
+	<-stored
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d for delayed segment, got %d", http.StatusOK, rec.Code)
+	}
+	if got, want := rec.Body.String(), "segment data"; got != want {
+		t.Fatalf("expected body %q, got %q", want, got)
+	}
+}
+
 func writeLiveObject(t *testing.T, method, path, body string) {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
