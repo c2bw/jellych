@@ -25,6 +25,9 @@ var defaultStreamRegistry = NewStreamRegistry(&mu, &mgrs)
 // ErrStopTimeout indicates a stream process did not exit before the shutdown timeout.
 var ErrStopTimeout = errors.New("stop timeout")
 var ErrAlreadyStarted = errors.New("stream already started")
+var ErrStreamsStopping = errors.New("streams are stopping")
+
+const defaultStreamStopTimeout = 5 * time.Second
 
 var channelNameRE = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
 
@@ -75,7 +78,7 @@ func (r *StreamRegistry) IsChannelActive(channel string) bool {
 		return false
 	}
 	m, ok := managers[channel]
-	return ok && m != nil && m.started
+	return ok && m != nil
 }
 
 // PlaylistSegmentCount returns the current number of media segment entries
@@ -107,24 +110,92 @@ func PlaylistSegmentCount(channel string) (int, error) {
 }
 
 type manager struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	// processes
-	ffmpegCmd *exec.Cmd
-	// bookkeeping
-	started   bool
-	startTime time.Time
-	// wait groups / channels
-	doneFF chan error
+	ctx            context.Context
+	cancel         context.CancelFunc
+	cmd            streamCommand
+	state          streamState
+	generation     string
+	startTime      time.Time
+	done           chan struct{}
+	finishOnce     sync.Once
+	stopInProgress bool
+}
+
+type streamState uint8
+
+const (
+	streamStarting streamState = iota
+	streamRunning
+	streamStopping
+)
+
+type streamCommand interface {
+	StderrPipe() (io.ReadCloser, error)
+	Start() error
+	Wait() error
+	Signal(os.Signal) error
+	Kill() error
+	PID() int
+}
+
+type execStreamCommand struct {
+	cmd *exec.Cmd
+}
+
+func (c *execStreamCommand) StderrPipe() (io.ReadCloser, error) {
+	return c.cmd.StderrPipe()
+}
+
+func (c *execStreamCommand) Start() error {
+	return c.cmd.Start()
+}
+
+func (c *execStreamCommand) Wait() error {
+	return c.cmd.Wait()
+}
+
+func (c *execStreamCommand) Signal(signal os.Signal) error {
+	if c.cmd.Process == nil {
+		return os.ErrProcessDone
+	}
+	return c.cmd.Process.Signal(signal)
+}
+
+func (c *execStreamCommand) Kill() error {
+	if c.cmd.Process == nil {
+		return os.ErrProcessDone
+	}
+	return c.cmd.Process.Kill()
+}
+
+func (c *execStreamCommand) PID() int {
+	if c.cmd.Process == nil {
+		return 0
+	}
+	return c.cmd.Process.Pid
 }
 
 type StreamRegistry struct {
-	mu       *sync.Mutex
-	managers *map[string]*manager
+	mu              *sync.Mutex
+	managers        *map[string]*manager
+	resolve         func(context.Context, string) (string, string, error)
+	newCommand      func(string, string, string) streamCommand
+	resetChannel    func(string)
+	clearChannel    func(string)
+	stopTimeout     time.Duration
+	stopsInProgress int
 }
 
 func NewStreamRegistry(mu *sync.Mutex, managers *map[string]*manager) *StreamRegistry {
-	return &StreamRegistry{mu: mu, managers: managers}
+	return &StreamRegistry{
+		mu:           mu,
+		managers:     managers,
+		resolve:      resolveLiveStreamURL,
+		newCommand:   newFFmpegCommand,
+		resetChannel: resetLiveChannel,
+		clearChannel: clearLiveChannel,
+		stopTimeout:  defaultStreamStopTimeout,
+	}
 }
 
 func (r *StreamRegistry) managerMap() map[string]*manager {
@@ -152,71 +223,79 @@ func (r *StreamRegistry) Start(channel string) error {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &manager{
-		ctx:       ctx,
-		cancel:    cancel,
-		doneFF:    make(chan error, 1),
-		startTime: time.Now(),
+		ctx:        ctx,
+		cancel:     cancel,
+		state:      streamStarting,
+		generation: newLiveWriteToken(),
+		startTime:  time.Now(),
+		done:       make(chan struct{}),
 	}
 
 	r.mu.Lock()
+	if r.stopsInProgress > 0 {
+		r.mu.Unlock()
+		cancel()
+		return ErrStreamsStopping
+	}
 	managers := r.managerMap()
-	if existing, ok := managers[channel]; ok && existing.started {
+	if _, ok := managers[channel]; ok {
 		r.mu.Unlock()
 		cancel()
 		return ErrAlreadyStarted
 	}
-	// reserve this channel to avoid concurrent double-starts
-	m.started = true
 	managers[channel] = m
+	r.resetChannel(channel)
 	r.mu.Unlock()
 
-	resetLiveChannel(channel)
-
-	inputURL, streamName, err := resolveLiveStreamURL(m.ctx, channel)
+	inputURL, streamName, err := r.resolve(m.ctx, channel)
 	if err != nil {
 		return r.abortStart(channel, m, err)
 	}
 	slog.Info("resolved stream url", "channel", channel, "stream", streamName, "elapsed", time.Since(m.startTime))
 
 	playlistURL := strings.TrimRight(configuredLiveBaseURL, "/") + liveWritePrefix + channel + "/index.m3u8"
-	m.ffmpegCmd = exec.CommandContext(m.ctx, "ffmpeg", buildFFmpegHLSArgs(inputURL, playlistURL)...)
-	stderrFF, err := m.ffmpegCmd.StderrPipe()
+	cmd := r.newCommand(inputURL, playlistURL, m.generation)
+	stderrFF, err := cmd.StderrPipe()
 	if err != nil {
 		return r.abortStart(channel, m, fmt.Errorf("failed to get ffmpeg stderr pipe: %w", err))
 	}
 
-	if err := m.ffmpegCmd.Start(); err != nil {
+	r.mu.Lock()
+	managers = *r.managers
+	if managers == nil || managers[channel] != m || m.state == streamStopping {
+		r.mu.Unlock()
+		return r.abortStart(channel, m, context.Canceled)
+	}
+	m.cmd = cmd
+	if err := cmd.Start(); err != nil {
+		m.cmd = nil
+		r.mu.Unlock()
 		return r.abortStart(channel, m, fmt.Errorf("failed to start ffmpeg: %w", err))
 	}
+	m.state = streamRunning
+	pid := cmd.PID()
+	r.mu.Unlock()
 
 	go logCommandOutput("ffmpeg", channel, stderrFF)
 
 	go func() {
-		err := m.ffmpegCmd.Wait()
+		err := cmd.Wait()
 		if err != nil {
-			slog.Error("ffmpeg exited", "error", err)
+			slog.Error("ffmpeg exited", "channel", channel, "error", err)
 		} else {
-			slog.Info("ffmpeg exited normally")
+			slog.Info("ffmpeg exited normally", "channel", channel)
 		}
-		m.doneFF <- err
-		close(m.doneFF)
+		r.finishManager(channel, m)
 	}()
 
-	go func() {
-		select {
-		case <-m.doneFF:
-			slog.Info("ffmpeg finished", "elapsed", time.Since(m.startTime))
-			cancel()
-		case <-m.ctx.Done():
-			// stop requested
-		}
-
-		// Remove manager from global map when finished
-		r.deleteManager(channel, m)
-	}()
-
-	slog.Info("started", "ffmpeg_pid", m.ffmpegCmd.Process.Pid, "channel", channel)
+	slog.Info("started", "ffmpeg_pid", pid, "channel", channel)
 	return nil
+}
+
+func newFFmpegCommand(inputURL, playlistURL, generation string) streamCommand {
+	return &execStreamCommand{
+		cmd: exec.Command("ffmpeg", buildFFmpegHLSArgs(inputURL, playlistURL, generation)...),
+	}
 }
 
 func resolveLiveStreamURL(ctx context.Context, channel string) (string, string, error) {
@@ -235,9 +314,7 @@ func resolveLiveStreamURL(ctx context.Context, channel string) (string, string, 
 }
 
 func (r *StreamRegistry) abortStart(channel string, m *manager, err error) error {
-	close(m.doneFF)
-	r.deleteManager(channel, m)
-	m.cancel()
+	r.finishManager(channel, m)
 	return err
 }
 
@@ -252,28 +329,35 @@ func Stop() error {
 func (r *StreamRegistry) Stop() error {
 	r.mu.Lock()
 	managers := *r.managers
-	if len(managers) == 0 {
-		r.mu.Unlock()
-		return nil
-	}
-	// copy keys and managers to stop outside lock
-	copyMap := make(map[string]*manager, len(managers))
-	for k, v := range managers {
-		copyMap[k] = v
-		delete(managers, k)
+	r.stopsInProgress++
+	channels := make([]string, 0, len(managers))
+	for channel := range managers {
+		channels = append(channels, channel)
 	}
 	r.mu.Unlock()
 
-	var lastErr error
-	for _, m := range copyMap {
-		if err := stopManager(m); err != nil {
-			lastErr = err
-		}
+	errCh := make(chan error, len(channels))
+	var wg sync.WaitGroup
+	for _, channel := range channels {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := r.StopChannel(channel); err != nil {
+				errCh <- err
+			}
+		}()
 	}
-	for channel := range copyMap {
-		clearLiveChannel(channel)
+	wg.Wait()
+	close(errCh)
+
+	var stopErrs []error
+	for err := range errCh {
+		stopErrs = append(stopErrs, err)
 	}
-	return lastErr
+	r.mu.Lock()
+	r.stopsInProgress--
+	r.mu.Unlock()
+	return errors.Join(stopErrs...)
 }
 
 // StopChannel stops the stream for a specific channel. Returns nil if there was no active stream.
@@ -297,60 +381,118 @@ func (r *StreamRegistry) StopChannel(channel string) error {
 		r.mu.Unlock()
 		return nil
 	}
-	delete(managers, channel)
+	if m.state != streamStopping {
+		m.state = streamStopping
+		m.cancel()
+	}
+	initiated := !m.stopInProgress
+	if initiated {
+		m.stopInProgress = true
+	}
+	cmd := m.cmd
+	done := m.done
 	r.mu.Unlock()
-	clearLiveChannel(channel)
-	return stopManager(m)
-}
 
-func stopManager(m *manager) error {
-	if m == nil {
-		return nil
-	}
-	// cancel context to propagate to commands created with it
-	m.cancel()
-
-	// try graceful interrupt
-	if m.ffmpegCmd != nil && m.ffmpegCmd.Process != nil {
-		_ = m.ffmpegCmd.Process.Signal(os.Interrupt)
-	}
-
-	// wait with timeout for both to exit
-	deadline := time.Now().Add(5 * time.Second)
-	if m.ffmpegCmd == nil || m.ffmpegCmd.Process == nil {
-		return nil
-	}
-	if !waitForDone(m.doneFF, deadline) {
-		// force kill
-		if m.ffmpegCmd != nil && m.ffmpegCmd.Process != nil {
-			_ = m.ffmpegCmd.Process.Kill()
+	if !initiated {
+		if waitForManagerDone(done, 2*r.stopTimeout) {
+			return nil
 		}
-		return fmt.Errorf("%w: timed out stopping processes; killed", ErrStopTimeout)
+		return fmt.Errorf("%w: timed out waiting for channel %s to stop", ErrStopTimeout, channel)
 	}
-
-	slog.Info("processes terminated", "elapsed", time.Since(m.startTime))
-	return nil
+	err := r.stopManager(channel, m, cmd)
+	if err != nil {
+		r.mu.Lock()
+		if managers := *r.managers; managers != nil && managers[channel] == m {
+			m.stopInProgress = false
+		}
+		r.mu.Unlock()
+	}
+	return err
 }
 
-func (r *StreamRegistry) deleteManager(channel string, m *manager) {
-	r.mu.Lock()
-	managers := *r.managers
-	if managers != nil {
-		if cur, ok := managers[channel]; ok && cur == m {
+func (r *StreamRegistry) stopManager(channel string, m *manager, cmd streamCommand) error {
+	if cmd == nil {
+		if waitForManagerDone(m.done, r.stopTimeout) {
+			return nil
+		}
+		return fmt.Errorf("%w: timed out stopping stream startup for %s", ErrStopTimeout, channel)
+	}
+
+	signalErr := cmd.Signal(os.Interrupt)
+	if signalErr == nil || errors.Is(signalErr, os.ErrProcessDone) {
+		if waitForManagerDone(m.done, r.stopTimeout) {
+			slog.Info("stream process terminated", "channel", channel, "elapsed", time.Since(m.startTime))
+			return nil
+		}
+	} else {
+		slog.Debug("graceful stream stop unavailable", "channel", channel, "error", signalErr)
+	}
+
+	if err := cmd.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("failed to kill stream process for %s: %w", channel, err)
+	}
+	if !waitForManagerDone(m.done, r.stopTimeout) {
+		return fmt.Errorf("%w: killed stream process for %s did not exit", ErrStopTimeout, channel)
+	}
+	return fmt.Errorf("%w: stream process for %s required a forced kill", ErrStopTimeout, channel)
+}
+
+func (r *StreamRegistry) finishManager(channel string, m *manager) {
+	m.finishOnce.Do(func() {
+		m.cancel()
+
+		r.mu.Lock()
+		managers := *r.managers
+		if managers != nil && managers[channel] == m {
+			r.clearChannel(channel)
 			delete(managers, channel)
-			clearLiveChannel(channel)
 		}
-	}
-	r.mu.Unlock()
+		r.mu.Unlock()
+
+		close(m.done)
+		slog.Info("stream lifecycle finished", "channel", channel, "elapsed", time.Since(m.startTime))
+	})
 }
 
-func buildFFmpegHLSArgs(inputURL, playlistURL string) []string {
+func (r *StreamRegistry) commitLiveWrite(channel, generation string, commit func()) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.isCurrentLiveWriterLocked(channel, generation) {
+		return false
+	}
+	commit()
+	return true
+}
+
+func (r *StreamRegistry) isCurrentLiveWriter(channel, generation string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.isCurrentLiveWriterLocked(channel, generation)
+}
+
+func (r *StreamRegistry) isCurrentLiveWriterLocked(channel, generation string) bool {
+	if generation == "" {
+		return false
+	}
+	managers := *r.managers
+	if managers == nil {
+		return false
+	}
+	m := managers[channel]
+	if m == nil || m.state != streamRunning || m.generation != generation {
+		return false
+	}
+	return true
+}
+
+func buildFFmpegHLSArgs(inputURL, playlistURL, generation string) []string {
 	args := []string{
 		"-i", inputURL,
 		"-c", "copy",
 		"-f", "hls",
 		"-method", "PUT",
-		"-headers", liveWriteTokenHeader + ": " + getLiveWriteToken() + "\r\n",
+		"-headers", liveWriteTokenHeader + ": " + getLiveWriteToken() + "\r\n" +
+			liveWriteGenerationHeader + ": " + generation + "\r\n",
 		"-hls_time", "1",
 		"-hls_list_size", "30",
 		"-hls_delete_threshold", "30",
@@ -363,6 +505,20 @@ func buildFFmpegHLSArgs(inputURL, playlistURL string) []string {
 	// through localhost, a LAN address, or a reverse proxy; relative URIs make
 	// every segment use the same origin that served index.m3u8.
 	return append(args, playlistURL)
+}
+
+func waitForManagerDone(done <-chan struct{}, timeout time.Duration) bool {
+	if timeout <= 0 {
+		return false
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func logCommandOutput(command, channel string, r io.Reader) {

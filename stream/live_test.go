@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const testLiveGeneration = "test-generation"
+
 func TestLiveHandlerIsReadOnly(t *testing.T) {
 	resetLiveChannel("testchannel")
 	t.Cleanup(func() { clearLiveChannel("testchannel") })
@@ -41,10 +43,12 @@ func TestLiveWriteHandlerRequiresToken(t *testing.T) {
 func TestLiveWriteHandlerStoresReadableObject(t *testing.T) {
 	resetLiveChannel("testchannel")
 	t.Cleanup(func() { clearLiveChannel("testchannel") })
+	installDefaultLiveWriter(t, "testchannel")
 
 	body := "#EXTM3U\n#EXTINF:2,\nsegment0.ts\n"
 	writeReq := httptest.NewRequest(http.MethodPut, "/_live-write/testchannel/index.m3u8", strings.NewReader(body))
 	writeReq.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	writeReq.Header.Set(liveWriteGenerationHeader, testLiveGeneration)
 	writeRec := httptest.NewRecorder()
 
 	LiveWriteHandler().ServeHTTP(writeRec, writeReq)
@@ -66,9 +70,70 @@ func TestLiveWriteHandlerStoresReadableObject(t *testing.T) {
 	}
 }
 
+func TestLiveWriteHandlerRejectsStaleGeneration(t *testing.T) {
+	var storeMu sync.RWMutex
+	var items map[string]map[string][]byte
+	store := NewLiveStore(&storeMu, &items)
+
+	var registryMu sync.Mutex
+	managers := map[string]*manager{
+		"testchannel": {
+			state:      streamRunning,
+			generation: "current-generation",
+		},
+	}
+	service := &LiveService{
+		store:    store,
+		registry: NewStreamRegistry(&registryMu, &managers),
+	}
+
+	staleReq := httptest.NewRequest(http.MethodPut, "/_live-write/testchannel/index.m3u8", strings.NewReader("stale"))
+	staleReq.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	staleReq.Header.Set(liveWriteGenerationHeader, "old-generation")
+	staleRec := httptest.NewRecorder()
+	service.LiveWriteHandler().ServeHTTP(staleRec, staleReq)
+
+	if staleRec.Code != http.StatusConflict {
+		t.Fatalf("expected stale writer status %d, got %d", http.StatusConflict, staleRec.Code)
+	}
+	if got := store.GetObject("testchannel", "index.m3u8"); got != nil {
+		t.Fatalf("stale writer unexpectedly stored data %q", got)
+	}
+
+	currentReq := httptest.NewRequest(http.MethodPut, "/_live-write/testchannel/index.m3u8", strings.NewReader("current"))
+	currentReq.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	currentReq.Header.Set(liveWriteGenerationHeader, "current-generation")
+	currentRec := httptest.NewRecorder()
+	service.LiveWriteHandler().ServeHTTP(currentRec, currentReq)
+
+	if currentRec.Code != http.StatusNoContent {
+		t.Fatalf("expected current writer status %d, got %d", http.StatusNoContent, currentRec.Code)
+	}
+	if got := store.GetObject("testchannel", "index.m3u8"); string(got) != "current" {
+		t.Fatalf("expected current writer data, got %q", got)
+	}
+
+	registryMu.Lock()
+	managers["testchannel"].state = streamStopping
+	registryMu.Unlock()
+	lateReq := httptest.NewRequest(http.MethodPut, "/_live-write/testchannel/index.m3u8", strings.NewReader("late"))
+	lateReq.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	lateReq.Header.Set(liveWriteGenerationHeader, "current-generation")
+	lateRec := httptest.NewRecorder()
+	service.LiveWriteHandler().ServeHTTP(lateRec, lateReq)
+
+	if lateRec.Code != http.StatusConflict {
+		t.Fatalf("expected stopping writer status %d, got %d", http.StatusConflict, lateRec.Code)
+	}
+	if got := store.GetObject("testchannel", "index.m3u8"); string(got) != "current" {
+		t.Fatalf("late writer replaced current data with %q", got)
+	}
+}
+
 func TestLiveWriteHandlerRetainsRecentlyDeletedSegment(t *testing.T) {
 	resetLiveChannel("testchannel")
 	t.Cleanup(func() { clearLiveChannel("testchannel") })
+	installDefaultLiveWriter(t, "testchannel")
 
 	writeLiveObject(t, http.MethodPut, "/_live-write/testchannel/segment0.ts", "segment data")
 	writeLiveObject(t, http.MethodDelete, "/_live-write/testchannel/segment0.ts", "")
@@ -127,7 +192,7 @@ func TestLiveHandlerWaitsForActiveSegment(t *testing.T) {
 
 	var registryMu sync.Mutex
 	managers := map[string]*manager{
-		"testchannel": {started: true},
+		"testchannel": {state: streamRunning},
 	}
 	service := &LiveService{
 		store:    store,
@@ -159,11 +224,37 @@ func writeLiveObject(t *testing.T, method, path, body string) {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	req.Header.Set(liveWriteGenerationHeader, testLiveGeneration)
 	rec := httptest.NewRecorder()
 	LiveWriteHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected status %d for %s %s, got %d", http.StatusNoContent, method, path, rec.Code)
 	}
+}
+
+func installDefaultLiveWriter(t *testing.T, channel string) {
+	t.Helper()
+	mu.Lock()
+	if mgrs == nil {
+		mgrs = make(map[string]*manager)
+	}
+	previous, existed := mgrs[channel]
+	mgrs[channel] = &manager{
+		state:      streamRunning,
+		generation: testLiveGeneration,
+		done:       make(chan struct{}),
+	}
+	mu.Unlock()
+
+	t.Cleanup(func() {
+		mu.Lock()
+		if existed {
+			mgrs[channel] = previous
+		} else {
+			delete(mgrs, channel)
+		}
+		mu.Unlock()
+	})
 }
 
 func TestLiveHandlerAutoStartsConfiguredInactivePlaylistRequest(t *testing.T) {
@@ -180,7 +271,7 @@ func TestLiveHandlerAutoStartsConfiguredInactivePlaylistRequest(t *testing.T) {
 		if mgrs == nil {
 			mgrs = make(map[string]*manager)
 		}
-		mgrs[channel] = &manager{started: true}
+		mgrs[channel] = &manager{state: streamRunning}
 		mu.Unlock()
 		return nil
 	}
@@ -260,10 +351,12 @@ func TestLiveHandlerHeadDoesNotAutoStartConfiguredChannel(t *testing.T) {
 func TestLiveWriteHandlerRejectsOversizedObject(t *testing.T) {
 	resetLiveChannel("testchannel")
 	t.Cleanup(func() { clearLiveChannel("testchannel") })
+	installDefaultLiveWriter(t, "testchannel")
 
 	tooLarge := bytes.Repeat([]byte("a"), maxLiveObjectBytes+1)
 	req := httptest.NewRequest(http.MethodPut, "/_live-write/testchannel/segment.ts", bytes.NewReader(tooLarge))
 	req.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	req.Header.Set(liveWriteGenerationHeader, testLiveGeneration)
 	rec := httptest.NewRecorder()
 
 	LiveWriteHandler().ServeHTTP(rec, req)
@@ -290,7 +383,7 @@ func TestLiveHandlerReturnsServiceUnavailableForActiveChannelWhenPlaylistMissing
 	if mgrs == nil {
 		mgrs = make(map[string]*manager)
 	}
-	mgrs["testchannel"] = &manager{started: true}
+	mgrs["testchannel"] = &manager{state: streamRunning}
 	mu.Unlock()
 	t.Cleanup(func() {
 		mu.Lock()

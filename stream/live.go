@@ -29,11 +29,12 @@ var defaultLiveService = &LiveService{
 }
 
 const (
-	liveWritePrefix        = "/_live-write/"
-	liveReadPrefix         = "/live/"
-	liveWriteTokenHeader   = "X-Jellych-Live-Write-Token"
-	maxLiveObjectBytes     = 64 << 20
-	liveSegmentDeleteGrace = 30 * time.Second
+	liveWritePrefix           = "/_live-write/"
+	liveReadPrefix            = "/live/"
+	liveWriteTokenHeader      = "X-Jellych-Live-Write-Token"
+	liveWriteGenerationHeader = "X-Jellych-Live-Generation"
+	maxLiveObjectBytes        = 64 << 20
+	liveSegmentDeleteGrace    = 30 * time.Second
 )
 
 var liveWriteToken = newLiveWriteToken()
@@ -371,6 +372,15 @@ func (s *LiveService) handleLiveWrite(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	generation := strings.TrimSpace(r.Header.Get(liveWriteGenerationHeader))
+	if generation == "" {
+		http.Error(w, "missing live generation", http.StatusConflict)
+		return
+	}
+	if !s.registry.isCurrentLiveWriter(channel, generation) {
+		http.Error(w, "stale live writer", http.StatusConflict)
+		return
+	}
 
 	switch r.Method {
 	case http.MethodPut:
@@ -386,10 +396,20 @@ func (s *LiveService) handleLiveWrite(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to read live object", http.StatusBadRequest)
 			return
 		}
-		s.store.StoreObject(channel, objectName, data)
+		if !s.registry.commitLiveWrite(channel, generation, func() {
+			s.store.StoreObject(channel, objectName, data)
+		}) {
+			http.Error(w, "stale live writer", http.StatusConflict)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodDelete:
-		s.store.DeleteObject(channel, objectName)
+		if !s.registry.commitLiveWrite(channel, generation, func() {
+			s.store.DeleteObject(channel, objectName)
+		}) {
+			http.Error(w, "stale live writer", http.StatusConflict)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.Header().Set("Allow", "PUT, DELETE")
