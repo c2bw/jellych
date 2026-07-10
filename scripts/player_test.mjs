@@ -44,6 +44,41 @@ function fakeManagedHls(){
   };
 }
 
+class FakeHls {
+  static Events = {
+    MANIFEST_PARSED: 'manifestParsed',
+    ERROR: 'error',
+  };
+
+  static ErrorTypes = {
+    NETWORK_ERROR: 'networkError',
+    MEDIA_ERROR: 'mediaError',
+  };
+
+  static isSupported(){ return true; }
+
+  constructor(){
+    this.handlers = new Map();
+  }
+
+  loadSource(url){ this.url = url; }
+  attachMedia(video){ this.video = video; }
+  on(event, handler){ this.handlers.set(event, handler); }
+  destroy(){}
+}
+
+function enableFakeHls(t){
+  const previousWindowHls = window.Hls;
+  const previousGlobalHls = globalThis.Hls;
+  window.Hls = FakeHls;
+  globalThis.Hls = FakeHls;
+  t.after(()=>{
+    window.Hls = previousWindowHls;
+    if(previousGlobalHls === undefined) delete globalThis.Hls;
+    else globalThis.Hls = previousGlobalHls;
+  });
+}
+
 function wait(ms){
   return new Promise(resolve=>setTimeout(resolve, ms));
 }
@@ -151,4 +186,17 @@ test('resuming Hls.js after a user pause restarts loading only once', (t)=>{
   player.resume();
 
   assert.equal(hls.startLoadCalls, 1);
+});
+
+test('Hls.js is preferred when native HLS is also reported', (t)=>{
+  enableFakeHls(t);
+  const video = new NativeHLSVideo();
+  const player = new Player(video);
+  t.after(()=>player.stop());
+
+  player.play('/live/testchannel/index.m3u8');
+
+  assert.ok(player.hls instanceof FakeHls);
+  assert.equal(player.usingNativeHls, false);
+  assert.equal(video.src, '');
 });

@@ -112,13 +112,6 @@ export class Player {
     this.stop();
     this.currentUrl = url;
     this.wantsPlayback = true;
-    if(this.video.canPlayType && this.video.canPlayType('application/vnd.apple.mpegurl')){
-      this.usingNativeHls = true;
-      this.nativeRecoveryAttempts = 0;
-      this.video.src = url;
-      safePlay(this.video);
-      return;
-    }
 
     if(window.Hls && Hls.isSupported()){
       const hls = new Hls({
@@ -151,6 +144,14 @@ export class Player {
           this.recoverNetworkError(hls);
         }
       });
+      return;
+    }
+
+    if(this.video.canPlayType && this.video.canPlayType('application/vnd.apple.mpegurl')){
+      this.usingNativeHls = true;
+      this.nativeRecoveryAttempts = 0;
+      this.video.src = url;
+      safePlay(this.video);
       return;
     }
 
