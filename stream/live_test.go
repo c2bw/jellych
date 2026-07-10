@@ -166,7 +166,7 @@ func writeLiveObject(t *testing.T, method, path, body string) {
 	}
 }
 
-func TestLiveHandlerAutoStartsInactivePlaylistRequest(t *testing.T) {
+func TestLiveHandlerAutoStartsConfiguredInactivePlaylistRequest(t *testing.T) {
 	clearLiveChannel("testchannel")
 	t.Cleanup(func() { clearLiveChannel("testchannel") })
 
@@ -194,7 +194,9 @@ func TestLiveHandlerAutoStartsInactivePlaylistRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
 	rec := httptest.NewRecorder()
 
-	LiveHandler().ServeHTTP(rec, req)
+	NewLiveHandler(func(channel string) bool {
+		return channel == "testchannel"
+	}).ServeHTTP(rec, req)
 
 	if !started {
 		t.Fatal("expected playlist request to auto-start channel")
@@ -204,6 +206,54 @@ func TestLiveHandlerAutoStartsInactivePlaylistRequest(t *testing.T) {
 	}
 	if got := rec.Body.String(); got != "#EXTM3U\n" {
 		t.Fatalf("expected playlist body, got %q", got)
+	}
+}
+
+func TestLiveHandlerDoesNotAutoStartUnconfiguredChannel(t *testing.T) {
+	clearLiveChannel("unknownchannel")
+	t.Cleanup(func() { clearLiveChannel("unknownchannel") })
+
+	started := false
+	service := &LiveService{
+		store:        defaultLiveStore,
+		registry:     defaultStreamRegistry,
+		start:        func(string) error { started = true; return nil },
+		canAutoStart: func(string) bool { return false },
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/live/unknownchannel/index.m3u8", nil)
+	rec := httptest.NewRecorder()
+	service.LiveHandler().ServeHTTP(rec, req)
+
+	if started {
+		t.Fatal("unconfigured channel request unexpectedly started a stream")
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
+	}
+}
+
+func TestLiveHandlerHeadDoesNotAutoStartConfiguredChannel(t *testing.T) {
+	clearLiveChannel("testchannel")
+	t.Cleanup(func() { clearLiveChannel("testchannel") })
+
+	started := false
+	service := &LiveService{
+		store:        defaultLiveStore,
+		registry:     defaultStreamRegistry,
+		start:        func(string) error { started = true; return nil },
+		canAutoStart: func(string) bool { return true },
+	}
+
+	req := httptest.NewRequest(http.MethodHead, "/live/testchannel/index.m3u8", nil)
+	rec := httptest.NewRecorder()
+	service.LiveHandler().ServeHTTP(rec, req)
+
+	if started {
+		t.Fatal("HEAD request unexpectedly started a stream")
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
 	}
 }
 

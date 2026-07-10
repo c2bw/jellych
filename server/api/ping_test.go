@@ -66,6 +66,18 @@ func TestPingEndpoint(t *testing.T) {
 	}
 }
 
+func TestIsConfiguredChannel(t *testing.T) {
+	resetAPIStateForTest(t)
+	SetChannels([]string{"jankos"})
+
+	if !IsConfiguredChannel(" JANKOS ") {
+		t.Fatal("expected configured channel lookup to normalize the name")
+	}
+	if IsConfiguredChannel("caedrel") {
+		t.Fatal("did not expect an unknown channel to be configured")
+	}
+}
+
 func TestAuthorizeJellyfinWebhook(t *testing.T) {
 	resetAPIStateForTest(t)
 	SetJellyfinWebhookSecret("shared-secret")
