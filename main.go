@@ -20,7 +20,7 @@ import (
 	"github.com/c2bw/jellych/twitch/client"
 )
 
-const version = "0.0.5"
+const version = "0.0.6"
 
 func main() {
 	// Set log level to debug for more verbose output, overridable by environment variable (e.g. LOG_LEVEL=info)
