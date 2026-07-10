@@ -235,14 +235,23 @@ func (s *LiveStore) purgeDeletedLocked(channel string, now time.Time) {
 }
 
 type LiveService struct {
-	store    *LiveStore
-	registry *StreamRegistry
-	start    func(string) error
+	store        *LiveStore
+	registry     *StreamRegistry
+	start        func(string) error
+	canAutoStart func(string) bool
 }
 
 // LiveHandler serves in-memory HLS playlists and segments.
 func LiveHandler() http.Handler {
 	return defaultLiveService.LiveHandler()
+}
+
+// NewLiveHandler returns a live handler that only auto-starts channels
+// accepted by canAutoStart. A nil callback disables playlist-driven startup.
+func NewLiveHandler(canAutoStart func(string) bool) http.Handler {
+	service := *defaultLiveService
+	service.canAutoStart = canAutoStart
+	return service.LiveHandler()
 }
 
 func (s *LiveService) LiveHandler() http.Handler {
@@ -273,7 +282,7 @@ func (s *LiveService) handleLive(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet, http.MethodHead:
 		data := s.store.GetObject(channel, objectName)
 		if data == nil && isLivePlaylist(objectName) {
-			if !s.registry.IsChannelActive(channel) {
+			if r.Method == http.MethodGet && s.isAutoStartAllowed(channel) && !s.registry.IsChannelActive(channel) {
 				if err := s.start(channel); err != nil && !errors.Is(err, ErrAlreadyStarted) {
 					slog.Warn("failed to auto-start live stream for playlist request", "channel", channel, "error", err)
 				}
@@ -309,6 +318,10 @@ func (s *LiveService) handleLive(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *LiveService) isAutoStartAllowed(channel string) bool {
+	return s.canAutoStart != nil && s.canAutoStart(channel)
 }
 
 func isLivePlaylist(objectName string) bool {

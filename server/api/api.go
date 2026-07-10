@@ -191,6 +191,19 @@ func (s *APIState) GetChannels() []string {
 	return append([]string{}, s.channelNames...)
 }
 
+// IsConfiguredChannel reports whether name is present in the configured
+// channel list used to build live playlists.
+func IsConfiguredChannel(name string) bool {
+	return defaultState.IsConfiguredChannel(name)
+}
+
+func (s *APIState) IsConfiguredChannel(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	s.chMu.RLock()
+	defer s.chMu.RUnlock()
+	return slices.Contains(s.channelNames, name)
+}
+
 func SetVODs(items []VOD) {
 	defaultState.SetVODs(items)
 }

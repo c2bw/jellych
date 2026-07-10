@@ -34,7 +34,7 @@ func Start(addr string) (*http.Server, error) {
 		http.ServeFile(w, r, "./html/vods.html")
 	})
 	mux.Handle("/html/", http.StripPrefix("/html/", http.FileServer(http.Dir("./html"))))
-	mux.Handle("/live/", stream.LiveHandler())
+	mux.Handle("/live/", stream.NewLiveHandler(api.IsConfiguredChannel))
 	mux.Handle("/_live-write/", stream.LiveWriteHandler())
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
