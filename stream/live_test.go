@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -62,6 +63,71 @@ func TestLiveWriteHandlerStoresReadableObject(t *testing.T) {
 	}
 	if got := readRec.Body.String(); got != body {
 		t.Fatalf("expected body %q, got %q", body, got)
+	}
+}
+
+func TestLiveWriteHandlerRetainsRecentlyDeletedSegment(t *testing.T) {
+	resetLiveChannel("testchannel")
+	t.Cleanup(func() { clearLiveChannel("testchannel") })
+
+	writeLiveObject(t, http.MethodPut, "/_live-write/testchannel/segment0.ts", "segment data")
+	writeLiveObject(t, http.MethodDelete, "/_live-write/testchannel/segment0.ts", "")
+
+	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/segment0.ts", nil)
+	rec := httptest.NewRecorder()
+	LiveHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d during deletion grace period, got %d", http.StatusOK, rec.Code)
+	}
+	if got, want := rec.Body.String(), "segment data"; got != want {
+		t.Fatalf("expected body %q, got %q", want, got)
+	}
+}
+
+func TestLiveStoreExpiresDeletedSegment(t *testing.T) {
+	var mu sync.RWMutex
+	var items map[string]map[string][]byte
+	store := NewLiveStore(&mu, &items)
+	store.deleteGrace = 10 * time.Second
+	now := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+
+	store.StoreObject("testchannel", "segment0.ts", []byte("segment data"))
+	store.DeleteObject("testchannel", "segment0.ts")
+	if got := store.GetObject("testchannel", "segment0.ts"); string(got) != "segment data" {
+		t.Fatalf("expected segment during grace period, got %q", got)
+	}
+
+	now = now.Add(store.deleteGrace)
+	if got := store.GetObject("testchannel", "segment0.ts"); got != nil {
+		t.Fatalf("expected expired segment to be unavailable, got %q", got)
+	}
+}
+
+func TestLiveHandlerPreventsCachingMissingSegments(t *testing.T) {
+	clearLiveChannel("testchannel")
+
+	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/missing.ts", nil)
+	rec := httptest.NewRecorder()
+	LiveHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
+	}
+	if got, want := rec.Header().Get("Cache-Control"), "no-store"; got != want {
+		t.Fatalf("expected Cache-Control %q, got %q", want, got)
+	}
+}
+
+func writeLiveObject(t *testing.T, method, path, body string) {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	rec := httptest.NewRecorder()
+	LiveWriteHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d for %s %s, got %d", http.StatusNoContent, method, path, rec.Code)
 	}
 }
 
