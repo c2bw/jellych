@@ -179,7 +179,7 @@ func (r *StreamRegistry) Start(channel string) error {
 	slog.Info("resolved stream url", "channel", channel, "stream", streamName, "elapsed", time.Since(m.startTime))
 
 	playlistURL := strings.TrimRight(configuredLiveBaseURL, "/") + liveWritePrefix + channel + "/index.m3u8"
-	m.ffmpegCmd = exec.CommandContext(m.ctx, "ffmpeg", buildFFmpegHLSArgs(channel, inputURL, playlistURL, getServerBaseURL())...)
+	m.ffmpegCmd = exec.CommandContext(m.ctx, "ffmpeg", buildFFmpegHLSArgs(inputURL, playlistURL)...)
 	stderrFF, err := m.ffmpegCmd.StderrPipe()
 	if err != nil {
 		return r.abortStart(channel, m, fmt.Errorf("failed to get ffmpeg stderr pipe: %w", err))
@@ -344,7 +344,7 @@ func (r *StreamRegistry) deleteManager(channel string, m *manager) {
 	r.mu.Unlock()
 }
 
-func buildFFmpegHLSArgs(channel, inputURL, playlistURL, publicBaseURL string) []string {
+func buildFFmpegHLSArgs(inputURL, playlistURL string) []string {
 	args := []string{
 		"-i", inputURL,
 		"-c", "copy",
@@ -359,11 +359,9 @@ func buildFFmpegHLSArgs(channel, inputURL, playlistURL, publicBaseURL string) []
 		"-hls_flags", "delete_segments",
 	}
 
-	if publicBaseURL = strings.TrimSpace(publicBaseURL); publicBaseURL != "" {
-		hlsBaseURL := strings.TrimRight(publicBaseURL, "/") + "/live/" + channel + "/"
-		args = append(args, "-hls_base_url", hlsBaseURL)
-	}
-
+	// Keep segment URIs relative to the playlist. Clients may access Jellych
+	// through localhost, a LAN address, or a reverse proxy; relative URIs make
+	// every segment use the same origin that served index.m3u8.
 	return append(args, playlistURL)
 }
 

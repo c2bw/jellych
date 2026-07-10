@@ -18,8 +18,6 @@ import (
 
 var liveURLMu sync.RWMutex
 var liveBaseURL string
-var serverBaseURLMu sync.RWMutex
-var serverBaseURL string
 
 var liveStoreMu sync.RWMutex
 var liveStore map[string]map[string][]byte
@@ -52,23 +50,6 @@ func SetLiveBaseURL(raw string) {
 	liveURLMu.Lock()
 	liveBaseURL = raw
 	liveURLMu.Unlock()
-}
-
-// SetServerBaseURL configures the public server URL used to prefix HLS
-// segment URIs when requested. This value should be set by the caller with
-// the same value passed to api.SetPlaylistBaseURL (typically from SERVER_URL).
-func SetServerBaseURL(raw string) {
-	raw = strings.TrimSpace(raw)
-	raw = strings.TrimRight(raw, "/")
-	serverBaseURLMu.Lock()
-	serverBaseURL = raw
-	serverBaseURLMu.Unlock()
-}
-
-func getServerBaseURL() string {
-	serverBaseURLMu.RLock()
-	defer serverBaseURLMu.RUnlock()
-	return serverBaseURL
 }
 
 func getLiveBaseURL() string {

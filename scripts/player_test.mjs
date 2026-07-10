@@ -34,6 +34,16 @@ class NativeHLSVideo extends EventTarget {
   }
 }
 
+function fakeManagedHls(){
+  return {
+    startLoadCalls: 0,
+    stopLoadCalls: 0,
+    startLoad(){ this.startLoadCalls++; },
+    stopLoad(){ this.stopLoadCalls++; },
+    destroy(){},
+  };
+}
+
 function wait(ms){
   return new Promise(resolve=>setTimeout(resolve, ms));
 }
@@ -107,4 +117,38 @@ test('native HLS recovery ignores non-network errors and stops at the retry cap'
   video.dispatchEvent(new Event('error'));
   assert.equal(player.nativeRecoveryTimer, null);
   assert.equal(video.src, url);
+});
+
+test('buffering events do not bypass Hls.js network recovery delay', (t)=>{
+  const video = new NativeHLSVideo();
+  const player = new Player(video);
+  t.after(()=>player.stop());
+
+  const hls = fakeManagedHls();
+  player.hls = hls;
+  player.currentUrl = '/live/testchannel/index.m3u8';
+  player.wantsPlayback = true;
+  player.recoverNetworkError(hls);
+
+  for(let i = 0; i < 100; i++) player.resume();
+
+  assert.equal(hls.stopLoadCalls, 1);
+  assert.equal(hls.startLoadCalls, 0);
+});
+
+test('resuming Hls.js after a user pause restarts loading only once', (t)=>{
+  const video = new NativeHLSVideo();
+  const player = new Player(video);
+  t.after(()=>player.stop());
+
+  const hls = fakeManagedHls();
+  player.hls = hls;
+  player.wantsPlayback = true;
+  player.pause();
+
+  player.notePlaybackWanted();
+  player.notePlaybackWanted();
+  player.resume();
+
+  assert.equal(hls.startLoadCalls, 1);
 });

@@ -176,13 +176,16 @@ export class Player {
   }
 
   notePlaybackWanted(){
+    const shouldRestartLoad = !this.wantsPlayback;
     this.wantsPlayback = true;
-    if(this.hls) safeStartLoad(this.hls);
+    if(shouldRestartLoad && this.hls) safeStartLoad(this.hls);
   }
 
   resume(){
     if(this.wantsPlayback){
-      if(this.hls) safeStartLoad(this.hls);
+      // Hls.js schedules live-playlist reloads from EXT-X-TARGETDURATION.
+      // Calling startLoad for every waiting/stalled event bypasses that
+      // schedule and can create a manifest-request feedback loop.
       safePlay(this.video);
     }
   }

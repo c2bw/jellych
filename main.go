@@ -46,9 +46,6 @@ func main() {
 		os.Exit(1)
 	}
 	api.SetPlaylistBaseURL(serverURL)
-	// Also configure the stream package with the public server URL so
-	// ffmpeg can be instructed to emit absolute segment URLs via -hls_base_url.
-	stream.SetServerBaseURL(serverURL)
 	stream.SetVODDownloadDir(*vodsPath)
 	vodRetention, err := parseVODRetentionDays(os.Getenv("VOD_RETENTION_DAYS"))
 	if err != nil {
