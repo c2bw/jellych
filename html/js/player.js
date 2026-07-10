@@ -1,6 +1,11 @@
 let globalBandwidthEstimate = NaN;
 let bandwidthObserverStarted = false;
 
+const NATIVE_RECOVERY_BASE_DELAY_MS = 500;
+const NATIVE_RECOVERY_MAX_DELAY_MS = 8000;
+const NATIVE_RECOVERY_MAX_ATTEMPTS = 5;
+const MEDIA_ERR_NETWORK = 2;
+
 function isPositiveFinite(value){
   return Number.isFinite(value) && value > 0;
 }
@@ -47,7 +52,44 @@ export class Player {
     this.currentUrl = '';
     this.wantsPlayback = false;
     this.networkRecoveryTimer = null;
+    this.usingNativeHls = false;
+    this.nativeRecoveryTimer = null;
+    this.nativeRecoveryAttempts = 0;
+    this.video.addEventListener('error', ()=>this.recoverNativeError());
+    this.video.addEventListener('playing', ()=>{
+      if(!this.usingNativeHls) return;
+      this.clearNativeRecovery();
+      this.nativeRecoveryAttempts = 0;
+    });
     startBandwidthObserver();
+  }
+
+  clearNativeRecovery(){
+    if(this.nativeRecoveryTimer){
+      clearTimeout(this.nativeRecoveryTimer);
+      this.nativeRecoveryTimer = null;
+    }
+  }
+
+  recoverNativeError(){
+    if(!this.usingNativeHls || !this.wantsPlayback || !this.currentUrl || this.nativeRecoveryTimer) return;
+    if(!this.video.error || this.video.error.code !== MEDIA_ERR_NETWORK) return;
+    if(this.nativeRecoveryAttempts >= NATIVE_RECOVERY_MAX_ATTEMPTS) return;
+
+    const delay = Math.min(
+      NATIVE_RECOVERY_BASE_DELAY_MS * (2 ** this.nativeRecoveryAttempts),
+      NATIVE_RECOVERY_MAX_DELAY_MS,
+    );
+    this.nativeRecoveryAttempts++;
+    this.nativeRecoveryTimer = setTimeout(()=>{
+      this.nativeRecoveryTimer = null;
+      if(!this.usingNativeHls || !this.wantsPlayback || !this.currentUrl) return;
+      try{
+        this.video.src = cacheBustedUrl(this.currentUrl);
+        this.video.load();
+        safePlay(this.video);
+      }catch(e){ /* let a subsequent media error retry recovery */ }
+    }, delay);
   }
 
   recoverNetworkError(hls){
@@ -71,6 +113,8 @@ export class Player {
     this.currentUrl = url;
     this.wantsPlayback = true;
     if(this.video.canPlayType && this.video.canPlayType('application/vnd.apple.mpegurl')){
+      this.usingNativeHls = true;
+      this.nativeRecoveryAttempts = 0;
       this.video.src = url;
       safePlay(this.video);
       return;
@@ -116,6 +160,9 @@ export class Player {
   stop(){
     this.wantsPlayback = false;
     this.currentUrl = '';
+    this.usingNativeHls = false;
+    this.nativeRecoveryAttempts = 0;
+    this.clearNativeRecovery();
     if(this.networkRecoveryTimer){ clearTimeout(this.networkRecoveryTimer); this.networkRecoveryTimer = null; }
     if(this.hls){ try{ this.hls.destroy(); }catch(e){} this.hls = null; }
     try{ this.video.pause(); }catch(e){}
@@ -124,6 +171,7 @@ export class Player {
 
   pause(){
     this.wantsPlayback = false;
+    this.clearNativeRecovery();
     if(this.networkRecoveryTimer){ clearTimeout(this.networkRecoveryTimer); this.networkRecoveryTimer = null; }
   }
 
