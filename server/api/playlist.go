@@ -63,6 +63,10 @@ func BuildVODM3U(vods []VOD) string {
 		if err := ValidateVOD(vod); err != nil {
 			continue
 		}
+		vod.Title = m3uText(vod.Title)
+		vod.Channel = m3uText(vod.Channel)
+		vod.Logo = m3uText(vod.Logo)
+		vod.Date = m3uText(vod.Date)
 		title := vod.Title
 		if title == "" {
 			title = "VOD " + vod.ID
@@ -99,7 +103,21 @@ func vodDisplayDate(raw string) string {
 }
 
 func m3uAttr(value string) string {
+	value = stripM3UControlCharacters(value)
 	value = strings.ReplaceAll(value, `\`, `\\`)
 	value = strings.ReplaceAll(value, `"`, `\"`)
 	return value
+}
+
+func m3uText(value string) string {
+	return stripM3UControlCharacters(value)
+}
+
+func stripM3UControlCharacters(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' || r == 0 {
+			return -1
+		}
+		return r
+	}, value)
 }

@@ -2,6 +2,7 @@ package twitch
 
 import (
 	"context"
+	"sync"
 
 	"github.com/c2bw/jellych/server/api"
 	"github.com/c2bw/jellych/stream"
@@ -19,7 +20,18 @@ func Start(c *client.TwitchClient, configPath, liveBaseURL string) (func(), erro
 	api.SetChannelStore(m)
 	api.SetVODStore(m)
 	ctx, cancel := context.WithCancel(context.Background())
-	go m.UpdateStatus(ctx, c)
-	go m.ImportLatestVODs(ctx, c)
-	return cancel, nil
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		m.UpdateStatus(ctx, c)
+	}()
+	go func() {
+		defer wg.Done()
+		m.ImportLatestVODs(ctx, c)
+	}()
+	return func() {
+		cancel()
+		wg.Wait()
+	}, nil
 }

@@ -12,6 +12,27 @@ import (
 
 const testLiveGeneration = "test-generation"
 
+func TestLiveStoreEnforcesCapacity(t *testing.T) {
+	var mu sync.RWMutex
+	var items map[string]map[string][]byte
+	store := NewLiveStore(&mu, &items)
+	store.maxChannelBytes = 5
+	store.maxTotalBytes = 8
+
+	if !store.StoreObject("one", "a.ts", []byte("12345")) {
+		t.Fatal("expected first object to fit")
+	}
+	if store.StoreObject("one", "b.ts", []byte("1")) {
+		t.Fatal("expected per-channel capacity rejection")
+	}
+	if !store.StoreObject("two", "a.ts", []byte("123")) {
+		t.Fatal("expected second channel to fit global capacity")
+	}
+	if store.StoreObject("three", "a.ts", []byte("1")) {
+		t.Fatal("expected global capacity rejection")
+	}
+}
+
 func TestLiveHandlerIsReadOnly(t *testing.T) {
 	resetLiveChannel("testchannel")
 	t.Cleanup(func() { clearLiveChannel("testchannel") })

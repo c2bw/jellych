@@ -1,14 +1,13 @@
 package twitchapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 )
 
 type UsersResponse struct {
@@ -24,8 +23,24 @@ type User struct {
 
 // GET https://api.twitch.tv/helix/users?login=CHANNEL_NAME
 func UserInfo(clientID, accessToken string, channels []string) (*UsersResponse, error) {
+	return UserInfoContext(context.Background(), clientID, accessToken, channels)
+}
+
+func UserInfoContext(ctx context.Context, clientID, accessToken string, channels []string) (*UsersResponse, error) {
 	if len(channels) == 0 {
 		return &UsersResponse{Data: []User{}}, nil
+	}
+	if len(channels) > 100 {
+		combined := &UsersResponse{Data: []User{}}
+		for start := 0; start < len(channels); start += 100 {
+			end := min(start+100, len(channels))
+			batch, err := UserInfoContext(ctx, clientID, accessToken, channels[start:end])
+			if err != nil {
+				return nil, err
+			}
+			combined.Data = append(combined.Data, batch.Data...)
+		}
+		return combined, nil
 	}
 
 	q := url.Values{}
@@ -41,15 +56,14 @@ func UserInfo(clientID, accessToken string, channels []string) (*UsersResponse, 
 	}
 
 	endpoint := "https://api.twitch.tv/helix/users?" + q.Encode()
-	req, err := http.NewRequest("GET", endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Client-ID", clientID)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	httpClient := &http.Client{Timeout: 20 * time.Second}
-	resp, err := httpClient.Do(req)
+	resp, err := helixHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -64,7 +78,7 @@ func UserInfo(clientID, accessToken string, channels []string) (*UsersResponse, 
 		slog.Debug("Twitch rate limit headers not present")
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readTwitchResponse(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}

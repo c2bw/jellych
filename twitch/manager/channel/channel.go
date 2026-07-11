@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"strings"
 
 	twitchapi "github.com/c2bw/jellych/twitch/api"
@@ -21,7 +22,11 @@ type Status struct {
 }
 
 func FetchStatus(client *client.TwitchClient, channels []string) ([]Status, error) {
-	info, err := twitchapi.StreamInfo(client.ClientID(), client.AccessToken(), channels)
+	return FetchStatusContext(context.Background(), client, channels)
+}
+
+func FetchStatusContext(ctx context.Context, client *client.TwitchClient, channels []string) ([]Status, error) {
+	info, err := twitchapi.StreamInfoContext(ctx, client.ClientID(), client.AccessToken(), channels)
 	if err != nil {
 		return []Status{}, err
 	}

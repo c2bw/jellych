@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -557,7 +558,22 @@ func finalizeVODDownload(tempPath, outputPath string) error {
 	if err := os.Rename(tempPath, outputPath); err != nil {
 		return fmt.Errorf("failed to finalize vod download: %w", err)
 	}
+	if err := syncVODDirectory(outputPath); err != nil {
+		slog.Warn("failed to sync vod directory after finalization", "output", outputPath, "error", err)
+	}
 	return nil
+}
+
+func syncVODDirectory(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func (d *VODDownloader) stopDownload(id string, download *vodDownload) error {

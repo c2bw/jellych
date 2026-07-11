@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -320,5 +321,20 @@ func writeToFile(base, file string, data []byte) error {
 		slog.Error("failed to replace file", "path", joined, "error", err)
 		return err
 	}
+	if err := syncParentDirectory(joined); err != nil {
+		slog.Warn("failed to sync config directory after atomic replace", "path", joined, "error", err)
+	}
 	return nil
+}
+
+func syncParentDirectory(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }

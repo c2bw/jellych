@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -22,7 +23,12 @@ import (
 
 const version = "0.0.7"
 
+//go:embed html
+var webAssets embed.FS
+
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	// Set log level to debug for more verbose output, overridable by environment variable (e.g. LOG_LEVEL=info)
 	var logLevel slog.Level
 	logLevel, err := parseLevel(os.Getenv("LOG_LEVEL"))
@@ -61,6 +67,7 @@ func main() {
 		os.Exit(1)
 	}
 	api.SetJellyfinWebhookSecret(webhookSecret)
+	api.SetControlAPISecret(os.Getenv("JELLYCH_API_SECRET"))
 
 	clientID, err := getRequiredEnv("TWITCH_CLIENT_ID")
 	if err != nil {
@@ -85,7 +92,7 @@ func main() {
 		os.Exit(1)
 	}
 	//Start the HTTP server
-	srv, err := server.Start(*addr)
+	srv, err := server.StartWithAssets(*addr, webAssets)
 	if err != nil {
 		slog.Error("failed to start HTTP server", "error", err)
 		os.Exit(1)
@@ -97,9 +104,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Handle graceful shutdown on interrupt signal
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	api.StartIdleMonitor(ctx)
 	stream.StartVODDownloadCleanup(ctx)
 	<-ctx.Done()
 	// shutdown HTTP server
@@ -109,6 +114,7 @@ func main() {
 	if stopStatus != nil {
 		stopStatus()
 	}
+	twitchClient.Close()
 	// stop stream processes
 	if err := stream.StopVODDownloads(); err != nil {
 		slog.Warn("failed to stop VOD downloads cleanly", "error", err)

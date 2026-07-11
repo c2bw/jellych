@@ -7,10 +7,11 @@ A lightweight server that leverages [`ffmpeg`](https://github.com/ffmpeg/ffmpeg)
 ## Configuration
 
 > [!WARNING]
-> Jellych does not authenticate the web UI or most control API endpoints.
-> If you expose it outside a trusted LAN, put it behind a reverse proxy or
-> tunnel that provides authentication. `JELLYFIN_WEBHOOK_SECRET` only protects
-> the Jellyfin webhook endpoint.
+> Control API authentication is disabled unless `JELLYCH_API_SECRET` is set.
+> If you expose Jellych outside a trusted LAN, configure that secret and put
+> the browser UI behind a reverse proxy or tunnel that authenticates users and
+> injects the control header. `JELLYFIN_WEBHOOK_SECRET` separately protects the
+> Jellyfin webhook endpoint.
 
 Required environment variables:
 
@@ -23,6 +24,7 @@ Optional environment variables:
 
 - `LOG_LEVEL` logging level (default `INFO`)
 - `VOD_RETENTION_DAYS` number of days to keep downloaded VOD files (default `30`, must be a positive integer)
+- `JELLYCH_API_SECRET` protects mutating control API routes when set. Clients may send it as `Authorization: Bearer <secret>` or `X-Jellych-API-Secret`. A trusted reverse proxy can inject this header after authenticating browser users.
 
 Optional flags:
 

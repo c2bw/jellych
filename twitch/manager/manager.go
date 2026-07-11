@@ -270,7 +270,7 @@ func (m *Manager) UpdateStatus(ctx context.Context, c *client.TwitchClient) {
 			}
 		}
 
-		status, err := channel.FetchStatus(c, names)
+		status, err := channel.FetchStatusContext(ctx, c, names)
 		if err != nil {
 			slog.Error("failed to fetch channel status", "error", err)
 		} else {
@@ -321,7 +321,7 @@ func (m *Manager) importLatestVODsOnce(ctx context.Context, c *client.TwitchClie
 		return
 	}
 
-	users, err := twitchapi.UserInfo(c.ClientID(), c.AccessToken(), names)
+	users, err := twitchapi.UserInfoContext(ctx, c.ClientID(), c.AccessToken(), names)
 	if err != nil {
 		slog.Error("failed to fetch Twitch users for VOD import", "error", err)
 		return
@@ -334,7 +334,7 @@ func (m *Manager) importLatestVODsOnce(ctx context.Context, c *client.TwitchClie
 			return
 		default:
 		}
-		videos, err := twitchapi.VideosByUser(c.ClientID(), c.AccessToken(), user.ID, latestVODImportLimit)
+		videos, err := twitchapi.VideosByUserContext(ctx, c.ClientID(), c.AccessToken(), user.ID, latestVODImportLimit)
 		if err != nil {
 			slog.Error("failed to fetch latest Twitch VODs", "channel", user.Login, "error", err)
 			continue

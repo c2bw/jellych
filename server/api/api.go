@@ -28,6 +28,7 @@ type APIState struct {
 	channelLogos  map[string]string
 	chMu          sync.RWMutex
 	store         channelStore
+	channelOps    map[string]struct{}
 	vods          []VOD
 	vodStoreRef   vodStore
 	vodMu         sync.RWMutex
@@ -35,6 +36,8 @@ type APIState struct {
 	statusMu      sync.RWMutex
 	webhookSecret string
 	webhookMu     sync.RWMutex
+	controlSecret string
+	controlMu     sync.RWMutex
 }
 
 var defaultState = &APIState{}
@@ -103,6 +106,23 @@ func (s *APIState) jellyfinWebhookSecret() string {
 	s.webhookMu.RLock()
 	defer s.webhookMu.RUnlock()
 	return s.webhookSecret
+}
+
+// SetControlAPISecret configures optional authentication for mutating API routes.
+func SetControlAPISecret(secret string) {
+	defaultState.SetControlAPISecret(secret)
+}
+
+func (s *APIState) SetControlAPISecret(secret string) {
+	s.controlMu.Lock()
+	s.controlSecret = strings.TrimSpace(secret)
+	s.controlMu.Unlock()
+}
+
+func (s *APIState) controlAPISecret() string {
+	s.controlMu.RLock()
+	defer s.controlMu.RUnlock()
+	return s.controlSecret
 }
 
 // SetChannels replaces the in-memory channel list.
@@ -300,18 +320,35 @@ func AddChannel(name string) error {
 
 func (s *APIState) AddChannel(name string) error {
 	s.chMu.Lock()
-	defer s.chMu.Unlock()
 	if slices.Contains(s.channelNames, name) {
+		s.chMu.Unlock()
 		return ErrChannelAlreadyExists
 	}
+	if s.channelOps == nil {
+		s.channelOps = make(map[string]struct{})
+	}
+	if _, active := s.channelOps[name]; active {
+		s.chMu.Unlock()
+		return ErrChannelAlreadyExists
+	}
+	s.channelOps[name] = struct{}{}
+	store := s.store
+	s.chMu.Unlock()
+
 	iconURL := ""
-	if s.store != nil {
+	if store != nil {
 		var err error
-		iconURL, err = s.store.AddChannel(name)
+		iconURL, err = store.AddChannel(name)
 		if err != nil {
+			s.chMu.Lock()
+			delete(s.channelOps, name)
+			s.chMu.Unlock()
 			return err
 		}
 	}
+	s.chMu.Lock()
+	defer s.chMu.Unlock()
+	delete(s.channelOps, name)
 	s.channelNames = append(s.channelNames, name)
 	if iconURL != "" {
 		if s.channelLogos == nil {
@@ -394,15 +431,36 @@ func RemoveChannel(name string) error {
 
 func (s *APIState) RemoveChannel(name string) error {
 	s.chMu.Lock()
-	defer s.chMu.Unlock()
 	idx := slices.Index(s.channelNames, name)
 	if idx < 0 {
+		s.chMu.Unlock()
 		return ErrChannelNotFound
 	}
-	if s.store != nil {
-		if err := s.store.RemoveChannel(name); err != nil {
+	if s.channelOps == nil {
+		s.channelOps = make(map[string]struct{})
+	}
+	if _, active := s.channelOps[name]; active {
+		s.chMu.Unlock()
+		return ErrChannelNotFound
+	}
+	s.channelOps[name] = struct{}{}
+	store := s.store
+	s.chMu.Unlock()
+
+	if store != nil {
+		if err := store.RemoveChannel(name); err != nil {
+			s.chMu.Lock()
+			delete(s.channelOps, name)
+			s.chMu.Unlock()
 			return err
 		}
+	}
+	s.chMu.Lock()
+	defer s.chMu.Unlock()
+	delete(s.channelOps, name)
+	idx = slices.Index(s.channelNames, name)
+	if idx < 0 {
+		return ErrChannelNotFound
 	}
 	s.channelNames = slices.Delete(s.channelNames, idx, idx+1)
 	if s.channelLogos != nil {

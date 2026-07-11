@@ -1,11 +1,12 @@
 package twitchapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,10 @@ type TokenResponse struct {
 }
 
 func GetAccessToken(clientID, clientSecret, redirectURI string) (*TokenResponse, error) {
+	return GetAccessTokenContext(context.Background(), clientID, clientSecret, redirectURI)
+}
+
+func GetAccessTokenContext(ctx context.Context, clientID, clientSecret, redirectURI string) (*TokenResponse, error) {
 	endpoint := "https://id.twitch.tv/oauth2/token"
 	v := url.Values{}
 	v.Set("client_id", clientID)
@@ -29,13 +34,18 @@ func GetAccessToken(clientID, clientSecret, redirectURI string) (*TokenResponse,
 	}
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	resp, err := httpClient.PostForm(endpoint, v)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(v.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readTwitchResponse(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read token response: %w", err)
 	}

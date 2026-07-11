@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,6 +18,53 @@ import (
 )
 
 var resolveVODPlaylist = stream.ResolveVODPlaylist
+
+const maxJSONRequestBytes = 1 << 20
+
+func (a *API) requireControlAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		expected := a.state.controlAPISecret()
+		if expected == "" {
+			next(w, r)
+			return
+		}
+		provided := strings.TrimSpace(r.Header.Get("X-Jellych-API-Secret"))
+		if authorization := strings.TrimSpace(r.Header.Get("Authorization")); strings.HasPrefix(authorization, "Bearer ") {
+			provided = strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
+		}
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="jellych-control"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONRequestBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, "request body must contain one JSON value", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -166,8 +214,7 @@ func buildVODResponses(vods []VOD) []vodResponse {
 
 func (a *API) handleAddVOD(w http.ResponseWriter, r *http.Request) {
 	var vod VOD
-	if err := json.NewDecoder(r.Body).Decode(&vod); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, &vod) {
 		return
 	}
 	vod = PrepareVOD(vod)
@@ -241,6 +288,10 @@ func (a *API) handleStartStream(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !a.state.IsConfiguredChannel(channel) {
+		http.Error(w, "channel not configured", http.StatusNotFound)
+		return
+	}
 
 	if err := stream.Start(channel); err != nil {
 		writeMappedError(w, err, startStreamErrors, http.StatusInternalServerError, "failed to start: %v")
@@ -252,8 +303,7 @@ func (a *API) handleStartStream(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleAddChannel(w http.ResponseWriter, r *http.Request) {
 	var c Channel
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, &c) {
 		return
 	}
 	name, ok := requireValidChannelName(w, c.Name)
@@ -272,8 +322,7 @@ func (a *API) handleRemoveChannelByBody(w http.ResponseWriter, r *http.Request) 
 	var payload struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, &payload) {
 		return
 	}
 	if err := a.removeChannelByName(w, payload.Name); err != nil {
@@ -344,8 +393,7 @@ func (a *API) handleGetChannelStatus(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleSetChannelStatus(w http.ResponseWriter, r *http.Request) {
 	var statuses []Status
-	if err := json.NewDecoder(r.Body).Decode(&statuses); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, &statuses) {
 		return
 	}
 	a.state.SetChannelStatus(statuses)
@@ -357,15 +405,19 @@ func (a *API) handleRecordPlaying(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !a.state.IsConfiguredChannel(channel) {
+		http.Error(w, "channel not configured", http.StatusNotFound)
+		return
+	}
 	var payload struct {
 		SessionID string `json:"sessionId"`
 		Action    string `json:"action"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, &payload) {
 		return
 	}
-	if payload.SessionID == "" {
+	payload.SessionID = strings.TrimSpace(payload.SessionID)
+	if payload.SessionID == "" || len(payload.SessionID) > maxPlaybackSessionIDBytes {
 		http.Error(w, "sessionId required", http.StatusBadRequest)
 		return
 	}
@@ -374,7 +426,10 @@ func (a *API) handleRecordPlaying(w http.ResponseWriter, r *http.Request) {
 	case "stop":
 		StopPlaying(channel, payload.SessionID)
 	default:
-		RecordPlaying(channel, payload.SessionID, time.Now())
+		if !RecordPlaying(channel, payload.SessionID, time.Now()) {
+			http.Error(w, "too many playback sessions", http.StatusTooManyRequests)
+			return
+		}
 	}
 
 	writeText(w, http.StatusOK, "ok")
@@ -400,9 +455,8 @@ func (a *API) handleJellyfinWebhook(w http.ResponseWriter, r *http.Request) {
 		Channel   string `json:"channel"`
 		SessionID string `json:"sessionId"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		slog.Warn("jellyfin webhook: failed to parse JSON", "error", err)
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, &payload) {
+		slog.Warn("jellyfin webhook: failed to parse JSON")
 		return
 	}
 	slog.Info("jellyfin webhook: payload", "action", payload.Action, "channel", payload.Channel, "sessionId", payload.SessionID)
@@ -412,7 +466,12 @@ func (a *API) handleJellyfinWebhook(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("jellyfin webhook: invalid channel name", "channel", payload.Channel)
 		return
 	}
-	if strings.TrimSpace(payload.SessionID) == "" {
+	if !a.state.IsConfiguredChannel(channel) {
+		http.Error(w, "channel not configured", http.StatusNotFound)
+		return
+	}
+	payload.SessionID = strings.TrimSpace(payload.SessionID)
+	if payload.SessionID == "" || len(payload.SessionID) > maxPlaybackSessionIDBytes {
 		slog.Warn("jellyfin webhook: missing sessionId")
 		http.Error(w, "sessionId required", http.StatusBadRequest)
 		return
@@ -433,8 +492,11 @@ func (a *API) handleJellyfinWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		// Mark this session as originating from Jellyfin so it isn't
 		// auto-removed when web/manager heartbeats are missing.
-		MarkJellyfinSession(channel, payload.SessionID)
-		RecordPlaying(channel, payload.SessionID, time.Now())
+		if !RecordPlaying(channel, payload.SessionID, time.Now()) || !MarkJellyfinSession(channel, payload.SessionID) {
+			StopPlaying(channel, payload.SessionID)
+			http.Error(w, "too many playback sessions", http.StatusTooManyRequests)
+			return
+		}
 	}
 
 	writeText(w, http.StatusOK, "ok")

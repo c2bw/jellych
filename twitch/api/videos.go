@@ -1,15 +1,14 @@
 package twitchapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type VideosResponse struct {
@@ -42,6 +41,10 @@ type Video struct {
 
 // VideosByUser fetches the latest archive VODs for a broadcaster user ID.
 func VideosByUser(clientID, accessToken, userID string, first int) (*VideosResponse, error) {
+	return VideosByUserContext(context.Background(), clientID, accessToken, userID, first)
+}
+
+func VideosByUserContext(ctx context.Context, clientID, accessToken, userID string, first int) (*VideosResponse, error) {
 	if userID == "" {
 		return &VideosResponse{Data: []Video{}}, nil
 	}
@@ -59,15 +62,14 @@ func VideosByUser(clientID, accessToken, userID string, first int) (*VideosRespo
 	q.Set("first", strconv.Itoa(first))
 
 	endpoint := "https://api.twitch.tv/helix/videos?" + q.Encode()
-	req, err := http.NewRequest("GET", endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Client-ID", clientID)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := helixHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -82,7 +84,7 @@ func VideosByUser(clientID, accessToken, userID string, first int) (*VideosRespo
 		slog.Debug("Twitch rate limit headers not present")
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readTwitchResponse(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -99,6 +101,10 @@ func VideosByUser(clientID, accessToken, userID string, first int) (*VideosRespo
 
 // VideosByID fetches a single VOD by Twitch video ID.
 func VideosByID(clientID, accessToken, id string) (*VideosResponse, error) {
+	return VideosByIDContext(context.Background(), clientID, accessToken, id)
+}
+
+func VideosByIDContext(ctx context.Context, clientID, accessToken, id string) (*VideosResponse, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return &VideosResponse{Data: []Video{}}, nil
@@ -108,15 +114,14 @@ func VideosByID(clientID, accessToken, id string) (*VideosResponse, error) {
 	q.Set("id", id)
 
 	endpoint := "https://api.twitch.tv/helix/videos?" + q.Encode()
-	req, err := http.NewRequest("GET", endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Client-ID", clientID)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := helixHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -131,7 +136,7 @@ func VideosByID(clientID, accessToken, id string) (*VideosResponse, error) {
 		slog.Debug("Twitch rate limit headers not present")
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readTwitchResponse(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}

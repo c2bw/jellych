@@ -26,6 +26,7 @@ func resetAPIStateForTest(t *testing.T) {
 		SetChannelStatus(nil)
 		SetVODs(nil)
 		SetJellyfinWebhookSecret("")
+		SetControlAPISecret("")
 		SetPlaylistBaseURL("")
 		stream.SetVODDownloadDir("")
 		resolveVODPlaylist = stream.ResolveVODPlaylist
@@ -63,6 +64,26 @@ func TestPingEndpoint(t *testing.T) {
 				t.Fatalf("expected pong response, got %q", got)
 			}
 		})
+	}
+}
+
+func TestControlAPISecretProtectsMutations(t *testing.T) {
+	resetAPIStateForTest(t)
+	SetControlAPISecret("test-secret")
+
+	unauthorized := httptest.NewRequest(http.MethodPost, "/api/status", strings.NewReader("[]"))
+	unauthorizedRec := httptest.NewRecorder()
+	Handler().ServeHTTP(unauthorizedRec, unauthorized)
+	if unauthorizedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, unauthorizedRec.Code)
+	}
+
+	authorized := httptest.NewRequest(http.MethodPost, "/api/status", strings.NewReader("[]"))
+	authorized.Header.Set("Authorization", "Bearer test-secret")
+	authorizedRec := httptest.NewRecorder()
+	Handler().ServeHTTP(authorizedRec, authorized)
+	if authorizedRec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, authorizedRec.Code)
 	}
 }
 
@@ -453,6 +474,56 @@ func TestBuildVODM3UEscapesMetadataAttributes(t *testing.T) {
 
 	if !strings.Contains(playlist, `tvg-name="Title \"With Quotes\""`) {
 		t.Fatalf("expected escaped tvg-name, got %q", playlist)
+	}
+}
+
+func TestBuildVODM3UStripsLineBreaksFromMetadata(t *testing.T) {
+	playlist := BuildVODM3U([]VOD{{
+		ID:      "123",
+		URL:     "https://www.twitch.tv/videos/123",
+		Title:   "safe\nhttps://evil.example/stream.m3u8",
+		Channel: "channel\r\n#EXTINF:1,evil",
+	}})
+
+	if strings.Contains(playlist, "\nhttps://evil.example") || strings.Contains(playlist, "\n#EXTINF:1,evil") {
+		t.Fatalf("metadata injected playlist lines: %q", playlist)
+	}
+}
+
+func TestJSONHandlersRejectUnknownFieldsAndTrailingValues(t *testing.T) {
+	resetAPIStateForTest(t)
+	for name, body := range map[string]string{
+		"unknown":  `[{"name":"test","unknown":true}]`,
+		"trailing": `[] []`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/status", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+			Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
+			}
+		})
+	}
+}
+
+func TestStartStreamRequiresConfiguredChannel(t *testing.T) {
+	resetAPIStateForTest(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/stream/notconfigured", nil)
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
+	}
+}
+
+func TestExpiredJellyfinSessionIsPruned(t *testing.T) {
+	resetAPIStateForTest(t)
+	now := time.Now()
+	playSessions = map[string]map[string]time.Time{"test": {"session": now.Add(-jellyfinSessionMaxAge - time.Second)}}
+	jellyfinSessions = map[string]map[string]time.Time{"test": {"session": now.Add(-jellyfinSessionMaxAge - time.Second)}}
+	if counts := GetPlayingCounts(now); counts["test"] != 0 {
+		t.Fatalf("expected expired Jellyfin session to be pruned, got %v", counts)
 	}
 }
 

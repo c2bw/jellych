@@ -1,11 +1,67 @@
 package stream
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
+
+func TestResolveVODPlaylistSingleflightsAndCaches(t *testing.T) {
+	vodPlaylistCache.Lock()
+	vodPlaylistCache.entries = nil
+	vodPlaylistCache.inflight = nil
+	vodPlaylistCache.Unlock()
+	originalResolve := resolveVODPlaylistUpstream
+	originalFetch := fetchVODPlaylist
+	t.Cleanup(func() {
+		resolveVODPlaylistUpstream = originalResolve
+		fetchVODPlaylist = originalFetch
+	})
+
+	var resolves atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	resolveVODPlaylistUpstream = func(context.Context, string) (string, error) {
+		if resolves.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		return "https://example.test/index.m3u8", nil
+	}
+	fetchVODPlaylist = func(context.Context, string) ([]byte, error) {
+		return []byte("#EXTM3U\n"), nil
+	}
+
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := ResolveVODPlaylist(context.Background(), "https://www.twitch.tv/videos/123")
+			results <- err
+		}()
+	}
+	<-started
+	close(release)
+	wg.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("unexpected resolve error: %v", err)
+		}
+	}
+	if _, err := ResolveVODPlaylist(context.Background(), "https://www.twitch.tv/videos/123"); err != nil {
+		t.Fatalf("unexpected cached resolve error: %v", err)
+	}
+	if got := resolves.Load(); got != 1 {
+		t.Fatalf("expected one upstream resolution, got %d", got)
+	}
+}
 
 func TestNormalizeHLSPlaylistURLsMakesRelativeURIsAbsolute(t *testing.T) {
 	playlist := []byte(`#EXTM3U

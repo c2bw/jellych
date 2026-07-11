@@ -1,9 +1,11 @@
 package server
 
 import (
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/c2bw/jellych/server/api"
@@ -11,8 +13,18 @@ import (
 )
 
 func Start(addr string) (*http.Server, error) {
+	return StartWithAssets(addr, os.DirFS("."))
+}
+
+// StartWithAssets starts the HTTP server with assets rooted above the html directory.
+func StartWithAssets(addr string, assets fs.FS) (*http.Server, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		return nil, err
+	}
+	htmlFS, err := fs.Sub(assets, "html")
+	if err != nil {
+		_ = ln.Close()
 		return nil, err
 	}
 
@@ -22,23 +34,23 @@ func Start(addr string) (*http.Server, error) {
 	mux.Handle("/api/", apiHandler)
 	mux.Handle("/vod/", apiHandler)
 	mux.HandleFunc("/watch", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "./html/watch.html")
+		http.ServeFileFS(w, r, htmlFS, "watch.html")
 	})
 	mux.HandleFunc("/watch/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "./html/watch.html")
+		http.ServeFileFS(w, r, htmlFS, "watch.html")
 	})
 	mux.HandleFunc("/vods", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "./html/vods.html")
+		http.ServeFileFS(w, r, htmlFS, "vods.html")
 	})
 	mux.HandleFunc("/vods/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "./html/vods.html")
+		http.ServeFileFS(w, r, htmlFS, "vods.html")
 	})
-	mux.Handle("/html/", http.StripPrefix("/html/", http.FileServer(http.Dir("./html"))))
+	mux.Handle("/html/", http.StripPrefix("/html/", http.FileServerFS(htmlFS)))
 	mux.Handle("/live/", stream.NewLiveHandler(api.IsConfiguredChannel))
 	mux.Handle("/_live-write/", stream.LiveWriteHandler())
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
-			http.ServeFile(w, r, "./html/watch.html")
+			http.ServeFileFS(w, r, htmlFS, "watch.html")
 			return
 		}
 		http.NotFound(w, r)

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -14,6 +15,8 @@ type TwitchClient struct {
 	accessToken  string
 	expiresIn    int
 	mu           sync.RWMutex
+	cancel       context.CancelFunc
+	done         chan struct{}
 }
 
 func NewClient(clientID, clientSecret string) (*TwitchClient, error) {
@@ -28,8 +31,10 @@ func NewClient(clientID, clientSecret string) (*TwitchClient, error) {
 		accessToken:  tr.AccessToken,
 		expiresIn:    tr.ExpiresIn,
 	}
-	//Auto-refresh token using a timer based on expires_in
-	go twc.autoRefreshToken()
+	ctx, cancel := context.WithCancel(context.Background())
+	twc.cancel = cancel
+	twc.done = make(chan struct{})
+	go twc.autoRefreshToken(ctx)
 	return twc, nil
 }
 
@@ -45,7 +50,21 @@ func (c *TwitchClient) ClientID() string {
 	return c.clientID
 }
 
-func (client *TwitchClient) autoRefreshToken() {
+func (client *TwitchClient) Close() {
+	client.mu.RLock()
+	cancel := client.cancel
+	done := client.done
+	client.mu.RUnlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
+}
+
+func (client *TwitchClient) autoRefreshToken(ctx context.Context) {
+	defer close(client.done)
 	client.mu.RLock()
 	refreshBase := client.expiresIn
 	client.mu.RUnlock()
@@ -53,9 +72,16 @@ func (client *TwitchClient) autoRefreshToken() {
 	ticker := time.NewTicker(refreshInterval)
 	defer ticker.Stop()
 	for {
-		<-ticker.C
-		tr, err := twitchapi.GetAccessToken(client.clientID, client.clientSecret, "")
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		tr, err := twitchapi.GetAccessTokenContext(ctx, client.clientID, client.clientSecret, "")
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			slog.Error("failed to refresh Twitch token", "error", err)
 			// Retry after a short delay if refresh fails
 			ticker.Reset(30 * time.Second)

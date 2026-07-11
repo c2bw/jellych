@@ -34,6 +34,8 @@ const (
 	liveWriteTokenHeader      = "X-Jellych-Live-Write-Token"
 	liveWriteGenerationHeader = "X-Jellych-Live-Generation"
 	maxLiveObjectBytes        = 64 << 20
+	maxLiveChannelBytes       = 256 << 20
+	maxLiveStoreBytes         = 1 << 30
 	liveSegmentDeleteGrace    = 30 * time.Second
 )
 
@@ -74,20 +76,24 @@ func newLiveWriteToken() string {
 }
 
 type LiveStore struct {
-	mu          *sync.RWMutex
-	items       *map[string]map[string][]byte
-	deleteAfter map[string]map[string]time.Time
-	deleteGrace time.Duration
-	now         func() time.Time
+	mu              *sync.RWMutex
+	items           *map[string]map[string][]byte
+	deleteAfter     map[string]map[string]time.Time
+	deleteGrace     time.Duration
+	maxChannelBytes int
+	maxTotalBytes   int
+	now             func() time.Time
 }
 
 func NewLiveStore(mu *sync.RWMutex, items *map[string]map[string][]byte) *LiveStore {
 	return &LiveStore{
-		mu:          mu,
-		items:       items,
-		deleteAfter: make(map[string]map[string]time.Time),
-		deleteGrace: liveSegmentDeleteGrace,
-		now:         time.Now,
+		mu:              mu,
+		items:           items,
+		deleteAfter:     make(map[string]map[string]time.Time),
+		deleteGrace:     liveSegmentDeleteGrace,
+		maxChannelBytes: maxLiveChannelBytes,
+		maxTotalBytes:   maxLiveStoreBytes,
+		now:             time.Now,
 	}
 }
 
@@ -124,22 +130,40 @@ func (s *LiveStore) ClearChannel(channel string) {
 	s.mu.Unlock()
 }
 
-func storeLiveObject(channel, name string, data []byte) {
-	defaultLiveStore.StoreObject(channel, name, data)
+func storeLiveObject(channel, name string, data []byte) bool {
+	return defaultLiveStore.StoreObject(channel, name, data)
 }
 
-func (s *LiveStore) StoreObject(channel, name string, data []byte) {
+func (s *LiveStore) StoreObject(channel, name string, data []byte) bool {
 	channel = normalizeLiveChannel(channel)
 	name = normalizeLiveObjectName(name)
 	if channel == "" || name == "" {
-		return
+		return false
 	}
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.purgeDeletedLocked(channel, s.now())
 	items := s.storeMap()
 	if items[channel] == nil {
 		items[channel] = make(map[string][]byte)
+	}
+	previousSize := len(items[channel][name])
+	channelBytes := -previousSize
+	totalBytes := -previousSize
+	for storedChannel, objects := range items {
+		for _, object := range objects {
+			totalBytes += len(object)
+			if storedChannel == channel {
+				channelBytes += len(object)
+			}
+		}
+	}
+	if s.maxChannelBytes > 0 && channelBytes+len(data) > s.maxChannelBytes {
+		return false
+	}
+	if s.maxTotalBytes > 0 && totalBytes+len(data) > s.maxTotalBytes {
+		return false
 	}
 	items[channel][name] = cloneBytes(data)
 	if pending := s.deleteAfter[channel]; pending != nil {
@@ -148,7 +172,7 @@ func (s *LiveStore) StoreObject(channel, name string, data []byte) {
 			delete(s.deleteAfter, channel)
 		}
 	}
-	s.mu.Unlock()
+	return true
 }
 
 func getLiveObject(channel, name string) []byte {
@@ -396,10 +420,15 @@ func (s *LiveService) handleLiveWrite(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to read live object", http.StatusBadRequest)
 			return
 		}
+		stored := false
 		if !s.registry.commitLiveWrite(channel, generation, func() {
-			s.store.StoreObject(channel, objectName, data)
+			stored = s.store.StoreObject(channel, objectName, data)
 		}) {
 			http.Error(w, "stale live writer", http.StatusConflict)
+			return
+		}
+		if !stored {
+			http.Error(w, "live media store capacity exceeded", http.StatusInsufficientStorage)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)

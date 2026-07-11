@@ -1,13 +1,12 @@
 package twitchapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"time"
 )
 
 type TwitchResponse struct {
@@ -34,8 +33,24 @@ type Stream struct {
 
 // GET https://api.twitch.tv/helix/streams?user_login=CHANNEL_NAME
 func StreamInfo(clientID, accessToken string, channel []string) (*TwitchResponse, error) {
+	return StreamInfoContext(context.Background(), clientID, accessToken, channel)
+}
+
+func StreamInfoContext(ctx context.Context, clientID, accessToken string, channel []string) (*TwitchResponse, error) {
 	if len(channel) == 0 {
 		return &TwitchResponse{Data: []Stream{}}, nil
+	}
+	if len(channel) > 100 {
+		combined := &TwitchResponse{Data: []Stream{}}
+		for start := 0; start < len(channel); start += 100 {
+			end := min(start+100, len(channel))
+			batch, err := StreamInfoContext(ctx, clientID, accessToken, channel[start:end])
+			if err != nil {
+				return nil, err
+			}
+			combined.Data = append(combined.Data, batch.Data...)
+		}
+		return combined, nil
 	}
 	// Build the request URL with query parameters
 	q := url.Values{}
@@ -44,7 +59,7 @@ func StreamInfo(clientID, accessToken string, channel []string) (*TwitchResponse
 	}
 	url := "https://api.twitch.tv/helix/streams?" + q.Encode()
 	// Create a new HTTP request
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -52,8 +67,7 @@ func StreamInfo(clientID, accessToken string, channel []string) (*TwitchResponse
 	req.Header.Set("Client-ID", clientID)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	// Send the HTTP request
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := helixHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -69,7 +83,7 @@ func StreamInfo(clientID, accessToken string, channel []string) (*TwitchResponse
 		slog.Debug("Twitch rate limit headers not present")
 	}
 	// Read and parse the response body
-	body, err := io.ReadAll(resp.Body)
+	body, err := readTwitchResponse(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}

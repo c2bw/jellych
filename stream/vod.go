@@ -10,22 +10,109 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	twitch "github.com/c2bw/twitch-url-extractor"
 )
 
 const maxVODPlaylistBytes = 16 << 20
+const vodPlaylistCacheTTL = 30 * time.Second
+const maxVODPlaylistCacheEntries = 256
+const vodPlaylistResolutionTimeout = 30 * time.Second
 
 var ErrVODManifestRestricted = errors.New("vod manifest restricted")
+
+var resolveVODPlaylistUpstream = resolveVODStreamURL
+var fetchVODPlaylist = FetchAndNormalizeHLSPlaylist
+
+type vodPlaylistCacheEntry struct {
+	data      []byte
+	expiresAt time.Time
+}
+
+type vodPlaylistCall struct {
+	done chan struct{}
+	data []byte
+	err  error
+}
+
+var vodPlaylistCache = struct {
+	sync.Mutex
+	entries  map[string]vodPlaylistCacheEntry
+	inflight map[string]*vodPlaylistCall
+}{}
 
 // ResolveVODPlaylist resolves the upstream HLS URL and returns the playlist
 // with relative URIs made absolute against the upstream playlist URL.
 func ResolveVODPlaylist(ctx context.Context, vodURL string) ([]byte, error) {
-	upstream, err := resolveVODStreamURL(ctx, vodURL)
-	if err != nil {
-		return nil, err
+	key := strings.TrimSpace(vodURL)
+	now := time.Now()
+	vodPlaylistCache.Lock()
+	if entry, ok := vodPlaylistCache.entries[key]; ok {
+		if now.Before(entry.expiresAt) {
+			data := append([]byte(nil), entry.data...)
+			vodPlaylistCache.Unlock()
+			return data, nil
+		}
+		delete(vodPlaylistCache.entries, key)
 	}
-	return FetchAndNormalizeHLSPlaylist(ctx, upstream)
+	if call := vodPlaylistCache.inflight[key]; call != nil {
+		vodPlaylistCache.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-call.done:
+			return append([]byte(nil), call.data...), call.err
+		}
+	}
+	if vodPlaylistCache.entries == nil {
+		vodPlaylistCache.entries = make(map[string]vodPlaylistCacheEntry)
+	}
+	if vodPlaylistCache.inflight == nil {
+		vodPlaylistCache.inflight = make(map[string]*vodPlaylistCall)
+	}
+	call := &vodPlaylistCall{done: make(chan struct{})}
+	vodPlaylistCache.inflight[key] = call
+	vodPlaylistCache.Unlock()
+	go resolveAndCacheVODPlaylist(key, vodURL, call)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-call.done:
+		return append([]byte(nil), call.data...), call.err
+	}
+}
+
+func resolveAndCacheVODPlaylist(key, vodURL string, call *vodPlaylistCall) {
+	ctx, cancel := context.WithTimeout(context.Background(), vodPlaylistResolutionTimeout)
+	defer cancel()
+	upstream, err := resolveVODPlaylistUpstream(ctx, vodURL)
+	var data []byte
+	if err == nil {
+		data, err = fetchVODPlaylist(ctx, upstream)
+	}
+
+	vodPlaylistCache.Lock()
+	call.data = append([]byte(nil), data...)
+	call.err = err
+	if err == nil {
+		for cachedURL, entry := range vodPlaylistCache.entries {
+			if time.Now().After(entry.expiresAt) {
+				delete(vodPlaylistCache.entries, cachedURL)
+			}
+		}
+		if len(vodPlaylistCache.entries) >= maxVODPlaylistCacheEntries {
+			for cachedURL := range vodPlaylistCache.entries {
+				delete(vodPlaylistCache.entries, cachedURL)
+				break
+			}
+		}
+		vodPlaylistCache.entries[key] = vodPlaylistCacheEntry{data: append([]byte(nil), data...), expiresAt: time.Now().Add(vodPlaylistCacheTTL)}
+	}
+	delete(vodPlaylistCache.inflight, key)
+	close(call.done)
+	vodPlaylistCache.Unlock()
 }
 
 func resolveVODStreamURL(ctx context.Context, vodURL string) (string, error) {
