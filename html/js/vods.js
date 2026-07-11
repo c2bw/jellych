@@ -1,3 +1,5 @@
+import { apiFetch } from './auth.js';
+
 const form = document.getElementById('vodForm');
 const idInput = document.getElementById('vodId');
 const addButton = document.getElementById('addVodBtn');
@@ -14,7 +16,7 @@ function setMessage(message, isError){
 }
 
 async function fetchJSON(url, options){
-  const res = await fetch(url, options);
+  const res = await apiFetch(url, options);
   if(!res.ok){
     const text = await res.text();
     throw new Error(text.trim() || res.statusText);
@@ -300,7 +302,7 @@ async function removeVOD(id, button){
   button.disabled = true;
   setMessage('Removing VOD...', false);
   try{
-    const res = await fetch('/api/vods/' + encodeURIComponent(id), { method: 'DELETE' });
+    const res = await apiFetch('/api/vods/' + encodeURIComponent(id), { method: 'DELETE' });
     if(!res.ok){
       const text = await res.text();
       throw new Error(text.trim() || res.statusText);
@@ -318,7 +320,7 @@ async function downloadVOD(id, button){
   button.disabled = true;
   setMessage('Starting VOD download...', false);
   try{
-    const res = await fetch('/api/vods/' + encodeURIComponent(id) + '/download', { method: 'POST' });
+    const res = await apiFetch('/api/vods/' + encodeURIComponent(id) + '/download', { method: 'POST' });
     if(!res.ok){
       const text = await res.text();
       throw new Error(text.trim() || res.statusText);
@@ -341,7 +343,7 @@ async function deleteDownloadedVOD(id, button){
   button.disabled = true;
   setMessage('Deleting downloaded VOD file...', false);
   try{
-    const res = await fetch('/api/vods/' + encodeURIComponent(id) + '/download', { method: 'DELETE' });
+    const res = await apiFetch('/api/vods/' + encodeURIComponent(id) + '/download', { method: 'DELETE' });
     if(!res.ok){
       const text = await res.text();
       throw new Error(text.trim() || res.statusText);

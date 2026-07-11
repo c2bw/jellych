@@ -1,4 +1,5 @@
 import { channelNameOf } from './utils.js';
+import { apiFetch, getControlSecret } from './auth.js';
 
 export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn, managerMsgEl, player, stats, playerTitleEl }){
   const MIN_SEGMENTS_TO_PLAY = 4;
@@ -181,15 +182,16 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
   function sendPlayPing(channel, action){
     const sessionId = getSessionId();
     const payload = JSON.stringify({ sessionId, action });
-    if(action === 'stop' && navigator.sendBeacon){
+    if(action === 'stop' && navigator.sendBeacon && !getControlSecret()){
       const blob = new Blob([payload], { type: 'application/json' });
       navigator.sendBeacon('/api/playing/' + encodeURIComponent(channel), blob);
       return;
     }
-    fetch('/api/playing/' + encodeURIComponent(channel), {
+    apiFetch('/api/playing/' + encodeURIComponent(channel), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: payload,
+      keepalive: action === 'stop',
     }).catch(()=>{});
   }
 
@@ -434,7 +436,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
     const url = '/live/' + encodeURIComponent(channelName) + '/index.m3u8';
     setControlsDisabled(startBtn, playPauseBtn, true);
     try{
-      const res = await fetch('/api/stream/' + encodeURIComponent(channelName), { method: 'POST' });
+      const res = await apiFetch('/api/stream/' + encodeURIComponent(channelName), { method: 'POST' });
       if(res.ok || res.status === 409){
         setStartState(channelName, true);
         setControlsDisabled(startBtn, null, false);
@@ -480,7 +482,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
   async function stopChannel(channelName, startBtn, playPauseBtn){
     setControlsDisabled(startBtn, null, true);
     try{
-      const res = await fetch('/api/stop/' + encodeURIComponent(channelName), { method: 'POST' });
+      const res = await apiFetch('/api/stop/' + encodeURIComponent(channelName), { method: 'POST' });
       if(!res.ok){ const text = await res.text(); throw new Error(text || res.statusText); }
       const isCurrentPlayback = playTargetChannel === channelName;
       setStartState(channelName, false);
@@ -559,7 +561,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
     const name = newNameEl.value.trim(); if(!name){ showManagerMsg('Name required', true); return; }
     const payload = { name };
     try{
-      const res = await fetch('/api/channels/add', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const res = await apiFetch('/api/channels/add', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
       if(res.status === 201 || res.ok){ showManagerMsg('Channel added'); newNameEl.value = ''; fetchChannels(); return; }
       const text = await res.text(); throw new Error(text || res.statusText);
     }catch(e){ showManagerMsg('Add failed: '+e.message, true); }
@@ -569,7 +571,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
   async function removeChannel(){
     const name = removeSelect.value; if(!name){ showManagerMsg('Select a channel to remove', true); return; }
     try{
-      const res = await fetch('/api/channels/remove', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) });
+      const res = await apiFetch('/api/channels/remove', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) });
       if(res.ok){ showManagerMsg('Channel removed'); fetchChannels(); return; }
       const text = await res.text(); throw new Error(text || res.statusText);
     }catch(e){ showManagerMsg('Remove failed: '+e.message, true); }
