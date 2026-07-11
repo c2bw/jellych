@@ -104,6 +104,21 @@ func TestNormalizeHLSPlaylistURLsLeavesDataURIsAlone(t *testing.T) {
 	}
 }
 
+func TestRewriteHLSPlaylistURLsRewritesSegmentsAndURIAttributes(t *testing.T) {
+	playlist := []byte("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"https://cdn.test/key\"\nhttps://cdn.test/segment.ts\n")
+	got, err := RewriteHLSPlaylistURLs(playlist, func(raw string) (string, error) {
+		return "/proxy/" + strings.TrimPrefix(raw, "https://cdn.test/"), nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected rewrite error: %v", err)
+	}
+	for _, want := range []string{`URI="/proxy/key"`, "/proxy/segment.ts"} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("expected rewritten playlist to contain %q, got %q", want, got)
+		}
+	}
+}
+
 func TestRestrictedVODManifestErrorIsClassified(t *testing.T) {
 	err := fmt.Errorf(`usher playlist request failed: 403 Forbidden: [{"error":"Manifest is restricted","error_code":"vod_manifest_restricted","type":"error"}]`)
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,12 @@ import (
 
 	"github.com/c2bw/jellych/stream"
 )
+
+type apiRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f apiRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func resetAPIStateForTest(t *testing.T) {
 	t.Helper()
@@ -30,6 +37,10 @@ func resetAPIStateForTest(t *testing.T) {
 		SetPlaylistBaseURL("")
 		stream.SetVODDownloadDir("")
 		resolveVODPlaylist = stream.ResolveVODPlaylist
+		defaultVODMediaRegistry.Lock()
+		defaultVODMediaRegistry.byToken = nil
+		defaultVODMediaRegistry.byURL = nil
+		defaultVODMediaRegistry.Unlock()
 
 		playMu.Lock()
 		playSessions = nil
@@ -42,6 +53,62 @@ func resetAPIStateForTest(t *testing.T) {
 	}
 	reset()
 	t.Cleanup(reset)
+}
+
+func TestVODPlaylistProxiesCrossOriginMedia(t *testing.T) {
+	resetAPIStateForTest(t)
+	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+	resolveVODPlaylist = func(context.Context, string) ([]byte, error) {
+		return []byte("#EXTM3U\n#EXTINF:4,\nhttps://d3fi1amfgojobc.cloudfront.net/path/0.ts\n"), nil
+	}
+
+	playlistReq := httptest.NewRequest(http.MethodGet, "/vod/123456789/index.m3u8", nil)
+	playlistRec := httptest.NewRecorder()
+	Handler().ServeHTTP(playlistRec, playlistReq)
+	if playlistRec.Code != http.StatusOK {
+		t.Fatalf("expected playlist status %d, got %d: %s", http.StatusOK, playlistRec.Code, playlistRec.Body.String())
+	}
+	if strings.Contains(playlistRec.Body.String(), "cloudfront.net") {
+		t.Fatalf("playlist still exposed cross-origin media URL: %q", playlistRec.Body.String())
+	}
+	var mediaPath string
+	for _, line := range strings.Split(playlistRec.Body.String(), "\n") {
+		if strings.HasPrefix(line, "/vod/123456789/media/") {
+			mediaPath = line
+			break
+		}
+	}
+	if mediaPath == "" {
+		t.Fatalf("expected local media proxy URL, got %q", playlistRec.Body.String())
+	}
+
+	originalClient := vodMediaHTTPClient
+	t.Cleanup(func() { vodMediaHTTPClient = originalClient })
+	vodMediaHTTPClient = &http.Client{Transport: apiRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://d3fi1amfgojobc.cloudfront.net/path/0.ts" {
+			t.Fatalf("unexpected upstream URL %q", req.URL.String())
+		}
+		if got := req.Header.Get("Range"); got != "bytes=0-3" {
+			t.Fatalf("expected Range header to be forwarded, got %q", got)
+		}
+		return &http.Response{
+			StatusCode:    http.StatusPartialContent,
+			Header:        http.Header{"Content-Type": {"video/mp2t"}, "Content-Range": {"bytes 0-3/8"}, "Content-Length": {"4"}},
+			Body:          io.NopCloser(strings.NewReader("data")),
+			ContentLength: 4,
+		}, nil
+	})}
+
+	mediaReq := httptest.NewRequest(http.MethodGet, mediaPath, nil)
+	mediaReq.Header.Set("Range", "bytes=0-3")
+	mediaRec := httptest.NewRecorder()
+	Handler().ServeHTTP(mediaRec, mediaReq)
+	if mediaRec.Code != http.StatusPartialContent || mediaRec.Body.String() != "data" {
+		t.Fatalf("expected proxied partial media, got status=%d body=%q", mediaRec.Code, mediaRec.Body.String())
+	}
+	if got := mediaRec.Header().Get("Content-Range"); got != "bytes 0-3/8" {
+		t.Fatalf("expected Content-Range response header, got %q", got)
+	}
 }
 
 func TestPingEndpoint(t *testing.T) {

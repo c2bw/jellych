@@ -51,6 +51,8 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/playing", a.handleGetPlayingCounts)
 	mux.HandleFunc("POST /api/jellyfin/webhook", a.handleJellyfinWebhook)
 	mux.HandleFunc("GET /vod/{id}/index.m3u8", a.handleGetVODPlaylist)
+	mux.HandleFunc("GET /vod/{id}/media/{token}", a.handleGetVODMedia)
+	mux.HandleFunc("HEAD /vod/{id}/media/{token}", a.handleGetVODMedia)
 
 	return mux
 }

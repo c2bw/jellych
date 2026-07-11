@@ -176,7 +176,11 @@ func FetchAndNormalizeHLSPlaylist(ctx context.Context, playlistURL string) ([]by
 	if len(body) > maxVODPlaylistBytes {
 		return nil, fmt.Errorf("upstream playlist too large")
 	}
-	return NormalizeHLSPlaylistURLs(playlistURL, body)
+	finalURL := playlistURL
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL.String()
+	}
+	return NormalizeHLSPlaylistURLs(finalURL, body)
 }
 
 func NormalizeHLSPlaylistURLs(playlistURL string, data []byte) ([]byte, error) {
@@ -204,6 +208,61 @@ func NormalizeHLSPlaylistURLs(playlistURL string, data []byte) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(b.String()), nil
+}
+
+// RewriteHLSPlaylistURLs replaces absolute media, key, and nested-playlist
+// URLs while preserving the surrounding HLS syntax.
+func RewriteHLSPlaylistURLs(data []byte, rewrite func(string) (string, error)) ([]byte, error) {
+	var b strings.Builder
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		var rewritten string
+		var err error
+		switch {
+		case trimmed == "":
+			rewritten = line
+		case strings.HasPrefix(trimmed, "#"):
+			rewritten, err = rewriteURIAttributesWith(line, rewrite)
+		default:
+			rewritten, err = rewrite(trimmed)
+		}
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(rewritten)
+		b.WriteByte('\n')
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return []byte(b.String()), nil
+}
+
+func rewriteURIAttributesWith(line string, rewrite func(string) (string, error)) (string, error) {
+	const attr = `URI="`
+	var out strings.Builder
+	for {
+		idx := strings.Index(line, attr)
+		if idx < 0 {
+			out.WriteString(line)
+			return out.String(), nil
+		}
+		out.WriteString(line[:idx+len(attr)])
+		line = line[idx+len(attr):]
+		end := strings.IndexByte(line, '"')
+		if end < 0 {
+			out.WriteString(line)
+			return out.String(), nil
+		}
+		rewritten, err := rewrite(line[:end])
+		if err != nil {
+			return "", err
+		}
+		out.WriteString(rewritten)
+		line = line[end:]
+	}
 }
 
 func rewriteURIAttributes(line string, base *url.URL) string {

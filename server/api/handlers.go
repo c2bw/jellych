@@ -587,7 +587,14 @@ func (a *API) handleGetVODPlaylist(w http.ResponseWriter, r *http.Request) {
 		writeMappedError(w, err, vodPlaylistErrors, http.StatusBadGateway, "failed to resolve vod playlist: %v")
 		return
 	}
+	playlist, err = a.rewriteVODPlaylist(id, playlist)
+	if err != nil {
+		slog.Warn("failed to prepare proxied vod playlist", "id", id, "error", err)
+		http.Error(w, "failed to prepare vod playlist", http.StatusServiceUnavailable)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "private, max-age=30")
 	_, _ = w.Write(playlist)
 }
