@@ -520,11 +520,6 @@ func (d *VODDownloader) createPartialFile(id string, download *vodDownload, dir 
 		return "", fmt.Errorf("failed to create partial vod file: %w", err)
 	}
 	path := file.Name()
-	if err := file.Chmod(0644); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", fmt.Errorf("failed to set partial vod permissions: %w", err)
-	}
 	if err := file.Close(); err != nil {
 		_ = os.Remove(path)
 		return "", fmt.Errorf("failed to close partial vod file: %w", err)
