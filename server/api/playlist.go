@@ -7,17 +7,31 @@ import (
 	"time"
 )
 
-var playlistBaseURL string
-
 // SetPlaylistBaseURL configures the absolute server URL used in M3U entries.
 // The application requires this to be set at startup.
 func SetPlaylistBaseURL(raw string) {
+	defaultState.SetPlaylistBaseURL(raw)
+}
+
+func (s *APIState) SetPlaylistBaseURL(raw string) {
 	raw = strings.TrimSpace(raw)
-	playlistBaseURL = strings.TrimRight(raw, "/")
+	s.playlistMu.Lock()
+	s.playlistURL = strings.TrimRight(raw, "/")
+	s.playlistMu.Unlock()
+}
+
+func (s *APIState) playlistBaseURL() string {
+	s.playlistMu.RLock()
+	defer s.playlistMu.RUnlock()
+	return s.playlistURL
 }
 
 // BuildM3U builds a live-channel M3U playlist from configured channels and statuses.
 func BuildM3U(channels []string, statuses []Status, logos map[string]string) string {
+	return defaultState.BuildM3U(channels, statuses, logos)
+}
+
+func (s *APIState) BuildM3U(channels []string, statuses []Status, logos map[string]string) string {
 	statusByName := make(map[string]Status, len(statuses))
 	for _, s := range statuses {
 		statusByName[strings.ToLower(s.Name)] = s
@@ -26,36 +40,40 @@ func BuildM3U(channels []string, statuses []Status, logos map[string]string) str
 	var b strings.Builder
 	b.WriteString("#EXTM3U\n")
 	for _, ch := range channels {
-		s, ok := statusByName[strings.ToLower(ch)]
-		online := ok && s.Online
+		status, ok := statusByName[strings.ToLower(ch)]
+		online := ok && status.Online
 		if !online {
 			continue
 		}
 
 		meta := `group-title="Online"`
-		if ok && s.Viewers > 0 {
-			meta += fmt.Sprintf(" viewers=\"%d\"", s.Viewers)
+		if ok && status.Viewers > 0 {
+			meta += fmt.Sprintf(" viewers=\"%d\"", status.Viewers)
 		}
 		if logo := strings.TrimSpace(logos[strings.ToLower(ch)]); logo != "" {
 			meta += fmt.Sprintf(" tvg-logo=\"%s\"", m3uAttr(logo))
 		}
 		b.WriteString(fmt.Sprintf("#EXTINF:-1 %s,%s\n", meta, ch))
-		b.WriteString(playlistChannelURL(ch) + "\n")
+		b.WriteString(s.playlistChannelURL(ch) + "\n")
 	}
 
 	return b.String()
 }
 
-func playlistChannelURL(channel string) string {
-	return playlistBaseURL + "/live/" + url.PathEscape(channel) + "/index.m3u8"
+func (s *APIState) playlistChannelURL(channel string) string {
+	return s.playlistBaseURL() + "/live/" + url.PathEscape(channel) + "/index.m3u8"
 }
 
-func playlistVODURL(id string) string {
-	return playlistBaseURL + "/vod/" + url.PathEscape(id) + "/index.m3u8"
+func (s *APIState) playlistVODURL(id string) string {
+	return s.playlistBaseURL() + "/vod/" + url.PathEscape(id) + "/index.m3u8"
 }
 
 // BuildVODM3U builds a VOD M3U playlist from persisted VOD metadata.
 func BuildVODM3U(vods []VOD) string {
+	return defaultState.BuildVODM3U(vods)
+}
+
+func (s *APIState) BuildVODM3U(vods []VOD) string {
 	var b strings.Builder
 	b.WriteString("#EXTM3U\n")
 	for _, vod := range vods {
@@ -86,7 +104,7 @@ func BuildVODM3U(vods []VOD) string {
 			meta += fmt.Sprintf(" tvg-date=\"%s\"", m3uAttr(vod.Date))
 		}
 		b.WriteString(fmt.Sprintf("#EXTINF:-1 %s,%s\n", meta, displayTitle))
-		b.WriteString(playlistVODURL(vod.ID) + "\n")
+		b.WriteString(s.playlistVODURL(vod.ID) + "\n")
 	}
 	return b.String()
 }

@@ -530,16 +530,3 @@ func logCommandOutput(command, channel string, r io.Reader) {
 		slog.Debug(command+" log stream ended with error", "channel", channel, "error", err)
 	}
 }
-
-func waitForDone(ch <-chan error, deadline time.Time) bool {
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return false
-	}
-	select {
-	case <-ch:
-		return true
-	case <-time.After(remaining):
-		return false
-	}
-}

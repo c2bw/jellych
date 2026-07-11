@@ -86,21 +86,24 @@ func main() {
 	}
 	slog.Info("Startup paths", "config", *configPath, "liveURL", liveBaseURL)
 	// Create the Twitch client
-	twitchClient, err := client.NewClient(clientID, clientSecret)
+	twitchClient, err := client.NewClientContext(ctx, clientID, clientSecret)
 	if err != nil {
 		slog.Error("failed to create Twitch client", "error", err)
 		os.Exit(1)
 	}
-	//Start the HTTP server
+	// Initialize the Twitch manager before exposing the HTTP listener.
+	stopStatus, err := twitch.StartContext(ctx, twitchClient, *configPath, liveBaseURL)
+	if err != nil {
+		slog.Error("failed to start Twitch manager", "error", err)
+		twitchClient.Close()
+		os.Exit(1)
+	}
+	// Start the HTTP server only after all application dependencies are ready.
 	srv, err := server.StartWithAssets(*addr, webAssets)
 	if err != nil {
 		slog.Error("failed to start HTTP server", "error", err)
-		os.Exit(1)
-	}
-	// Start the Twitch manager
-	stopStatus, err := twitch.Start(twitchClient, *configPath, liveBaseURL)
-	if err != nil {
-		slog.Error("failed to start Twitch manager", "error", err)
+		stopStatus()
+		twitchClient.Close()
 		os.Exit(1)
 	}
 

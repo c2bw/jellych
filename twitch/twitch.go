@@ -11,6 +11,14 @@ import (
 )
 
 func Start(c *client.TwitchClient, configPath, liveBaseURL string) (func(), error) {
+	return StartContext(context.Background(), c, configPath, liveBaseURL)
+}
+
+// StartContext starts Twitch synchronization under the application context.
+func StartContext(parent context.Context, c *client.TwitchClient, configPath, liveBaseURL string) (func(), error) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	stream.SetLiveBaseURL(liveBaseURL)
 	m, err := manager.Start(configPath)
 	if err != nil {
@@ -19,7 +27,7 @@ func Start(c *client.TwitchClient, configPath, liveBaseURL string) (func(), erro
 	m.SetTwitchClient(c)
 	api.SetChannelStore(m)
 	api.SetVODStore(m)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {

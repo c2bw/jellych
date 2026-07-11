@@ -38,6 +38,8 @@ type APIState struct {
 	webhookMu     sync.RWMutex
 	controlSecret string
 	controlMu     sync.RWMutex
+	playlistURL   string
+	playlistMu    sync.RWMutex
 }
 
 var defaultState = &APIState{}

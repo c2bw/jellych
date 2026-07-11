@@ -556,13 +556,13 @@ func (a *API) handleStreamReady(w http.ResponseWriter, r *http.Request) {
 // channels with metadata indicating online/offline status. The playlist
 // entries point to the HLS playlists served under /live/<channel>/index.m3u8.
 func (a *API) handleGetM3U(w http.ResponseWriter, r *http.Request) {
-	playlist := BuildM3U(a.state.GetChannels(), a.state.GetChannelStatus(), a.state.GetChannelLogos())
+	playlist := a.state.BuildM3U(a.state.GetChannels(), a.state.GetChannelStatus(), a.state.GetChannelLogos())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(playlist))
 }
 
 func (a *API) handleGetVODM3U(w http.ResponseWriter, r *http.Request) {
-	playlist := BuildVODM3U(a.state.GetVODs())
+	playlist := a.state.BuildVODM3U(a.state.GetVODs())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(playlist))
 }

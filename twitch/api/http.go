@@ -17,7 +17,7 @@ func readTwitchResponse(body io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	if len(data) > maxTwitchResponseBytes {
-		return nil, fmt.Errorf("Twitch response exceeds %d bytes", maxTwitchResponseBytes)
+		return nil, fmt.Errorf("twitch response exceeds %d bytes", maxTwitchResponseBytes)
 	}
 	return data, nil
 }

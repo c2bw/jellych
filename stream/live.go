@@ -204,10 +204,6 @@ func (s *LiveStore) GetObject(channel, name string) []byte {
 	return cloneBytes(data)
 }
 
-func deleteLiveObject(channel, name string) {
-	defaultLiveStore.DeleteObject(channel, name)
-}
-
 func (s *LiveStore) DeleteObject(channel, name string) {
 	channel = normalizeLiveChannel(channel)
 	name = normalizeLiveObjectName(name)

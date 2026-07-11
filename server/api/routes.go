@@ -14,6 +14,14 @@ func New() *API {
 	return &API{state: defaultState}
 }
 
+// NewWithState returns an isolated API instance backed by state.
+func NewWithState(state *APIState) *API {
+	if state == nil {
+		state = &APIState{}
+	}
+	return &API{state: state}
+}
+
 // Handler returns an http.Handler that exposes API endpoints for controlling streaming.
 func Handler() http.Handler {
 	return defaultAPI.Handler()

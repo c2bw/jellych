@@ -20,7 +20,16 @@ type TwitchClient struct {
 }
 
 func NewClient(clientID, clientSecret string) (*TwitchClient, error) {
-	tr, err := twitchapi.GetAccessToken(clientID, clientSecret, "")
+	return NewClientContext(context.Background(), clientID, clientSecret)
+}
+
+// NewClientContext creates a Twitch client whose token refresh loop is tied to
+// the supplied application context.
+func NewClientContext(ctx context.Context, clientID, clientSecret string) (*TwitchClient, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tr, err := twitchapi.GetAccessTokenContext(ctx, clientID, clientSecret, "")
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +40,7 @@ func NewClient(clientID, clientSecret string) (*TwitchClient, error) {
 		accessToken:  tr.AccessToken,
 		expiresIn:    tr.ExpiresIn,
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	twc.cancel = cancel
 	twc.done = make(chan struct{})
 	go twc.autoRefreshToken(ctx)

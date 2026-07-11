@@ -139,7 +139,7 @@ func (m *Manager) enrichVOD(vod api.VOD) (api.VOD, error) {
 		return vod, fmt.Errorf("failed to fetch Twitch VOD metadata: %w", err)
 	}
 	if len(videos.Data) == 0 {
-		return vod, fmt.Errorf("Twitch VOD metadata not found for id %s", vod.ID)
+		return vod, fmt.Errorf("twitch VOD metadata not found for id %s", vod.ID)
 	}
 
 	enriched := vodFromTwitchVideo(videos.Data[0])

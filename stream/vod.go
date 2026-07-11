@@ -24,7 +24,10 @@ const vodPlaylistResolutionTimeout = 30 * time.Second
 var ErrVODManifestRestricted = errors.New("vod manifest restricted")
 
 var resolveVODPlaylistUpstream = resolveVODStreamURL
-var fetchVODPlaylist = FetchAndNormalizeHLSPlaylist
+var vodPlaylistHTTPClient = &http.Client{Timeout: vodPlaylistResolutionTimeout}
+var fetchVODPlaylist = func(ctx context.Context, playlistURL string) ([]byte, error) {
+	return FetchAndNormalizeHLSPlaylistWithClient(ctx, vodPlaylistHTTPClient, playlistURL)
+}
 
 type vodPlaylistCacheEntry struct {
 	data      []byte
@@ -152,15 +155,24 @@ func isRestrictedVODManifestError(err error) bool {
 // FetchAndNormalizeHLSPlaylist fetches an HLS playlist and makes relative
 // segment, nested playlist, and key URIs absolute without proxying media.
 func FetchAndNormalizeHLSPlaylist(ctx context.Context, playlistURL string) ([]byte, error) {
+	return FetchAndNormalizeHLSPlaylistWithClient(ctx, vodPlaylistHTTPClient, playlistURL)
+}
+
+// FetchAndNormalizeHLSPlaylistWithClient fetches and normalizes an HLS
+// playlist using an explicit HTTP client.
+func FetchAndNormalizeHLSPlaylistWithClient(ctx context.Context, client *http.Client, playlistURL string) ([]byte, error) {
 	if err := validateHTTPURL(playlistURL); err != nil {
 		return nil, err
+	}
+	if client == nil {
+		return nil, fmt.Errorf("http client is required")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, playlistURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch upstream playlist: %w", err)
 	}
