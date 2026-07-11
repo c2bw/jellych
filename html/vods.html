@@ -64,7 +64,10 @@
       <section class="min-w-0 rounded-lg border border-[#222] bg-[#0f0f10] p-4">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 class="text-base font-bold">Saved VODs</h2>
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <select id="vodChannelFilter" class="field w-auto max-w-[180px] py-1.5 text-xs" aria-label="Filter VODs by channel">
+              <option value="all">All channels</option>
+            </select>
             <select id="vodFilter" class="field w-auto py-1.5 text-xs" aria-label="Filter VODs">
               <option value="all">All VODs</option>
               <option value="downloaded">Downloaded only</option>
@@ -72,6 +75,11 @@
           </div>
         </div>
         <div id="vodList" class="flex min-w-0 flex-col gap-2">Loading VODs...</div>
+        <nav id="vodPagination" class="mt-4 hidden items-center justify-between gap-3 border-t border-white/10 pt-3" aria-label="VOD pages">
+          <button id="vodPreviousPage" class="button py-1.5" type="button">Previous</button>
+          <span id="vodPageStatus" class="text-xs text-white/55" aria-live="polite"></span>
+          <button id="vodNextPage" class="button py-1.5" type="button">Next</button>
+        </nav>
       </section>
     </main>
   </div>

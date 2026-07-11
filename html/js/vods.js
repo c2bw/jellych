@@ -7,10 +7,17 @@ const addButton = document.getElementById('addVodBtn');
 const msgEl = document.getElementById('vodMsg');
 const listEl = document.getElementById('vodList');
 const filterEl = document.getElementById('vodFilter');
+const channelFilterEl = document.getElementById('vodChannelFilter');
+const paginationEl = document.getElementById('vodPagination');
+const previousPageEl = document.getElementById('vodPreviousPage');
+const nextPageEl = document.getElementById('vodNextPage');
+const pageStatusEl = document.getElementById('vodPageStatus');
 const downloadPresetEl = document.getElementById('downloadPreset');
 let currentVODs = [];
+let currentPage = 1;
 let progressPollTimer = 0;
 const vodIDLength = 10;
+const vodsPerPage = 15;
 
 function setMessage(message, isError){
   msgEl.textContent = message || '';
@@ -246,27 +253,64 @@ function renderVOD(vod){
   return row;
 }
 
+function renderPagination(totalItems, totalPages){
+  if(totalItems === 0 || totalPages <= 1){
+    paginationEl.classList.add('hidden');
+    paginationEl.classList.remove('flex');
+    return;
+  }
+  paginationEl.classList.remove('hidden');
+  paginationEl.classList.add('flex');
+  previousPageEl.disabled = currentPage <= 1;
+  nextPageEl.disabled = currentPage >= totalPages;
+  const first = (currentPage - 1) * vodsPerPage + 1;
+  const last = Math.min(currentPage * vodsPerPage, totalItems);
+  pageStatusEl.textContent = first + '-' + last + ' of ' + totalItems + ' (page ' + currentPage + ' of ' + totalPages + ')';
+}
+
 function renderVODs(vods){
   listEl.innerHTML = '';
   if(!Array.isArray(vods) || vods.length === 0){
     const onlyDownloaded = filterEl && filterEl.value === 'downloaded';
-    renderEmpty(onlyDownloaded ? 'No downloaded VODs found.' : 'No VODs saved yet.');
+    const channelSelected = channelFilterEl && channelFilterEl.value !== 'all';
+    renderEmpty(onlyDownloaded || channelSelected ? 'No VODs match these filters.' : 'No VODs saved yet.');
+    renderPagination(0, 0);
     return;
   }
+  const sorted = sortVODsByDate(vods);
+  const totalPages = Math.ceil(sorted.length / vodsPerPage);
+  currentPage = Math.min(Math.max(currentPage, 1), totalPages);
+  const pageStart = (currentPage - 1) * vodsPerPage;
   const frag = document.createDocumentFragment();
-  sortVODsByDate(vods).forEach((vod)=>frag.appendChild(renderVOD(vod)));
+  sorted.slice(pageStart, pageStart + vodsPerPage).forEach((vod)=>frag.appendChild(renderVOD(vod)));
   listEl.appendChild(frag);
+  renderPagination(sorted.length, totalPages);
 }
 
 function applyVODFilter(){
   const onlyDownloaded = filterEl && filterEl.value === 'downloaded';
-  const vods = onlyDownloaded ? currentVODs.filter(vodDownloaded) : currentVODs;
+  const selectedChannel = channelFilterEl ? channelFilterEl.value : 'all';
+  const vods = currentVODs.filter((vod)=>{
+    if(onlyDownloaded && !vodDownloaded(vod)) return false;
+    return selectedChannel === 'all' || vodChannel(vod).toLocaleLowerCase() === selectedChannel;
+  });
   renderVODs(vods);
+}
+
+function updateChannelFilter(){
+  if(!channelFilterEl) return;
+  const selected = channelFilterEl.value;
+  const channels = [...new Set(currentVODs.map(vodChannel).filter(Boolean))]
+    .sort((a, b)=>a.localeCompare(b, undefined, {sensitivity: 'base'}));
+  channelFilterEl.replaceChildren(new Option('All channels', 'all'));
+  channels.forEach((channel)=>channelFilterEl.add(new Option(channel, channel.toLocaleLowerCase())));
+  if([...channelFilterEl.options].some((option)=>option.value === selected)) channelFilterEl.value = selected;
 }
 
 async function loadVODs(){
   try{
     currentVODs = await fetchJSON('/api/vods');
+    updateChannelFilter();
     applyVODFilter();
     scheduleProgressPolling();
   }catch(err){
@@ -373,5 +417,21 @@ async function deleteDownloadedVOD(id, button){
 }
 
 form.addEventListener('submit', addVOD);
-filterEl.addEventListener('change', applyVODFilter);
+filterEl.addEventListener('change', ()=>{
+  currentPage = 1;
+  applyVODFilter();
+});
+channelFilterEl.addEventListener('change', ()=>{
+  currentPage = 1;
+  applyVODFilter();
+});
+previousPageEl.addEventListener('click', ()=>{
+  if(currentPage <= 1) return;
+  currentPage -= 1;
+  applyVODFilter();
+});
+nextPageEl.addEventListener('click', ()=>{
+  currentPage += 1;
+  applyVODFilter();
+});
 loadVODs();
