@@ -132,7 +132,9 @@ function renderVOD(vod){
 
   const playlist = document.createElement('a');
   playlist.href = '/vod/' + encodeURIComponent(id) + '/index.m3u8';
-  playlist.textContent = 'Playlist';
+  playlist.setAttribute('aria-label', 'Play');
+  playlist.title = 'Play';
+  playlist.innerHTML = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"></path></svg>';
   playlist.className = 'button no-underline';
 
   const downloadAction = document.createElement('button');
