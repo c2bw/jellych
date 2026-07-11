@@ -30,7 +30,7 @@ Optional environment variables:
 Optional flags:
 
 - `-addr` (default `:8080`) HTTP listen address
-- `-config` (default `/data/config`) path to the channels config directory, which contains persistent configuration files
+- `-config` (default `/data/config`) directory containing the persistent `jellych.db` SQLite configuration database
 - `-vods` folder where manually downloaded VODs are saved
 
 ## Run

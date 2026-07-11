@@ -1,8 +1,7 @@
 package manager
 
 import (
-	"encoding/json"
-	"errors"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,110 +111,131 @@ func TestNormalizeVODConfigRejectsDuplicateIDs(t *testing.T) {
 	}
 }
 
-func TestLoadOrCreateReturnsCreateErrors(t *testing.T) {
+func TestStartReturnsConfigDirectoryErrors(t *testing.T) {
 	tmp := t.TempDir()
 	baseFile := filepath.Join(tmp, "not-a-directory")
 	if err := os.WriteFile(baseFile, []byte("x"), 0644); err != nil {
 		t.Fatalf("failed to create base file: %v", err)
 	}
 
-	_, err := loadOrCreate(baseFile, channelsFile, []byte("[]"))
+	_, err := Start(baseFile)
 	if err == nil {
-		t.Fatal("expected loadOrCreate to return create error")
+		t.Fatal("expected Start to return config directory error")
 	}
 }
 
-func TestStartRewritesNormalizedChannelsConfig(t *testing.T) {
+func TestStartCreatesEmptySQLiteDatabaseAndIgnoresLegacyJSON(t *testing.T) {
 	tmp := t.TempDir()
-	initial := []byte("[{\"name\":\" Jankos \"},{\"name\":\"CAEDREL\"}]")
-	if err := os.WriteFile(filepath.Join(tmp, channelsFile), initial, 0644); err != nil {
-		t.Fatalf("failed to write initial channels file: %v", err)
+	legacyPath := filepath.Join(tmp, "channels.json")
+	legacy := []byte(`[{"name":"jankos"}]`)
+	if err := os.WriteFile(legacyPath, legacy, 0644); err != nil {
+		t.Fatalf("failed to write legacy channels file: %v", err)
 	}
-
-	if _, err := Start(tmp); err != nil {
-		t.Fatalf("expected Start to succeed, got %v", err)
-	}
-
-	rewritten, err := os.ReadFile(filepath.Join(tmp, channelsFile))
+	m, err := Start(tmp)
 	if err != nil {
-		t.Fatalf("failed to read rewritten channels file: %v", err)
-	}
-
-	var got []channel.Info
-	if err := json.Unmarshal(rewritten, &got); err != nil {
-		t.Fatalf("failed to parse rewritten channels file: %v", err)
-	}
-
-	want := []string{"jankos", "caedrel"}
-	if len(got) != len(want) {
-		t.Fatalf("expected %d channels, got %d", len(want), len(got))
-	}
-	for i, name := range want {
-		if got[i].Name != name {
-			t.Fatalf("expected channel %d to be %q, got %q", i, name, got[i].Name)
-		}
-	}
-}
-
-func TestStartRewritesNormalizedVODConfig(t *testing.T) {
-	tmp := t.TempDir()
-	initial := []byte("[{\"url\":\" https://www.twitch.tv/videos/123456789 \"}]")
-	if err := os.WriteFile(filepath.Join(tmp, vodsFile), initial, 0644); err != nil {
-		t.Fatalf("failed to write initial vods file: %v", err)
-	}
-
-	if _, err := Start(tmp); err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
-
-	state := readPersistedVODState(t, tmp)
-	got := state.VODs
-	if len(got) != 1 {
-		t.Fatalf("expected one vod, got %d", len(got))
+	t.Cleanup(func() { _ = m.Close() })
+	if len(m.channels) != 0 || len(m.vods) != 0 || len(m.vodBlacklist) != 0 {
+		t.Fatalf("expected new database to start empty, got %#v %#v %#v", m.channels, m.vods, m.vodBlacklist)
 	}
-	if got[0].ID != "123456789" {
-		t.Fatalf("expected derived vod id, got %q", got[0].ID)
+	if _, err := os.Stat(filepath.Join(tmp, databaseFile)); err != nil {
+		t.Fatalf("expected database file to exist: %v", err)
 	}
-}
-
-func TestStartPersistsVODsAndBlacklistInSingleStateFile(t *testing.T) {
-	tmp := t.TempDir()
-	if _, err := Start(tmp); err != nil {
-		t.Fatalf("expected Start to succeed, got %v", err)
+	unchanged, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatalf("failed to read legacy channels file: %v", err)
 	}
-
-	state := readPersistedVODState(t, tmp)
-	if state.VODs == nil || state.Blacklist == nil {
-		t.Fatalf("expected initialized vod state arrays, got %#v", state)
-	}
-	for _, legacy := range []string{vodsFile, vodBlacklistFile} {
-		if _, err := os.Stat(filepath.Join(tmp, legacy)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("expected legacy file %s to remain absent, got %v", legacy, err)
-		}
+	if string(unchanged) != string(legacy) {
+		t.Fatalf("expected legacy file to remain unchanged, got %s", unchanged)
 	}
 }
 
-func TestAddVODRollsBackWhenAtomicStateWriteFails(t *testing.T) {
+func TestConfigurationPersistsInSQLiteAcrossRestart(t *testing.T) {
 	tmp := t.TempDir()
 	m, err := Start(tmp)
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
-	invalidBase := filepath.Join(tmp, "not-a-directory")
-	if err := os.WriteFile(invalidBase, []byte("x"), 0644); err != nil {
-		t.Fatalf("failed to create invalid config base: %v", err)
+	if _, err := m.AddChannel("jankos"); err != nil {
+		t.Fatalf("failed to add channel: %v", err)
 	}
-	m.configPath = invalidBase
+	vod := api.VOD{ID: "123", URL: "https://www.twitch.tv/videos/123", Title: "Test", Channel: "Jankos", Logo: "logo", Date: "date"}
+	if err := m.AddVOD(vod); err != nil {
+		t.Fatalf("failed to add vod: %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("failed to close database: %v", err)
+	}
+	m, err = Start(tmp)
+	if err != nil {
+		t.Fatalf("expected restart to succeed, got %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	if len(m.channels) != 1 || m.channels[0].Name != "jankos" {
+		t.Fatalf("expected channel to survive restart, got %#v", m.channels)
+	}
+	if got := m.ListVODs(); len(got) != 1 || got[0] != vod {
+		t.Fatalf("expected vod metadata to survive restart, got %#v", got)
+	}
+}
+
+func TestStartRejectsNewerSchemaVersion(t *testing.T) {
+	tmp := t.TempDir()
+	db := openRawDatabase(t, tmp)
+	if _, err := db.Exec(`PRAGMA user_version = 99`); err != nil {
+		t.Fatalf("failed to set schema version: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("failed to close database: %v", err)
+	}
+
+	_, err := Start(tmp)
+	if err == nil || !strings.Contains(err.Error(), "newer than supported") {
+		t.Fatalf("expected unsupported schema error, got %v", err)
+	}
+}
+
+func TestFailedSchemaMigrationRollsBack(t *testing.T) {
+	tmp := t.TempDir()
+	db := openRawDatabase(t, tmp)
+	if _, err := db.Exec(`CREATE TABLE channels (broken TEXT)`); err != nil {
+		t.Fatalf("failed to create conflicting table: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("failed to close database: %v", err)
+	}
+
+	if _, err := Start(tmp); err == nil {
+		t.Fatal("expected schema migration to fail")
+	}
+	db = openRawDatabase(t, tmp)
+	defer db.Close()
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("failed to read schema version: %v", err)
+	}
+	if version != 0 {
+		t.Fatalf("expected failed migration to leave schema version 0, got %d", version)
+	}
+}
+
+func TestAddVODDoesNotChangeMemoryWhenDatabaseWriteFails(t *testing.T) {
+	tmp := t.TempDir()
+	m, err := Start(tmp)
+	if err != nil {
+		t.Fatalf("expected Start to succeed, got %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("failed to close database: %v", err)
+	}
 
 	err = m.AddVOD(api.VOD{ID: "123", URL: "https://www.twitch.tv/videos/123", Title: "Test"})
 	if err == nil {
-		t.Fatal("expected atomic state write to fail")
+		t.Fatal("expected database write to fail")
 	}
 	if got := m.ListVODs(); len(got) != 0 {
-		t.Fatalf("expected in-memory vod state rollback, got %#v", got)
-	}
-	if state := readPersistedVODState(t, tmp); len(state.VODs) != 0 || len(state.Blacklist) != 0 {
-		t.Fatalf("expected persisted state to remain unchanged, got %#v", state)
+		t.Fatalf("expected in-memory vod state to remain unchanged, got %#v", got)
 	}
 }
 
@@ -225,6 +245,7 @@ func TestAddChannelDoesNotDeadlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
+	t.Cleanup(func() { _ = m.Close() })
 
 	done := make(chan error, 1)
 	go func() {
@@ -248,6 +269,7 @@ func TestAddImportedVODsDeduplicatesAndSyncsAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
+	t.Cleanup(func() { _ = m.Close() })
 	api.SetVODStore(m)
 	t.Cleanup(func() {
 		api.SetVODStore(nil)
@@ -288,6 +310,7 @@ func TestRemoveVODBlacklistsAndSkipsFutureImports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
+	t.Cleanup(func() { _ = m.Close() })
 	api.SetVODStore(m)
 	t.Cleanup(func() {
 		api.SetVODStore(nil)
@@ -308,7 +331,7 @@ func TestRemoveVODBlacklistsAndSkipsFutureImports(t *testing.T) {
 		t.Fatalf("expected remove to succeed, got %v", err)
 	}
 
-	blacklist := readPersistedVODState(t, tmp).Blacklist
+	blacklist := readBlacklist(t, m.db)
 	if len(blacklist) != 1 || blacklist[0] != "123" {
 		t.Fatalf("expected blacklist to contain removed VOD, got %#v", blacklist)
 	}
@@ -336,6 +359,7 @@ func TestAPIVODStoreUsesManagerAsSourceOfTruth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
+	t.Cleanup(func() { _ = m.Close() })
 	api.SetVODStore(m)
 	t.Cleanup(func() {
 		api.SetVODStore(nil)
@@ -370,19 +394,21 @@ func TestAPIVODStoreUsesManagerAsSourceOfTruth(t *testing.T) {
 
 func TestAddVODRemovesIDFromBlacklist(t *testing.T) {
 	tmp := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmp, vodBlacklistFile), []byte(`["123"]`), 0644); err != nil {
-		t.Fatalf("failed to write initial vod blacklist: %v", err)
-	}
 	m, err := Start(tmp)
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
+	t.Cleanup(func() { _ = m.Close() })
+	if _, err := m.db.Exec(`INSERT INTO vod_blacklist (id) VALUES ('123')`); err != nil {
+		t.Fatalf("failed to seed vod blacklist: %v", err)
+	}
+	m.vodBlacklist["123"] = struct{}{}
 
 	if err := m.AddVOD(api.VOD{ID: "123", URL: "https://www.twitch.tv/videos/123", Title: "Manual"}); err != nil {
 		t.Fatalf("expected manual add to succeed, got %v", err)
 	}
 
-	blacklist := readPersistedVODState(t, tmp).Blacklist
+	blacklist := readBlacklist(t, m.db)
 	if len(blacklist) != 0 {
 		t.Fatalf("expected manual add to unblacklist VOD, got %#v", blacklist)
 	}
@@ -427,15 +453,33 @@ func TestVODFromTwitchVideoFallsBackToCreatedAt(t *testing.T) {
 	}
 }
 
-func readPersistedVODState(t *testing.T, dir string) persistedVODState {
+func readBlacklist(t *testing.T, db *sql.DB) []string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(dir, vodStateFile))
+	rows, err := db.Query(`SELECT id FROM vod_blacklist ORDER BY id`)
 	if err != nil {
-		t.Fatalf("failed to read persisted vod state: %v", err)
+		t.Fatalf("failed to read vod blacklist: %v", err)
 	}
-	var state persistedVODState
-	if err := json.Unmarshal(b, &state); err != nil {
-		t.Fatalf("failed to parse persisted vod state: %v", err)
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("failed to scan vod blacklist: %v", err)
+		}
+		ids = append(ids, id)
 	}
-	return state
+	return ids
+}
+
+func openRawDatabase(t *testing.T, dir string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(dir, databaseFile))
+	if err != nil {
+		t.Fatalf("failed to open raw database: %v", err)
+	}
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		t.Fatalf("failed to connect to raw database: %v", err)
+	}
+	return db
 }

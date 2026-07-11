@@ -42,7 +42,7 @@ func main() {
 	slog.Info("Starting Jellych", "version", version)
 	//Parse command line flags
 	addr := flag.String("addr", ":8080", "HTTP listen address")
-	configPath := flag.String("config", "/data/config", "path to the channels config directory")
+	configPath := flag.String("config", "/data/config", "directory containing the SQLite configuration database")
 	vodsPath := flag.String("vods", "", "folder where manually downloaded VODs are saved")
 	flag.Parse()
 

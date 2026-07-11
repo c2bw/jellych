@@ -29,6 +29,7 @@ func StartContext(parent context.Context, c *client.TwitchClient, configPath, li
 	api.SetVODStore(m)
 	ctx, cancel := context.WithCancel(parent)
 	var wg sync.WaitGroup
+	var stopOnce sync.Once
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -39,7 +40,10 @@ func StartContext(parent context.Context, c *client.TwitchClient, configPath, li
 		m.ImportLatestVODs(ctx, c)
 	}()
 	return func() {
-		cancel()
-		wg.Wait()
+		stopOnce.Do(func() {
+			cancel()
+			wg.Wait()
+			_ = m.Close()
+		})
 	}, nil
 }

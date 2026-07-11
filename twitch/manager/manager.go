@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -19,7 +20,7 @@ const latestVODImportLimit = 5
 const latestVODImportInterval = 15 * time.Minute
 
 type Manager struct {
-	configPath   string
+	db           *sql.DB
 	channels     []channel.Info
 	vods         []api.VOD
 	vodBlacklist map[string]struct{}
@@ -28,20 +29,25 @@ type Manager struct {
 	mu           sync.RWMutex
 }
 
-type vodState struct {
-	vods      []api.VOD
-	blacklist map[string]struct{}
-}
-
 func Start(configPath string) (*Manager, error) {
-	m := &Manager{configPath: configPath, channels: []channel.Info{}}
-	if err := m.loadChannels(); err != nil {
+	db, err := openDatabase(configPath)
+	if err != nil {
 		return nil, err
 	}
-	if err := m.loadVODState(); err != nil {
+	m := &Manager{db: db, channels: []channel.Info{}}
+	if err := m.loadConfig(); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	return m, nil
+}
+
+// Close releases the configuration database.
+func (m *Manager) Close() error {
+	if m == nil || m.db == nil {
+		return nil
+	}
+	return m.db.Close()
 }
 
 func (m *Manager) SetTwitchClient(c *client.TwitchClient) {
@@ -78,13 +84,11 @@ func (m *Manager) AddChannel(name string) (string, error) {
 			return "", api.ErrChannelAlreadyExists
 		}
 	}
-	backup := append([]channel.Info(nil), m.channels...)
-	m.channels = append(m.channels, channel.Info{Name: name, IconURL: iconURL})
-	if err := m.saveChannels(m.channels); err != nil {
-		m.channels = backup
+	if err := m.insertChannel(name, iconURL); err != nil {
 		m.mu.Unlock()
 		return "", err
 	}
+	m.channels = append(m.channels, channel.Info{Name: name, IconURL: iconURL})
 	m.mu.Unlock()
 	return iconURL, nil
 }
@@ -107,16 +111,12 @@ func (m *Manager) AddVOD(vod api.VOD) error {
 			return api.ErrVODAlreadyExists
 		}
 	}
-	backup := m.snapshotVODStateLocked()
-	if m.vodBlacklist != nil {
-		delete(m.vodBlacklist, vod.ID)
-	}
-	m.vods = append(m.vods, vod)
-	if err := m.saveVODStateLocked(); err != nil {
-		m.restoreVODStateLocked(backup)
+	if err := m.insertVOD(vod); err != nil {
 		m.mu.Unlock()
 		return err
 	}
+	delete(m.vodBlacklist, vod.ID)
+	m.vods = append(m.vods, vod)
 	m.mu.Unlock()
 	return nil
 }
@@ -190,13 +190,12 @@ func (m *Manager) addImportedVODs(items []api.VOD) (int, error) {
 		return 0, nil
 	}
 
-	backup := m.snapshotVODStateLocked()
-	m.vods = next
-	if err := m.saveVODStateLocked(); err != nil {
-		m.restoreVODStateLocked(backup)
+	toInsert := append([]api.VOD(nil), next[len(m.vods):]...)
+	if err := m.insertVODs(toInsert); err != nil {
 		m.mu.Unlock()
 		return 0, err
 	}
+	m.vods = next
 	m.mu.Unlock()
 
 	return added, nil
@@ -205,19 +204,14 @@ func (m *Manager) addImportedVODs(items []api.VOD) (int, error) {
 func (m *Manager) RemoveVOD(id string) error {
 	id = strings.TrimSpace(id)
 	m.mu.Lock()
-	backup := m.snapshotVODStateLocked()
 	for i, vod := range m.vods {
 		if vod.ID == id {
-			m.vods = append(m.vods[:i], m.vods[i+1:]...)
-			if m.vodBlacklist == nil {
-				m.vodBlacklist = make(map[string]struct{})
-			}
-			m.vodBlacklist[id] = struct{}{}
-			if err := m.saveVODStateLocked(); err != nil {
-				m.restoreVODStateLocked(backup)
+			if err := m.deleteVOD(id); err != nil {
 				m.mu.Unlock()
 				return err
 			}
+			m.vods = append(m.vods[:i], m.vods[i+1:]...)
+			m.vodBlacklist[id] = struct{}{}
 			m.mu.Unlock()
 			return nil
 		}
@@ -228,15 +222,13 @@ func (m *Manager) RemoveVOD(id string) error {
 
 func (m *Manager) RemoveChannel(name string) error {
 	m.mu.Lock()
-	backup := append([]channel.Info(nil), m.channels...)
 	for i, c := range m.channels {
 		if c.Name == name {
-			m.channels = append(m.channels[:i], m.channels[i+1:]...)
-			if err := m.saveChannels(m.channels); err != nil {
-				m.channels = backup
+			if err := m.deleteChannel(name); err != nil {
 				m.mu.Unlock()
 				return err
 			}
+			m.channels = append(m.channels[:i], m.channels[i+1:]...)
 			m.mu.Unlock()
 			return nil
 		}

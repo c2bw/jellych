@@ -28,6 +28,7 @@ COPY --from=builder /jellych /usr/local/bin/jellych
 # Copy application assets
 COPY --chown=app:app html/ /etc/jellych/html/
 
+# /data/config stores the persistent jellych.db SQLite database.
 RUN mkdir -p /etc/jellych /data/config /data/vods && chown -R app:app /etc/jellych /data
 
 USER app
