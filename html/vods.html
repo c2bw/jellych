@@ -47,6 +47,18 @@
           <button id="addVodBtn" class="button" type="submit">Add VOD</button>
           <div id="vodMsg" class="min-h-[20px] text-sm text-white/50"></div>
         </form>
+        <div class="mt-5 border-t border-white/10 pt-4">
+          <h2 class="mb-3 text-sm font-bold">Download Settings</h2>
+          <label class="flex flex-col gap-1.5 text-sm text-white/75">
+            Compression preset
+            <select id="downloadPreset" class="field">
+              <option value="original">Original</option>
+              <option value="h264">H.264</option>
+              <option value="hevc">HEVC</option>
+              <option value="vp9">VP9</option>
+            </select>
+          </label>
+        </div>
       </section>
 
       <section class="min-w-0 rounded-lg border border-[#222] bg-[#0f0f10] p-4">

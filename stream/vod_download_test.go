@@ -389,7 +389,7 @@ func TestCleanupExpiredVODDownloadsReportsReadError(t *testing.T) {
 func TestBuildVODDownloadArgsIncludesInputAndMetadata(t *testing.T) {
 	path := filepath.Join("vods", "123456789.mkv")
 	inputURL := "https://vod-secure.twitch.tv/index.m3u8?token=test"
-	args := buildVODDownloadArgs(inputURL, path, "A great stream", "Streamer")
+	args := buildVODDownloadArgs(inputURL, path, "A great stream", "Streamer", VODDownloadPresetOriginal)
 
 	for _, want := range []string{
 		inputURL,
@@ -399,12 +399,128 @@ func TestBuildVODDownloadArgsIncludesInputAndMetadata(t *testing.T) {
 		"pipe:1",
 		"title=A great stream",
 		"artist=Streamer",
+		"jellych_download_preset=original",
 		"matroska",
 		path,
 	} {
 		if !slices.Contains(args, want) {
 			t.Fatalf("expected download args to contain %q, got %#v", want, args)
 		}
+	}
+}
+
+func TestCompletedVODDownloadPresetIsReadOnceAndCached(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "123456789.mkv")
+	if err := os.WriteFile(path, []byte("downloaded"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
+	originalProbe := probeVODDownloadMetadata
+	probeCalls := 0
+	probeVODDownloadMetadata = func(gotPath string) (VODDownloadPreset, error) {
+		probeCalls++
+		if gotPath != path {
+			t.Fatalf("expected probe path %q, got %q", path, gotPath)
+		}
+		return VODDownloadPresetHEVC, nil
+	}
+	t.Cleanup(func() { probeVODDownloadMetadata = originalProbe })
+
+	for range 2 {
+		progress, err := downloader.Progress("123456789")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if progress.Preset != "hevc" {
+			t.Fatalf("expected HEVC preset, got %q", progress.Preset)
+		}
+	}
+	if probeCalls != 1 {
+		t.Fatalf("expected one metadata probe, got %d", probeCalls)
+	}
+}
+
+func TestCompletedVODDownloadPresetProbeFailureIsNotCached(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "123456789.mkv")
+	if err := os.WriteFile(path, []byte("downloaded"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
+	originalProbe := probeVODDownloadMetadata
+	probeCalls := 0
+	probeVODDownloadMetadata = func(string) (VODDownloadPreset, error) {
+		probeCalls++
+		if probeCalls == 1 {
+			return "", errors.New("temporary probe failure")
+		}
+		return VODDownloadPresetVP9, nil
+	}
+	t.Cleanup(func() { probeVODDownloadMetadata = originalProbe })
+
+	first, err := downloader.Progress("123456789")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Downloaded || first.Preset != "" {
+		t.Fatalf("expected downloaded file with unknown preset after probe failure, got %#v", first)
+	}
+	second, err := downloader.Progress("123456789")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Preset != "" || probeCalls != 1 {
+		t.Fatalf("expected failed probe to be backed off, got preset %q after %d calls", second.Preset, probeCalls)
+	}
+	downloader.Lock()
+	cached := downloader.presets["123456789"]
+	cached.retryAt = time.Time{}
+	downloader.presets["123456789"] = cached
+	downloader.Unlock()
+	third, err := downloader.Progress("123456789")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Preset != "vp9" {
+		t.Fatalf("expected retry after backoff to discover VP9 preset, got %q", third.Preset)
+	}
+	if probeCalls != 2 {
+		t.Fatalf("expected probe retry after backoff, got %d calls", probeCalls)
+	}
+}
+
+func TestBuildVODDownloadArgsUsesPresetCodecs(t *testing.T) {
+	tests := []struct {
+		name   string
+		preset VODDownloadPreset
+		want   []string
+	}{
+		{name: "original", preset: VODDownloadPresetOriginal, want: []string{"-c", "copy"}},
+		{name: "h264", preset: VODDownloadPresetH264, want: []string{"libx264", "medium", "23", "aac", "128k", "copy"}},
+		{name: "hevc", preset: VODDownloadPresetHEVC, want: []string{"libx265", "medium", "25", "aac", "128k", "copy"}},
+		{name: "vp9", preset: VODDownloadPresetVP9, want: []string{"libvpx-vp9", "32", "0", "good", "2", "libopus", "128k", "copy"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := buildVODDownloadArgs("input", "output.mkv", "title", "channel", tt.preset)
+			for _, want := range append([]string{"0:v?", "0:a?", "0:s?", "matroska", "output.mkv"}, tt.want...) {
+				if !slices.Contains(args, want) {
+					t.Fatalf("expected %s args to contain %q, got %#v", tt.name, want, args)
+				}
+			}
+		})
+	}
+}
+
+func TestParseVODDownloadPreset(t *testing.T) {
+	for _, value := range []string{"", "original", "h264", "hevc", "vp9", " VP9 "} {
+		if _, err := ParseVODDownloadPreset(value); err != nil {
+			t.Fatalf("expected %q to be valid: %v", value, err)
+		}
+	}
+	if _, err := ParseVODDownloadPreset("custom"); err == nil {
+		t.Fatal("expected unknown preset to be rejected")
 	}
 }
 

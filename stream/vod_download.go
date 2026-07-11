@@ -29,6 +29,8 @@ const vodURLResolutionTimeout = 20 * time.Second
 const vodDownloadCleanupInterval = time.Hour
 const defaultVODDownloadRetention = 30 * 24 * time.Hour
 const vodDownloadStopTimeout = 5 * time.Second
+const vodMetadataProbeTimeout = 5 * time.Second
+const vodMetadataProbeRetryDelay = 30 * time.Second
 const vodPartialDirName = ".jellych-partials"
 
 var vodDownloadIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -55,6 +57,7 @@ type VODDownloadProgress struct {
 	TotalSize      int64     `json:"totalSize,omitempty"`
 	BytesPerSecond int64     `json:"bytesPerSecond,omitempty"`
 	Speed          string    `json:"speed,omitempty"`
+	Preset         string    `json:"preset,omitempty"`
 	StartedAt      time.Time `json:"startedAt,omitempty,omitzero"`
 	UpdatedAt      time.Time `json:"updatedAt,omitempty,omitzero"`
 }
@@ -65,7 +68,32 @@ type VODDownloader struct {
 	retention time.Duration
 	active    map[string]*vodDownload
 	removing  map[string]struct{}
+	presets   map[string]vodPresetCacheEntry
 	stopping  bool
+}
+
+type vodPresetCacheEntry struct {
+	size    int64
+	modTime time.Time
+	preset  VODDownloadPreset
+	retryAt time.Time
+}
+
+var probeVODDownloadMetadata = func(path string) (VODDownloadPreset, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), vodMetadataProbeTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-show_entries", "format_tags=jellych_download_preset", "-of", "default=nw=1:nk=1", path).Output()
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("timed out reading vod download metadata: %w", ctx.Err())
+		}
+		return "", fmt.Errorf("failed to read vod download metadata: %w", err)
+	}
+	preset, err := ParseVODDownloadPreset(string(output))
+	if err != nil {
+		return "", fmt.Errorf("invalid vod download preset metadata: %w", err)
+	}
+	return preset, nil
 }
 
 var vodDownloadState = &VODDownloader{retention: defaultVODDownloadRetention}
@@ -80,6 +108,7 @@ func (d *VODDownloader) SetDir(dir string) {
 	d.Lock()
 	defer d.Unlock()
 	d.dir = strings.TrimSpace(dir)
+	d.presets = nil
 }
 
 // SetVODDownloadRetention configures how long completed VOD downloads are kept.
@@ -191,20 +220,30 @@ func (d *VODDownloader) Progress(id string) (VODDownloadProgress, error) {
 	}
 	d.Unlock()
 
-	downloaded, size, err := d.completedFile(id)
+	downloaded, size, preset, err := d.completedFile(id)
 	if err != nil {
 		return VODDownloadProgress{}, err
 	}
-	return VODDownloadProgress{Downloaded: downloaded, TotalSize: size}, nil
+	return VODDownloadProgress{Downloaded: downloaded, TotalSize: size, Preset: string(preset)}, nil
 }
 
-// StartVODDownload resolves a Twitch VOD and downloads it to a tagged MKV.
+// StartVODDownload resolves a Twitch VOD and downloads it without transcoding.
 func StartVODDownload(ctx context.Context, id, vodURL, title, channel string) error {
-	return vodDownloadState.Start(ctx, id, vodURL, title, channel)
+	return StartVODDownloadWithPreset(ctx, id, vodURL, title, channel, VODDownloadPresetOriginal)
 }
 
-// Start resolves a Twitch VOD and downloads it to a tagged MKV.
+// StartVODDownloadWithPreset resolves a Twitch VOD and downloads it using preset.
+func StartVODDownloadWithPreset(ctx context.Context, id, vodURL, title, channel string, preset VODDownloadPreset) error {
+	return vodDownloadState.StartWithPreset(ctx, id, vodURL, title, channel, preset)
+}
+
+// Start resolves a Twitch VOD and downloads it without transcoding.
 func (d *VODDownloader) Start(ctx context.Context, id, vodURL, title, channel string) error {
+	return d.StartWithPreset(ctx, id, vodURL, title, channel, VODDownloadPresetOriginal)
+}
+
+// StartWithPreset resolves a Twitch VOD and downloads it using preset.
+func (d *VODDownloader) StartWithPreset(ctx context.Context, id, vodURL, title, channel string, preset VODDownloadPreset) error {
 	id = strings.TrimSpace(id)
 	vodURL = strings.TrimSpace(vodURL)
 	title = strings.TrimSpace(title)
@@ -214,6 +253,10 @@ func (d *VODDownloader) Start(ctx context.Context, id, vodURL, title, channel st
 	}
 	if vodURL == "" {
 		return fmt.Errorf("vod url is required")
+	}
+	validatedPreset, err := ParseVODDownloadPreset(string(preset))
+	if err != nil {
+		return err
 	}
 
 	d.Lock()
@@ -254,6 +297,7 @@ func (d *VODDownloader) Start(ctx context.Context, id, vodURL, title, channel st
 	}
 	downloadCtx, cancel := context.WithCancel(ctx)
 	download := newVODDownload()
+	download.progress.Preset = string(validatedPreset)
 	download.cancel = cancel
 	d.active[id] = download
 	d.Unlock()
@@ -280,7 +324,7 @@ func (d *VODDownloader) Start(ctx context.Context, id, vodURL, title, channel st
 		return err
 	}
 
-	cmd := exec.Command("ffmpeg", buildVODDownloadArgs(inputURL, tempPath, title, channel)...)
+	cmd := exec.Command("ffmpeg", buildVODDownloadArgs(inputURL, tempPath, title, channel, validatedPreset)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		d.finishDownload(id, download, tempPath, outputPath, time.Now(), err)
@@ -738,22 +782,22 @@ func vodPartialID(name string) string {
 	return base[:separator]
 }
 
-func (d *VODDownloader) completedFile(id string) (bool, int64, error) {
+func (d *VODDownloader) completedFile(id string) (bool, int64, VODDownloadPreset, error) {
 	id = strings.TrimSpace(id)
 	if !vodDownloadIDRE.MatchString(id) {
-		return false, 0, fmt.Errorf("invalid vod id")
+		return false, 0, "", fmt.Errorf("invalid vod id")
 	}
 
 	d.Lock()
 	dir := d.dir
 	if dir == "" {
 		d.Unlock()
-		return false, 0, ErrVODDownloadsDisabled
+		return false, 0, "", ErrVODDownloadsDisabled
 	}
 	if d.active != nil {
 		if _, ok := d.active[id]; ok {
 			d.Unlock()
-			return false, 0, nil
+			return false, 0, "", nil
 		}
 	}
 	outputPath := vodDownloadPath(dir, id)
@@ -762,14 +806,43 @@ func (d *VODDownloader) completedFile(id string) (bool, int64, error) {
 	info, err := os.Stat(outputPath)
 	if err == nil {
 		if !info.Mode().IsRegular() || info.Size() == 0 {
-			return false, 0, nil
+			return false, 0, "", nil
 		}
-		return true, info.Size(), nil
+		d.Lock()
+		cached, ok := d.presets[id]
+		d.Unlock()
+		if ok && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
+			if cached.preset != "" || time.Now().Before(cached.retryAt) {
+				return true, info.Size(), cached.preset, nil
+			}
+		}
+		preset, probeErr := probeVODDownloadMetadata(outputPath)
+		if probeErr != nil {
+			// Cache an unknown result briefly to avoid a process/log storm while
+			// keeping failures retryable and never guessing the codec.
+			slog.Warn("failed to read vod download preset", "id", id, "error", probeErr)
+			d.Lock()
+			if d.presets == nil {
+				d.presets = make(map[string]vodPresetCacheEntry)
+			}
+			d.presets[id] = vodPresetCacheEntry{
+				size: info.Size(), modTime: info.ModTime(), retryAt: time.Now().Add(vodMetadataProbeRetryDelay),
+			}
+			d.Unlock()
+			return true, info.Size(), "", nil
+		}
+		d.Lock()
+		if d.presets == nil {
+			d.presets = make(map[string]vodPresetCacheEntry)
+		}
+		d.presets[id] = vodPresetCacheEntry{size: info.Size(), modTime: info.ModTime(), preset: preset}
+		d.Unlock()
+		return true, info.Size(), preset, nil
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		return false, 0, nil
+		return false, 0, "", nil
 	}
-	return false, 0, fmt.Errorf("failed to check vod output file: %w", err)
+	return false, 0, "", fmt.Errorf("failed to check vod output file: %w", err)
 }
 
 func (d *VODDownloader) runCleanup(now time.Time) {

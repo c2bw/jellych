@@ -1,4 +1,5 @@
 import { apiFetch } from './auth.js';
+import { appendVODDownloadPresetBadge, vodDownloadRequest } from './vod_download.js';
 
 const form = document.getElementById('vodForm');
 const idInput = document.getElementById('vodId');
@@ -6,6 +7,7 @@ const addButton = document.getElementById('addVodBtn');
 const msgEl = document.getElementById('vodMsg');
 const listEl = document.getElementById('vodList');
 const filterEl = document.getElementById('vodFilter');
+const downloadPresetEl = document.getElementById('downloadPreset');
 let currentVODs = [];
 let progressPollTimer = 0;
 const vodIDLength = 10;
@@ -64,6 +66,10 @@ function vodDownloadRate(vod){
   const rate = Number(value);
   if(!Number.isFinite(rate) || rate <= 0) return 0;
   return rate;
+}
+
+function vodDownloadPreset(vod){
+  return vod.downloadPreset || vod.DownloadPreset || vod.preset || vod.Preset || '';
 }
 
 function formatBytes(value){
@@ -164,6 +170,8 @@ function renderVOD(vod){
   const titleWrap = document.createElement('div');
   titleWrap.className = 'flex min-w-0 flex-1 items-center gap-2';
 
+  const downloadPreset = vodDownloadPreset(vod);
+
   if(channelText){
     const channelBadge = document.createElement('span');
     channelBadge.textContent = channelText;
@@ -200,6 +208,11 @@ function renderVOD(vod){
     meta.appendChild(sizeSeparator);
     meta.appendChild(sizeText);
   }
+  appendVODDownloadPresetBadge(document, meta, {
+    downloaded: vodDownloaded(vod),
+    active: vodDownloadActive(vod),
+    preset: downloadPreset,
+  });
   const urlSeparator = document.createElement('span');
   urlSeparator.className = 'hidden sm:inline';
   urlSeparator.textContent = '-';
@@ -320,7 +333,8 @@ async function downloadVOD(id, button){
   button.disabled = true;
   setMessage('Starting VOD download...', false);
   try{
-    const res = await apiFetch('/api/vods/' + encodeURIComponent(id) + '/download', { method: 'POST' });
+    const preset = downloadPresetEl ? downloadPresetEl.value : 'original';
+    const res = await apiFetch('/api/vods/' + encodeURIComponent(id) + '/download', vodDownloadRequest(preset));
     if(!res.ok){
       const text = await res.text();
       throw new Error(text.trim() || res.statusText);

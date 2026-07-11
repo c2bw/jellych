@@ -12,14 +12,17 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/c2bw/jellych/stream"
 )
 
 var resolveVODPlaylist = stream.ResolveVODPlaylist
+var startVODDownload = stream.StartVODDownloadWithPreset
 
 const maxJSONRequestBytes = 1 << 20
+const maxVODStatusWorkers = 4
 
 func (a *API) requireControlAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -178,38 +181,62 @@ type vodResponse struct {
 	DownloadActive      bool   `json:"downloadActive"`
 	DownloadSize        int64  `json:"downloadSize"`
 	DownloadRate        int64  `json:"downloadRate,omitempty"`
+	DownloadPreset      string `json:"downloadPreset,omitempty"`
 	EstimatedDeletionAt string `json:"estimatedDeletionAt,omitempty"`
 }
 
 func buildVODResponses(vods []VOD) []vodResponse {
 	out := make([]vodResponse, 0, len(vods))
-	for _, vod := range vods {
-		progress, err := stream.GetVODDownloadProgress(vod.ID)
-		if err != nil && !errors.Is(err, stream.ErrVODDownloadsDisabled) {
-			slog.Warn("failed to check vod download status", "id", vod.ID, "error", err)
-		}
-		downloaded := progress.Downloaded
-		downloadActive := progress.Active
-		var estimatedDeletionAt string
-		if downloaded {
-			_, deletionAt, err := stream.VODDownloadStatus(vod.ID)
-			if err != nil && !errors.Is(err, stream.ErrVODDownloadsDisabled) {
-				slog.Warn("failed to check vod download retention status", "id", vod.ID, "error", err)
-			}
-			if !deletionAt.IsZero() {
-				estimatedDeletionAt = deletionAt.Format(time.RFC3339)
-			}
-		}
-		out = append(out, vodResponse{
-			VOD:                 vod,
-			Downloaded:          downloaded,
-			DownloadActive:      downloadActive,
-			DownloadSize:        progress.TotalSize,
-			DownloadRate:        progress.BytesPerSecond,
-			EstimatedDeletionAt: estimatedDeletionAt,
-		})
+	if len(vods) == 0 {
+		return out
 	}
+	out = append(out, make([]vodResponse, len(vods))...)
+	jobs := make(chan int)
+	workerCount := min(maxVODStatusWorkers, len(vods))
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				out[i] = buildVODResponse(vods[i])
+			}
+		}()
+	}
+	for i := range vods {
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
 	return out
+}
+
+func buildVODResponse(vod VOD) vodResponse {
+	progress, err := stream.GetVODDownloadProgress(vod.ID)
+	if err != nil && !errors.Is(err, stream.ErrVODDownloadsDisabled) {
+		slog.Warn("failed to check vod download status", "id", vod.ID, "error", err)
+	}
+	downloaded := progress.Downloaded
+	downloadActive := progress.Active
+	var estimatedDeletionAt string
+	if downloaded {
+		_, deletionAt, err := stream.VODDownloadStatus(vod.ID)
+		if err != nil && !errors.Is(err, stream.ErrVODDownloadsDisabled) {
+			slog.Warn("failed to check vod download retention status", "id", vod.ID, "error", err)
+		}
+		if !deletionAt.IsZero() {
+			estimatedDeletionAt = deletionAt.Format(time.RFC3339)
+		}
+	}
+	return vodResponse{
+		VOD:                 vod,
+		Downloaded:          downloaded,
+		DownloadActive:      downloadActive,
+		DownloadSize:        progress.TotalSize,
+		DownloadRate:        progress.BytesPerSecond,
+		DownloadPreset:      progress.Preset,
+		EstimatedDeletionAt: estimatedDeletionAt,
+	}
 }
 
 func (a *API) handleAddVOD(w http.ResponseWriter, r *http.Request) {
@@ -250,7 +277,44 @@ func (a *API) handleDownloadVOD(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := stream.StartVODDownload(r.Context(), vod.ID, vod.URL, vod.Title, vod.Channel); err != nil {
+	type downloadRequest struct {
+		Preset string `json:"preset"`
+	}
+	payload := &downloadRequest{}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONRequestBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		if !errors.Is(err, io.EOF) {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		payload = &downloadRequest{}
+	} else if payload == nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "request body must contain one JSON value", http.StatusBadRequest)
+		return
+	}
+	preset, err := stream.ParseVODDownloadPreset(payload.Preset)
+	if err != nil {
+		http.Error(w, "invalid download preset", http.StatusBadRequest)
+		return
+	}
+
+	if err := startVODDownload(r.Context(), vod.ID, vod.URL, vod.Title, vod.Channel, preset); err != nil {
 		writeMappedError(w, err, vodDownloadStartErrors, http.StatusInternalServerError, "failed to start vod download: %v")
 		return
 	}

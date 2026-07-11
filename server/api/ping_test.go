@@ -37,6 +37,7 @@ func resetAPIStateForTest(t *testing.T) {
 		SetPlaylistBaseURL("")
 		stream.SetVODDownloadDir("")
 		resolveVODPlaylist = stream.ResolveVODPlaylist
+		startVODDownload = stream.StartVODDownloadWithPreset
 		defaultVODMediaRegistry.Lock()
 		defaultVODMediaRegistry.byToken = nil
 		defaultVODMediaRegistry.byURL = nil
@@ -335,6 +336,88 @@ func TestDownloadVODRequiresConfiguredFolder(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "vod downloads folder is not configured") {
 		t.Fatalf("expected missing folder message, got %q", rec.Body.String())
+	}
+}
+
+func TestDownloadVODAcceptsPresetsAndDefaultsToOriginal(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		body string
+		want stream.VODDownloadPreset
+	}{
+		{name: "empty body", want: stream.VODDownloadPresetOriginal},
+		{name: "omitted preset", body: `{}`, want: stream.VODDownloadPresetOriginal},
+		{name: "original", body: `{"preset":"original"}`, want: stream.VODDownloadPresetOriginal},
+		{name: "h264", body: `{"preset":"h264"}`, want: stream.VODDownloadPresetH264},
+		{name: "hevc", body: `{"preset":"hevc"}`, want: stream.VODDownloadPresetHEVC},
+		{name: "vp9", body: `{"preset":"vp9"}`, want: stream.VODDownloadPresetVP9},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resetAPIStateForTest(t)
+			SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+			var got stream.VODDownloadPreset
+			startVODDownload = func(_ context.Context, _, _, _, _ string, preset stream.VODDownloadPreset) error {
+				got = preset
+				return nil
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/download", strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+			Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, rec.Code, rec.Body.String())
+			}
+			if got != tt.want {
+				t.Fatalf("expected preset %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestDownloadVODRejectsInvalidPresetPayloads(t *testing.T) {
+	for _, body := range []string{`{"preset":"av1"}`, `{`, `null`, `{"preset":"h264","extra":true}`} {
+		t.Run(body, func(t *testing.T) {
+			resetAPIStateForTest(t)
+			SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+			called := false
+			startVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset) error {
+				called = true
+				return nil
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/download", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+			Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+			}
+			if called {
+				t.Fatal("did not expect downloader to be called")
+			}
+		})
+	}
+}
+
+func TestDownloadVODRejectsOversizedPayload(t *testing.T) {
+	resetAPIStateForTest(t)
+	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+	called := false
+	startVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset) error {
+		called = true
+		return nil
+	}
+	body := `{"preset":"original","padding":"` + strings.Repeat("x", maxJSONRequestBytes) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/download", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Fatal("did not expect downloader to be called")
 	}
 }
 
