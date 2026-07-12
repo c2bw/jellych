@@ -44,6 +44,15 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend assets
+        run: npm run build
+
+      - name: Verify generated frontend assets
+        run: git diff --exit-code -- html/assets/app.css html/vendor/hls.min.js html/vendor/hls.LICENSE
+
       - name: Run browser-side tests
         run: node --test scripts/player_test.mjs scripts/auth_test.mjs scripts/vod_download_test.mjs
 

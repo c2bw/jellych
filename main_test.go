@@ -66,3 +66,39 @@ func TestLocalLiveBaseURL(t *testing.T) {
 		})
 	}
 }
+
+func TestEmbeddedPagesUseSelfHostedFrontendAssets(t *testing.T) {
+	pages := []struct {
+		path     string
+		required []string
+	}{
+		{path: "html/watch.html", required: []string{"/html/assets/app.css", "/html/vendor/hls.min.js"}},
+		{path: "html/vods.html", required: []string{"/html/assets/app.css"}},
+	}
+
+	for _, page := range pages {
+		data, err := webAssets.ReadFile(page.path)
+		if err != nil {
+			t.Fatalf("read embedded page %q: %v", page.path, err)
+		}
+		contents := string(data)
+		if strings.Contains(contents, "https://cdn") || strings.Contains(contents, "text/tailwindcss") {
+			t.Fatalf("embedded page %q contains a runtime CDN or Tailwind compiler reference", page.path)
+		}
+		for _, required := range page.required {
+			if !strings.Contains(contents, required) {
+				t.Fatalf("embedded page %q does not reference %q", page.path, required)
+			}
+		}
+	}
+
+	for _, asset := range []string{"html/assets/app.css", "html/vendor/hls.min.js", "html/vendor/hls.LICENSE"} {
+		data, err := webAssets.ReadFile(asset)
+		if err != nil {
+			t.Fatalf("read embedded frontend asset %q: %v", asset, err)
+		}
+		if len(data) == 0 {
+			t.Fatalf("embedded frontend asset %q is empty", asset)
+		}
+	}
+}

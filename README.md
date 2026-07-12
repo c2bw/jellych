@@ -37,6 +37,17 @@ The VOD page can download directly as Original, H.264, HEVC, or VP9. A completed
 
 ## Run
 
+### Frontend assets
+
+The compiled Tailwind stylesheet and pinned Hls.js browser bundle are committed
+under `html/` so normal Go builds do not require Node.js. After changing frontend
+classes, Tailwind configuration, or browser dependencies, regenerate them with:
+
+```bash
+npm ci
+npm run build
+```
+
 ### Docker Compose Example
 
 ```bash

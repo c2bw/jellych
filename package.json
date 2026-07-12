@@ -1,0 +1,13 @@
+{
+  "name": "jellych-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run build:css && node scripts/build_frontend.mjs",
+    "build:css": "tailwindcss -c tailwind.config.cjs -i html/css/tailwind.css -o html/assets/app.css --minify"
+  },
+  "devDependencies": {
+    "hls.js": "1.4.0",
+    "tailwindcss": "3.4.17"
+  }
+}

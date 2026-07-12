@@ -5,23 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Watch - Local HLS Player</title>
   <link rel="icon" href="/html/assets/img/twitch_jellyfish_icon.svg" type="image/svg+xml" />
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style type="text/tailwindcss">
-    @layer components {
-      .btn-base {
-        @apply bg-[#222] py-1 px-2 rounded-md cursor-pointer border border-[#333] min-w-[52px] hover:border-[#4aa3ff] transition-colors;
-      }
-      .btn-started {
-        @apply bg-red-900 border-red-900 text-white;
-      }
-      .btn-playing {
-        @apply bg-green-700 border-green-800 text-white;
-      }
-      .stats-chip {
-        @apply inline-flex items-center gap-1 rounded-full border border-white/10 bg-black/55 px-2 py-1 text-[11px] leading-none text-white/85 backdrop-blur;
-      }
-    }
-  </style>
+  <link rel="stylesheet" href="/html/assets/app.css" />
 </head>
 <body class="bg-[#111] text-[#eee] font-sans m-0 overflow-x-hidden">
   <div class="p-2">
@@ -74,7 +58,7 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.0/dist/hls.min.js"></script>
+  <script src="/html/vendor/hls.min.js"></script>
   <script type="module" src="/html/js/index.js"></script>
 </body>
 </html>

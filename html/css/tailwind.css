@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .btn-base {
+    @apply min-w-[52px] cursor-pointer rounded-md border border-[#333] bg-[#222] px-2 py-1 transition-colors hover:border-[#4aa3ff];
+  }
+
+  .btn-started {
+    @apply border-red-900 bg-red-900 text-white;
+  }
+
+  .btn-playing {
+    @apply border-green-800 bg-green-700 text-white;
+  }
+
+  .stats-chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-white/10 bg-black/55 px-2 py-1 text-[11px] leading-none text-white/85 backdrop-blur;
+  }
+
+  .field {
+    @apply w-full rounded-md border border-[#333] bg-[#171718] px-3 py-2 text-sm text-white outline-none transition-colors placeholder:text-white/35 focus:border-[#4aa3ff];
+  }
+
+  .button {
+    @apply rounded-md border border-[#333] bg-[#242426] px-3 py-2 text-sm font-medium text-white transition-colors hover:border-[#4aa3ff] hover:bg-[#2d2d30] disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .button-danger {
+    @apply border-red-950 bg-red-950/70 hover:border-red-500 hover:bg-red-900;
+  }
+}

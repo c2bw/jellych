@@ -14,6 +14,7 @@ jellych.exe
 .cache/
 data/
 tmp/
+node_modules/
 *.log
 *.tmp
 

@@ -8,6 +8,9 @@ jellych.exe
 *.so
 *.dylib
 
+# Frontend dependencies
+node_modules/
+
 # IDE/editor
 .vscode/
 .DS_Store
