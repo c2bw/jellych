@@ -2,10 +2,6 @@ package twitchapi
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"log/slog"
-	"net/http"
 	"net/url"
 	"strings"
 )
@@ -56,39 +52,9 @@ func UserInfoContext(ctx context.Context, clientID, accessToken string, channels
 	}
 
 	endpoint := "https://api.twitch.tv/helix/users?" + q.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Client-ID", clientID)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	resp, err := helixHTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	remaining := resp.Header.Get("Ratelimit-Remaining")
-	limit := resp.Header.Get("Ratelimit-Limit")
-	reset := resp.Header.Get("Ratelimit-Reset")
-	if remaining != "" {
-		slog.Debug("Twitch rate limit", "remaining", remaining, "limit", limit, "reset", reset)
-	} else {
-		slog.Debug("Twitch rate limit headers not present")
-	}
-
-	body, err := readTwitchResponse(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error: status=%d body=%s", resp.StatusCode, string(body))
-	}
-
 	var usersResp UsersResponse
-	if err := json.Unmarshal(body, &usersResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
+	if err := getHelixJSON(ctx, clientID, accessToken, endpoint, &usersResp); err != nil {
+		return nil, err
 	}
 	return &usersResp, nil
 }
