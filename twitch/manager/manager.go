@@ -31,6 +31,9 @@ type Manager struct {
 	statuses     []channel.Status
 	twitchClient *client.TwitchClient
 	mu           sync.RWMutex
+	// mutationMu serializes persistence changes without blocking readers of the
+	// immutable in-memory snapshots guarded by mu.
+	mutationMu sync.Mutex
 }
 
 func Start(configPath string) (*Manager, error) {
@@ -81,17 +84,23 @@ func (m *Manager) FindVOD(id string) (api.VOD, bool) {
 func (m *Manager) AddChannel(name string) (string, error) {
 	iconURL := m.fetchChannelIconURL(name)
 
-	m.mu.Lock()
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
+
+	m.mu.RLock()
 	for _, c := range m.channels {
 		if c.Name == name {
-			m.mu.Unlock()
+			m.mu.RUnlock()
 			return "", api.ErrChannelAlreadyExists
 		}
 	}
+	m.mu.RUnlock()
+
 	if err := m.insertChannel(name, iconURL); err != nil {
-		m.mu.Unlock()
 		return "", err
 	}
+
+	m.mu.Lock()
 	m.channels = append(m.channels, channel.Info{Name: name, IconURL: iconURL})
 	m.mu.Unlock()
 	return iconURL, nil
@@ -108,17 +117,23 @@ func (m *Manager) AddVOD(vod api.VOD) error {
 		return err
 	}
 
-	m.mu.Lock()
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
+
+	m.mu.RLock()
 	for _, existing := range m.vods {
 		if existing.ID == vod.ID {
-			m.mu.Unlock()
+			m.mu.RUnlock()
 			return api.ErrVODAlreadyExists
 		}
 	}
+	m.mu.RUnlock()
+
 	if err := m.insertVOD(vod); err != nil {
-		m.mu.Unlock()
 		return err
 	}
+
+	m.mu.Lock()
 	delete(m.vodBlacklist, vod.ID)
 	m.vods = append(m.vods, vod)
 	m.mu.Unlock()
@@ -164,14 +179,20 @@ func (m *Manager) addImportedVODs(items []api.VOD) (int, error) {
 		return 0, nil
 	}
 
-	m.mu.Lock()
-	existing := make(map[string]struct{}, len(m.vods)+len(items))
-	for _, vod := range m.vods {
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
+
+	m.mu.RLock()
+	current := append([]api.VOD(nil), m.vods...)
+	blacklisted := cloneStringSet(m.vodBlacklist)
+	m.mu.RUnlock()
+
+	existing := make(map[string]struct{}, len(current)+len(items))
+	for _, vod := range current {
 		existing[vod.ID] = struct{}{}
 	}
-	blacklisted := cloneStringSet(m.vodBlacklist)
 
-	next := append([]api.VOD(nil), m.vods...)
+	next := append([]api.VOD(nil), current...)
 	added := 0
 	for _, vod := range items {
 		vod = api.PrepareVOD(vod)
@@ -190,15 +211,15 @@ func (m *Manager) addImportedVODs(items []api.VOD) (int, error) {
 		added++
 	}
 	if added == 0 {
-		m.mu.Unlock()
 		return 0, nil
 	}
 
-	toInsert := append([]api.VOD(nil), next[len(m.vods):]...)
+	toInsert := append([]api.VOD(nil), next[len(current):]...)
 	if err := m.insertVODs(toInsert); err != nil {
-		m.mu.Unlock()
 		return 0, err
 	}
+
+	m.mu.Lock()
 	m.vods = next
 	m.mu.Unlock()
 
@@ -207,37 +228,45 @@ func (m *Manager) addImportedVODs(items []api.VOD) (int, error) {
 
 func (m *Manager) RemoveVOD(id string) error {
 	id = strings.TrimSpace(id)
-	m.mu.Lock()
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
+
+	m.mu.RLock()
 	for i, vod := range m.vods {
 		if vod.ID == id {
+			m.mu.RUnlock()
 			if err := m.deleteVOD(id); err != nil {
-				m.mu.Unlock()
 				return err
 			}
+			m.mu.Lock()
 			m.vods = append(m.vods[:i], m.vods[i+1:]...)
 			m.vodBlacklist[id] = struct{}{}
 			m.mu.Unlock()
 			return nil
 		}
 	}
-	m.mu.Unlock()
+	m.mu.RUnlock()
 	return api.ErrVODNotFound
 }
 
 func (m *Manager) RemoveChannel(name string) error {
-	m.mu.Lock()
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
+
+	m.mu.RLock()
 	for i, c := range m.channels {
 		if c.Name == name {
+			m.mu.RUnlock()
 			if err := m.deleteChannel(name); err != nil {
-				m.mu.Unlock()
 				return err
 			}
+			m.mu.Lock()
 			m.channels = append(m.channels[:i], m.channels[i+1:]...)
 			m.mu.Unlock()
 			return nil
 		}
 	}
-	m.mu.Unlock()
+	m.mu.RUnlock()
 	return api.ErrChannelNotFound
 }
 

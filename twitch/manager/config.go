@@ -347,20 +347,25 @@ func (m *Manager) updateVODDurations(durations map[string]string) error {
 	if len(durations) == 0 {
 		return nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
+
+	m.mu.RLock()
+	current := append([]api.VOD(nil), m.vods...)
+	m.mu.RUnlock()
+
 	tx, err := m.db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin VOD duration update: %w", err)
 	}
 	defer tx.Rollback()
 	updates := make(map[int]string)
-	for i := range m.vods {
-		duration := strings.TrimSpace(durations[m.vods[i].ID])
-		if duration == "" || duration == m.vods[i].Duration {
+	for i := range current {
+		duration := strings.TrimSpace(durations[current[i].ID])
+		if duration == "" || duration == current[i].Duration {
 			continue
 		}
-		if _, err := tx.Exec(`UPDATE vods SET duration = ? WHERE id = ?`, duration, m.vods[i].ID); err != nil {
+		if _, err := tx.Exec(`UPDATE vods SET duration = ? WHERE id = ?`, duration, current[i].ID); err != nil {
 			return fmt.Errorf("failed to update VOD duration: %w", err)
 		}
 		updates[i] = duration
@@ -368,9 +373,12 @@ func (m *Manager) updateVODDurations(durations map[string]string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit VOD duration update: %w", err)
 	}
+
+	m.mu.Lock()
 	for i, duration := range updates {
 		m.vods[i].Duration = duration
 	}
+	m.mu.Unlock()
 	return nil
 }
 

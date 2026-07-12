@@ -342,6 +342,27 @@ func TestAddVODDoesNotChangeMemoryWhenDatabaseWriteFails(t *testing.T) {
 	}
 }
 
+func TestRemoveVODDoesNotChangeMemoryWhenDatabaseWriteFails(t *testing.T) {
+	m, err := Start(t.TempDir())
+	if err != nil {
+		t.Fatalf("start manager: %v", err)
+	}
+	vod := api.VOD{ID: "123", URL: "https://www.twitch.tv/videos/123", Title: "Test"}
+	if err := m.AddVOD(vod); err != nil {
+		t.Fatalf("add VOD: %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+
+	if err := m.RemoveVOD(vod.ID); err == nil {
+		t.Fatal("expected database removal to fail")
+	}
+	if got := m.ListVODs(); len(got) != 1 || got[0].ID != vod.ID {
+		t.Fatalf("in-memory VOD state changed after failed removal: %#v", got)
+	}
+}
+
 func TestAddChannelDoesNotDeadlock(t *testing.T) {
 	tmp := t.TempDir()
 	m, err := Start(tmp)
@@ -363,6 +384,100 @@ func TestAddChannelDoesNotDeadlock(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("AddChannel timed out; possible lock regression")
+	}
+}
+
+func TestManagerReadsRemainAvailableWhileSQLiteWriteWaits(t *testing.T) {
+	m, err := Start(t.TempDir())
+	if err != nil {
+		t.Fatalf("start manager: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	// The manager intentionally uses one SQLite connection. Holding it here
+	// makes the channel insert wait deterministically without relying on slow
+	// storage or timing hooks.
+	tx, err := m.db.Begin()
+	if err != nil {
+		t.Fatalf("begin blocking transaction: %v", err)
+	}
+	defer tx.Rollback()
+	waitsBefore := m.db.Stats().WaitCount
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := m.AddChannel("jankos")
+		writeDone <- err
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for m.db.Stats().WaitCount == waitsBefore && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if m.db.Stats().WaitCount == waitsBefore {
+		_ = tx.Rollback()
+		t.Fatal("channel write did not reach the blocked SQLite operation")
+	}
+
+	readDone := make(chan []string, 1)
+	go func() { readDone <- m.channelNames() }()
+	select {
+	case names := <-readDone:
+		if len(names) != 0 {
+			t.Fatalf("uncommitted channel became visible: %v", names)
+		}
+	case <-time.After(time.Second):
+		_ = tx.Rollback()
+		<-writeDone
+		t.Fatal("manager read blocked behind SQLite I/O")
+	}
+
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("release blocking transaction: %v", err)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatalf("complete channel write: %v", err)
+	}
+	if names := m.channelNames(); len(names) != 1 || names[0] != "jankos" {
+		t.Fatalf("committed channel state = %v", names)
+	}
+}
+
+func TestConcurrentVODMutationsRemainSerialized(t *testing.T) {
+	m, err := Start(t.TempDir())
+	if err != nil {
+		t.Fatalf("start manager: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	results := make(chan error, 2)
+	vod := api.VOD{ID: "123", URL: "https://www.twitch.tv/videos/123", Title: "Test"}
+	for range 2 {
+		go func() { results <- m.AddVOD(vod) }()
+	}
+	var succeeded, duplicate int
+	for range 2 {
+		err := <-results
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, api.ErrVODAlreadyExists):
+			duplicate++
+		default:
+			t.Fatalf("unexpected concurrent add error: %v", err)
+		}
+	}
+	if succeeded != 1 || duplicate != 1 {
+		t.Fatalf("concurrent results: succeeded=%d duplicate=%d", succeeded, duplicate)
+	}
+	if vods := m.ListVODs(); len(vods) != 1 || vods[0].ID != "123" {
+		t.Fatalf("in-memory VODs = %#v", vods)
+	}
+	var count int
+	if err := m.db.QueryRow(`SELECT COUNT(*) FROM vods WHERE id = '123'`).Scan(&count); err != nil {
+		t.Fatalf("count persisted VODs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("persisted VOD count = %d; want 1", count)
 	}
 }
 
