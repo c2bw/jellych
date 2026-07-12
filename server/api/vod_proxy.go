@@ -48,12 +48,15 @@ func (r *vodMediaRegistry) register(vodID, rawURL string, now time.Time) (string
 
 	r.Lock()
 	defer r.Unlock()
-	r.pruneLocked(now)
 	if token := r.byURL[key]; token != "" {
-		target := r.byToken[token]
-		target.expiresAt = now.Add(vodMediaTokenTTL)
-		r.byToken[token] = target
-		return token, nil
+		target, ok := r.byToken[token]
+		if ok && now.Before(target.expiresAt) {
+			target.expiresAt = now.Add(vodMediaTokenTTL)
+			r.byToken[token] = target
+			return token, nil
+		}
+		delete(r.byToken, token)
+		delete(r.byURL, key)
 	}
 	if len(r.byToken) >= maxVODMediaTokens {
 		return "", fmt.Errorf("VOD media proxy capacity exceeded")
@@ -81,9 +84,15 @@ func (r *vodMediaRegistry) register(vodID, rawURL string, now time.Time) (string
 func (r *vodMediaRegistry) lookup(vodID, token string, now time.Time) (string, bool) {
 	r.Lock()
 	defer r.Unlock()
-	r.pruneLocked(now)
 	target, ok := r.byToken[token]
-	if !ok || target.vodID != vodID {
+	if !ok {
+		return "", false
+	}
+	if !now.Before(target.expiresAt) {
+		r.deleteTokenLocked(token, target)
+		return "", false
+	}
+	if target.vodID != vodID {
 		return "", false
 	}
 	target.expiresAt = now.Add(vodMediaTokenTTL)
@@ -91,23 +100,35 @@ func (r *vodMediaRegistry) lookup(vodID, token string, now time.Time) (string, b
 	return target.url, true
 }
 
+func (r *vodMediaRegistry) prune(now time.Time) {
+	r.Lock()
+	defer r.Unlock()
+	r.pruneLocked(now)
+}
+
 func (r *vodMediaRegistry) pruneLocked(now time.Time) {
 	for token, target := range r.byToken {
 		if now.Before(target.expiresAt) {
 			continue
 		}
-		delete(r.byToken, token)
-		delete(r.byURL, target.vodID+"\x00"+target.url)
+		r.deleteTokenLocked(token, target)
 	}
 }
 
+func (r *vodMediaRegistry) deleteTokenLocked(token string, target vodMediaTarget) {
+	delete(r.byToken, token)
+	delete(r.byURL, target.vodID+"\x00"+target.url)
+}
+
 func (a *API) rewriteVODPlaylist(vodID string, playlist []byte) ([]byte, error) {
+	now := time.Now()
+	defaultVODMediaRegistry.prune(now)
 	return stream.RewriteHLSPlaylistURLs(playlist, func(rawURL string) (string, error) {
 		trimmed := strings.TrimSpace(rawURL)
 		if strings.HasPrefix(trimmed, "data:") {
 			return rawURL, nil
 		}
-		token, err := defaultVODMediaRegistry.register(vodID, trimmed, time.Now())
+		token, err := defaultVODMediaRegistry.register(vodID, trimmed, now)
 		if err != nil {
 			return "", err
 		}
