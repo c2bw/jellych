@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   appendVODConversionControl,
   appendVODDownloadPresetBadge,
+  formatVODDuration,
   formatVODMediaInfo,
   formatVODRemainingTime,
   vodConversionRequest,
@@ -57,6 +58,12 @@ test('conversion request sends the selected preset as JSON', ()=>{
 test('conversion ETA is formatted for the VOD status line', ()=>{
   assert.equal(formatVODRemainingTime(90), '~2m remaining');
   assert.equal(formatVODRemainingTime(4350), '~1h 13m remaining');
+});
+
+test('Twitch VOD duration is formatted for display', ()=>{
+  assert.equal(formatVODDuration('2h3m4s'), '2h 3m 4s');
+  assert.equal(formatVODDuration('45m12s'), '45m 12s');
+  assert.equal(formatVODDuration(''), '');
 });
 
 test('preset command preview matches the FFmpeg codec settings', ()=>{

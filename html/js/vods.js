@@ -1,5 +1,5 @@
 import { apiFetch } from './auth.js';
-import { appendVODConversionControl, appendVODDownloadPresetBadge, formatVODMediaInfo, formatVODRemainingTime, vodConversionRequest, vodDownloadRequest, vodPresetCommand } from './vod_download.js';
+import { appendVODConversionControl, appendVODDownloadPresetBadge, formatVODDuration, formatVODMediaInfo, formatVODRemainingTime, vodConversionRequest, vodDownloadRequest, vodPresetCommand } from './vod_download.js';
 
 const form = document.getElementById('vodForm');
 const idInput = document.getElementById('vodId');
@@ -83,6 +83,10 @@ function vodDownloadRate(vod){
 
 function vodDownloadPreset(vod){
   return vod.downloadPreset || vod.DownloadPreset || vod.preset || vod.Preset || '';
+}
+
+function vodDuration(vod){
+  return vod.duration || vod.Duration || '';
 }
 
 function vodDownloadSpeed(vod){
@@ -236,6 +240,17 @@ function renderVOD(vod){
   dateText.textContent = formatVODDate(vodDate(vod), id);
   const size = vodDownloadSize(vod);
   meta.appendChild(dateText);
+  const duration = formatVODDuration(vodDuration(vod));
+  if(duration){
+    const durationSeparator = document.createElement('span');
+    durationSeparator.className = 'hidden sm:inline';
+    durationSeparator.textContent = '-';
+    const durationText = document.createElement('span');
+    durationText.className = 'shrink-0 tabular-nums text-white/55';
+    durationText.textContent = duration;
+    meta.appendChild(durationSeparator);
+    meta.appendChild(durationText);
+  }
   if(size > 0){
     const sizeSeparator = document.createElement('span');
     sizeSeparator.className = 'hidden sm:inline';
@@ -285,8 +300,8 @@ function renderVOD(vod){
     const downloadStatus = document.createElement('div');
     downloadStatus.className = 'mt-2 text-xs tabular-nums text-white/55';
     const parts = [converting ? 'Converting' : 'Downloading'];
-    if(converting && speed) parts.push(speed);
-    if(converting && etaSeconds > 0) parts.push(formatVODRemainingTime(etaSeconds));
+    if(speed) parts.push(speed);
+    if(etaSeconds > 0) parts.push(formatVODRemainingTime(etaSeconds));
     if(!converting && rate > 0) parts.push(formatMegabytesPerSecond(rate));
     if(size > 0) parts.push(formatBytes(size));
     downloadStatus.textContent = parts.join(' - ');

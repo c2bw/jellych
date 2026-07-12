@@ -16,7 +16,7 @@ import (
 
 const (
 	databaseFile         = "jellych.db"
-	currentSchemaVersion = 1
+	currentSchemaVersion = 2
 )
 
 func openDatabase(configPath string) (*sql.DB, error) {
@@ -65,24 +65,29 @@ func ensureSchema(db *sql.DB) error {
 		return fmt.Errorf("failed to begin config database migration: %w", err)
 	}
 	defer tx.Rollback()
-	statements := []string{
-		`CREATE TABLE channels (
+	var statements []string
+	if version == 0 {
+		statements = append(statements,
+			`CREATE TABLE channels (
 			name TEXT PRIMARY KEY,
 			icon_url TEXT NOT NULL DEFAULT '',
 			position INTEGER NOT NULL UNIQUE
 		)`,
-		`CREATE TABLE vods (
+			`CREATE TABLE vods (
 			id TEXT PRIMARY KEY,
 			url TEXT NOT NULL,
 			title TEXT NOT NULL DEFAULT '',
 			channel TEXT NOT NULL DEFAULT '',
 			logo TEXT NOT NULL DEFAULT '',
 			date TEXT NOT NULL DEFAULT '',
+			duration TEXT NOT NULL DEFAULT '',
 			position INTEGER NOT NULL UNIQUE
 		)`,
-		`CREATE TABLE vod_blacklist (id TEXT PRIMARY KEY)`,
-		fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion),
+			`CREATE TABLE vod_blacklist (id TEXT PRIMARY KEY)`)
+	} else if version == 1 {
+		statements = append(statements, `ALTER TABLE vods ADD COLUMN duration TEXT NOT NULL DEFAULT ''`)
 	}
+	statements = append(statements, fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion))
 	for _, statement := range statements {
 		if _, err := tx.Exec(statement); err != nil {
 			return fmt.Errorf("failed to migrate config database: %w", err)
@@ -153,7 +158,7 @@ func loadChannels(db *sql.DB) ([]channel.Info, error) {
 }
 
 func loadVODs(db *sql.DB) ([]api.VOD, error) {
-	rows, err := db.Query(`SELECT id, url, title, channel, logo, date FROM vods ORDER BY position`)
+	rows, err := db.Query(`SELECT id, url, title, channel, logo, date, duration FROM vods ORDER BY position`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load vods: %w", err)
 	}
@@ -161,7 +166,7 @@ func loadVODs(db *sql.DB) ([]api.VOD, error) {
 	var items []api.VOD
 	for rows.Next() {
 		var item api.VOD
-		if err := rows.Scan(&item.ID, &item.URL, &item.Title, &item.Channel, &item.Logo, &item.Date); err != nil {
+		if err := rows.Scan(&item.ID, &item.URL, &item.Title, &item.Channel, &item.Logo, &item.Date, &item.Duration); err != nil {
 			return nil, fmt.Errorf("failed to scan vod: %w", err)
 		}
 		items = append(items, item)
@@ -330,10 +335,41 @@ func (m *Manager) insertVODs(vods []api.VOD) error {
 }
 
 func insertVODRow(tx *sql.Tx, vod api.VOD, position int) error {
-	_, err := tx.Exec(`INSERT INTO vods (id, url, title, channel, logo, date, position)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, vod.ID, vod.URL, vod.Title, vod.Channel, vod.Logo, vod.Date, position)
+	_, err := tx.Exec(`INSERT INTO vods (id, url, title, channel, logo, date, duration, position)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, vod.ID, vod.URL, vod.Title, vod.Channel, vod.Logo, vod.Date, vod.Duration, position)
 	if err != nil {
 		return fmt.Errorf("failed to save vod %q: %w", vod.ID, err)
+	}
+	return nil
+}
+
+func (m *Manager) updateVODDurations(durations map[string]string) error {
+	if len(durations) == 0 {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tx, err := m.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin VOD duration update: %w", err)
+	}
+	defer tx.Rollback()
+	updates := make(map[int]string)
+	for i := range m.vods {
+		duration := strings.TrimSpace(durations[m.vods[i].ID])
+		if duration == "" || duration == m.vods[i].Duration {
+			continue
+		}
+		if _, err := tx.Exec(`UPDATE vods SET duration = ? WHERE id = ?`, duration, m.vods[i].ID); err != nil {
+			return fmt.Errorf("failed to update VOD duration: %w", err)
+		}
+		updates[i] = duration
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit VOD duration update: %w", err)
+	}
+	for i, duration := range updates {
+		m.vods[i].Duration = duration
 	}
 	return nil
 }

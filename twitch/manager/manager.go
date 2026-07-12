@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -17,7 +18,10 @@ import (
 )
 
 const latestVODImportLimit = 5
-const latestVODImportInterval = 15 * time.Minute
+const vodSyncInterval = 15 * time.Minute
+const vodPruneEverySyncs = 2
+
+var fetchVODsByIDsContext = twitchapi.VideosByIDsContext
 
 type Manager struct {
 	db           *sql.DB
@@ -283,17 +287,72 @@ func (m *Manager) UpdateStatus(ctx context.Context, c *client.TwitchClient) {
 	}
 }
 
-func (m *Manager) ImportLatestVODs(ctx context.Context, c *client.TwitchClient) {
-	m.importLatestVODsOnce(ctx, c)
-
-	ticker := time.NewTicker(latestVODImportInterval)
+// SyncVODs imports recent VODs and refreshes saved metadata every 15 minutes.
+// Confirmed-missing VODs are pruned at startup and every second sync.
+func (m *Manager) SyncVODs(ctx context.Context, c *client.TwitchClient, pruneVOD func(string, func() error) (bool, error)) {
+	ticker := time.NewTicker(vodSyncInterval)
 	defer ticker.Stop()
-	for {
+	for syncNumber := 0; ; syncNumber++ {
+		m.importLatestVODsOnce(ctx, c)
+		m.refreshSavedVODs(ctx, c, pruneVOD, syncNumber%vodPruneEverySyncs == 0)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.importLatestVODsOnce(ctx, c)
+		}
+	}
+}
+
+func (m *Manager) refreshSavedVODs(ctx context.Context, c *client.TwitchClient, pruneVOD func(string, func() error) (bool, error), prune bool) {
+	if c == nil {
+		return
+	}
+	vods := m.ListVODs()
+	ids := make([]string, 0, len(vods))
+	for _, vod := range vods {
+		ids = append(ids, vod.ID)
+	}
+	if len(ids) == 0 || ctx.Err() != nil {
+		return
+	}
+	response, err := fetchVODsByIDsContext(ctx, c.ClientID(), c.AccessToken(), ids)
+	if err != nil {
+		slog.Warn("failed to refresh saved Twitch VODs", "error", err)
+		return
+	}
+	available := make(map[string]twitchapi.Video, len(response.Data))
+	durations := make(map[string]string)
+	for _, video := range response.Data {
+		available[video.ID] = video
+		if duration := strings.TrimSpace(video.Duration); duration != "" {
+			durations[video.ID] = duration
+		}
+	}
+	if err := m.updateVODDurations(durations); err != nil {
+		slog.Warn("failed to update Twitch VOD durations", "error", err)
+	}
+	if !prune {
+		return
+	}
+	for _, vod := range vods {
+		if _, ok := available[vod.ID]; ok {
+			continue
+		}
+		removeMetadata := func() error { return m.RemoveVOD(vod.ID) }
+		var err error
+		removed := false
+		if pruneVOD != nil {
+			removed, err = pruneVOD(vod.ID, removeMetadata)
+		} else {
+			err = removeMetadata()
+			removed = err == nil
+		}
+		if err != nil && !errors.Is(err, api.ErrVODNotFound) {
+			slog.Warn("failed to prune expired VOD", "id", vod.ID, "error", err)
+			continue
+		}
+		if removed {
+			slog.Info("pruned expired Twitch VOD", "id", vod.ID)
 		}
 	}
 }
@@ -418,12 +477,13 @@ func vodFromTwitchVideo(video twitchapi.Video) api.VOD {
 		title = "Twitch VOD " + id
 	}
 	return api.VOD{
-		ID:      id,
-		URL:     strings.TrimSpace(video.URL),
-		Title:   title,
-		Channel: twitchVideoChannel(video),
-		Logo:    normalizeTwitchThumbnail(video.ThumbnailURL),
-		Date:    twitchVideoDate(video),
+		ID:       id,
+		URL:      strings.TrimSpace(video.URL),
+		Title:    title,
+		Channel:  twitchVideoChannel(video),
+		Logo:     normalizeTwitchThumbnail(video.ThumbnailURL),
+		Date:     twitchVideoDate(video),
+		Duration: strings.TrimSpace(video.Duration),
 	}
 }
 

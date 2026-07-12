@@ -19,7 +19,7 @@ import (
 )
 
 var resolveVODPlaylist = stream.ResolveVODPlaylist
-var startVODDownload = stream.StartVODDownloadWithPreset
+var startVODDownload = stream.StartVODDownloadWithPresetAndDuration
 var startVODConversion = stream.ConvertVODDownload
 
 const maxJSONRequestBytes = 1 << 20
@@ -340,7 +340,11 @@ func (a *API) handleDownloadVOD(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := startVODDownload(r.Context(), vod.ID, vod.URL, vod.Title, vod.Channel, preset); err != nil {
+	totalDuration, err := time.ParseDuration(strings.TrimSpace(vod.Duration))
+	if err != nil {
+		totalDuration = 0
+	}
+	if err := startVODDownload(r.Context(), vod.ID, vod.URL, vod.Title, vod.Channel, preset, totalDuration); err != nil {
 		writeMappedError(w, err, vodDownloadStartErrors, http.StatusInternalServerError, "failed to start vod download: %v")
 		return
 	}

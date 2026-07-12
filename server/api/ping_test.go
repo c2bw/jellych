@@ -37,7 +37,7 @@ func resetAPIStateForTest(t *testing.T) {
 		SetPlaylistBaseURL("")
 		stream.SetVODDownloadDir("")
 		resolveVODPlaylist = stream.ResolveVODPlaylist
-		startVODDownload = stream.StartVODDownloadWithPreset
+		startVODDownload = stream.StartVODDownloadWithPresetAndDuration
 		startVODConversion = stream.ConvertVODDownload
 		defaultVODMediaRegistry.Lock()
 		defaultVODMediaRegistry.byToken = nil
@@ -355,10 +355,12 @@ func TestDownloadVODAcceptsPresetsAndDefaultsToOriginal(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			resetAPIStateForTest(t)
-			SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+			SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789", Duration: "2h3m4s"}})
 			var got stream.VODDownloadPreset
-			startVODDownload = func(_ context.Context, _, _, _, _ string, preset stream.VODDownloadPreset) error {
+			var gotDuration time.Duration
+			startVODDownload = func(_ context.Context, _, _, _, _ string, preset stream.VODDownloadPreset, duration time.Duration) error {
 				got = preset
+				gotDuration = duration
 				return nil
 			}
 
@@ -372,6 +374,9 @@ func TestDownloadVODAcceptsPresetsAndDefaultsToOriginal(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("expected preset %q, got %q", tt.want, got)
 			}
+			if gotDuration != 2*time.Hour+3*time.Minute+4*time.Second {
+				t.Fatalf("expected Twitch duration to reach downloader, got %s", gotDuration)
+			}
 		})
 	}
 }
@@ -382,7 +387,7 @@ func TestDownloadVODRejectsInvalidPresetPayloads(t *testing.T) {
 			resetAPIStateForTest(t)
 			SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
 			called := false
-			startVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset) error {
+			startVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error {
 				called = true
 				return nil
 			}
@@ -405,7 +410,7 @@ func TestDownloadVODRejectsOversizedPayload(t *testing.T) {
 	resetAPIStateForTest(t)
 	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
 	called := false
-	startVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset) error {
+	startVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error {
 		called = true
 		return nil
 	}

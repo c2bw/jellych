@@ -2,6 +2,7 @@ package twitch
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/c2bw/jellych/server/api"
@@ -37,7 +38,7 @@ func StartContext(parent context.Context, c *client.TwitchClient, configPath, li
 	}()
 	go func() {
 		defer wg.Done()
-		m.ImportLatestVODs(ctx, c)
+		m.SyncVODs(ctx, c, pruneVODIfNoDownload)
 	}()
 	return func() {
 		stopOnce.Do(func() {
@@ -46,4 +47,12 @@ func StartContext(parent context.Context, c *client.TwitchClient, configPath, li
 			_ = m.Close()
 		})
 	}, nil
+}
+
+func pruneVODIfNoDownload(id string, removeMetadata func() error) (bool, error) {
+	err := stream.RemoveVODMetadataIfNoDownload(id, removeMetadata)
+	if errors.Is(err, stream.ErrVODDownloadProtected) || errors.Is(err, stream.ErrVODRemovalInProgress) {
+		return false, nil
+	}
+	return err == nil, err
 }

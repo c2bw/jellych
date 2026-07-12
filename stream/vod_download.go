@@ -25,6 +25,7 @@ var ErrVODDownloadAlreadyStarted = errors.New("vod download already started")
 var ErrVODDownloadAlreadyExists = errors.New("vod download already exists")
 var ErrVODDownloadNotFound = errors.New("vod download not found")
 var ErrVODDownloadsStopping = errors.New("vod downloads stopping")
+var ErrVODDownloadProtected = errors.New("vod has an active or completed download")
 var ErrVODRemovalInProgress = errors.New("vod removal in progress")
 var ErrVODConversionRequiresOriginal = errors.New("vod conversion requires an original download")
 var ErrVODConversionTargetOriginal = errors.New("vod conversion target must be compressed")
@@ -297,7 +298,12 @@ func StartVODDownload(ctx context.Context, id, vodURL, title, channel string) er
 
 // StartVODDownloadWithPreset resolves a Twitch VOD and downloads it using preset.
 func StartVODDownloadWithPreset(ctx context.Context, id, vodURL, title, channel string, preset VODDownloadPreset) error {
-	return vodDownloadState.StartWithPreset(ctx, id, vodURL, title, channel, preset)
+	return StartVODDownloadWithPresetAndDuration(ctx, id, vodURL, title, channel, preset, 0)
+}
+
+// StartVODDownloadWithPresetAndDuration resolves a Twitch VOD and downloads it using preset.
+func StartVODDownloadWithPresetAndDuration(ctx context.Context, id, vodURL, title, channel string, preset VODDownloadPreset, totalDuration time.Duration) error {
+	return vodDownloadState.StartWithPresetAndDuration(ctx, id, vodURL, title, channel, preset, totalDuration)
 }
 
 // Start resolves a Twitch VOD and downloads it without transcoding.
@@ -307,6 +313,11 @@ func (d *VODDownloader) Start(ctx context.Context, id, vodURL, title, channel st
 
 // StartWithPreset resolves a Twitch VOD and downloads it using preset.
 func (d *VODDownloader) StartWithPreset(ctx context.Context, id, vodURL, title, channel string, preset VODDownloadPreset) error {
+	return d.StartWithPresetAndDuration(ctx, id, vodURL, title, channel, preset, 0)
+}
+
+// StartWithPresetAndDuration resolves a Twitch VOD and downloads it using preset and known duration.
+func (d *VODDownloader) StartWithPresetAndDuration(ctx context.Context, id, vodURL, title, channel string, preset VODDownloadPreset, totalDuration time.Duration) error {
 	id = strings.TrimSpace(id)
 	vodURL = strings.TrimSpace(vodURL)
 	title = strings.TrimSpace(title)
@@ -362,6 +373,7 @@ func (d *VODDownloader) StartWithPreset(ctx context.Context, id, vodURL, title, 
 	download := newVODDownload()
 	download.progress.Preset = string(validatedPreset)
 	download.progress.Operation = "download"
+	download.totalDuration = totalDuration
 	download.cancel = cancel
 	d.active[id] = download
 	d.Unlock()
@@ -688,6 +700,55 @@ func (d *VODDownloader) RemoveWithArtifacts(id string, removeMetadata func() err
 	return removeMetadata()
 }
 
+// RemoveVODMetadataIfNoDownload atomically prevents download startup, verifies
+// that no active or completed download exists, and removes only VOD metadata.
+func RemoveVODMetadataIfNoDownload(id string, removeMetadata func() error) error {
+	return vodDownloadState.RemoveMetadataIfNoDownload(id, removeMetadata)
+}
+
+func (d *VODDownloader) RemoveMetadataIfNoDownload(id string, removeMetadata func() error) error {
+	id = strings.TrimSpace(id)
+	if !vodDownloadIDRE.MatchString(id) {
+		return fmt.Errorf("invalid vod id")
+	}
+	if removeMetadata == nil {
+		return fmt.Errorf("remove metadata callback is required")
+	}
+
+	d.Lock()
+	if d.removing == nil {
+		d.removing = make(map[string]struct{})
+	}
+	if _, exists := d.removing[id]; exists {
+		d.Unlock()
+		return ErrVODRemovalInProgress
+	}
+	if download := d.active[id]; download != nil {
+		d.Unlock()
+		return ErrVODDownloadProtected
+	}
+	if d.dir != "" {
+		info, err := os.Stat(vodDownloadPath(d.dir, id))
+		if err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+			d.Unlock()
+			return ErrVODDownloadProtected
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			d.Unlock()
+			return fmt.Errorf("failed to inspect vod download: %w", err)
+		}
+	}
+	d.removing[id] = struct{}{}
+	d.Unlock()
+	defer func() {
+		d.Lock()
+		delete(d.removing, id)
+		d.Unlock()
+	}()
+
+	return removeMetadata()
+}
+
 func clearVODDownload(id string, download *vodDownload) {
 	vodDownloadState.clear(id, download)
 }
@@ -969,19 +1030,19 @@ func (d *VODDownloader) updateProgress(id string, download *vodDownload, key, va
 		}
 	case "speed":
 		progress.Speed = value
-		updateVODConversionETA(download)
+		updateVODETA(download)
 	case "out_time_us":
 		if micros, err := strconv.ParseInt(value, 10, 64); err == nil && micros >= 0 {
 			download.processedDuration = time.Duration(micros) * time.Microsecond
-			updateVODConversionETA(download)
+			updateVODETA(download)
 		}
 	case "progress":
 		progress.Progress = value
 	}
 }
 
-func updateVODConversionETA(download *vodDownload) {
-	if download.progress.Operation != "convert" || download.totalDuration <= 0 || download.processedDuration <= 0 {
+func updateVODETA(download *vodDownload) {
+	if download.totalDuration <= 0 || download.processedDuration <= 0 {
 		return
 	}
 	speed, err := strconv.ParseFloat(strings.TrimSuffix(download.progress.Speed, "x"), 64)

@@ -15,12 +15,13 @@ type Channel struct {
 }
 
 type VOD struct {
-	ID      string `json:"id"`
-	URL     string `json:"url"`
-	Title   string `json:"title,omitempty"`
-	Channel string `json:"channel,omitempty"`
-	Logo    string `json:"logo,omitempty"`
-	Date    string `json:"date,omitempty"`
+	ID       string `json:"id"`
+	URL      string `json:"url"`
+	Title    string `json:"title,omitempty"`
+	Channel  string `json:"channel,omitempty"`
+	Logo     string `json:"logo,omitempty"`
+	Date     string `json:"date,omitempty"`
+	Duration string `json:"duration,omitempty"`
 }
 
 type APIState struct {
@@ -373,6 +374,7 @@ func NormalizeVOD(vod VOD) VOD {
 	vod.Channel = strings.TrimSpace(vod.Channel)
 	vod.Logo = strings.TrimSpace(vod.Logo)
 	vod.Date = strings.TrimSpace(vod.Date)
+	vod.Duration = strings.TrimSpace(vod.Duration)
 	return vod
 }
 

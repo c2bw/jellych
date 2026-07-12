@@ -32,6 +32,18 @@ export function formatVODRemainingTime(seconds){
   return '~' + Math.max(minutes, 1) + 'm remaining';
 }
 
+export function formatVODDuration(duration){
+  const value = String(duration || '').trim();
+  if(!value) return '';
+  const match = value.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/i);
+  if(!match || !match.slice(1).some(part=>part !== undefined)) return value;
+  return [
+    match[1] !== undefined ? Number(match[1]) + 'h' : '',
+    match[2] !== undefined ? Number(match[2]) + 'm' : '',
+    match[3] !== undefined ? Number(match[3]) + 's' : '',
+  ].filter(Boolean).join(' ');
+}
+
 export function formatVODMediaInfo(codec, height, totalBitrate = 0){
   const normalizedCodec = String(codec || '').toLowerCase();
   const codecLabel = ({h264: 'H.264', hevc: 'HEVC', vp9: 'VP9', av1: 'AV1'})[normalizedCodec] || normalizedCodec.toUpperCase();

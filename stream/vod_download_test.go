@@ -270,6 +270,52 @@ func TestRemoveVODWithArtifactsCancelsActiveDownloadAndBlocksRestart(t *testing.
 	}
 }
 
+func TestRemoveMetadataIfNoDownloadProtectsActiveAndCompletedDownloads(t *testing.T) {
+	dir := t.TempDir()
+	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
+	downloader.active = map[string]*vodDownload{"123456789": newVODDownload()}
+	called := false
+	remove := func() error {
+		called = true
+		return nil
+	}
+	if err := downloader.RemoveMetadataIfNoDownload("123456789", remove); !errors.Is(err, ErrVODDownloadProtected) {
+		t.Fatalf("expected active download to be protected, got %v", err)
+	}
+	delete(downloader.active, "123456789")
+	writeVODDownloadTestFile(t, dir, "123456789.mkv", time.Now())
+	if err := downloader.RemoveMetadataIfNoDownload("123456789", remove); !errors.Is(err, ErrVODDownloadProtected) {
+		t.Fatalf("expected completed download to be protected, got %v", err)
+	}
+	if called {
+		t.Fatal("did not expect metadata callback for protected download")
+	}
+}
+
+func TestRemoveMetadataIfNoDownloadBlocksConcurrentStart(t *testing.T) {
+	dir := t.TempDir()
+	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
+	metadataStarted := make(chan struct{})
+	releaseMetadata := make(chan struct{})
+	removeErr := make(chan error, 1)
+	go func() {
+		removeErr <- downloader.RemoveMetadataIfNoDownload("123456789", func() error {
+			close(metadataStarted)
+			<-releaseMetadata
+			return nil
+		})
+	}()
+
+	<-metadataStarted
+	if err := downloader.Start(context.Background(), "123456789", "https://www.twitch.tv/videos/123456789", "Test", "channel"); !errors.Is(err, ErrVODRemovalInProgress) {
+		t.Fatalf("expected download startup to be blocked during pruning, got %v", err)
+	}
+	close(releaseMetadata)
+	if err := <-removeErr; err != nil {
+		t.Fatalf("expected metadata pruning to succeed, got %v", err)
+	}
+}
+
 func TestCleanupExpiredVODDownloads(t *testing.T) {
 	dir := t.TempDir()
 	SetVODDownloadDir(dir)
@@ -673,23 +719,27 @@ func TestUpdateVODDownloadProgressCalculatesByteRate(t *testing.T) {
 	}
 }
 
-func TestUpdateVODDownloadProgressCalculatesConversionETA(t *testing.T) {
-	download := newVODDownload()
-	download.progress.Operation = "convert"
-	download.totalDuration = 100 * time.Second
-	vodDownloadState.Lock()
-	vodDownloadState.active = map[string]*vodDownload{"active": download}
-	vodDownloadState.Unlock()
-	t.Cleanup(func() { clearVODDownload("active", download) })
+func TestUpdateVODDownloadProgressCalculatesETA(t *testing.T) {
+	for _, operation := range []string{"download", "convert"} {
+		t.Run(operation, func(t *testing.T) {
+			download := newVODDownload()
+			download.progress.Operation = operation
+			download.totalDuration = 100 * time.Second
+			vodDownloadState.Lock()
+			vodDownloadState.active = map[string]*vodDownload{"active": download}
+			vodDownloadState.Unlock()
+			t.Cleanup(func() { clearVODDownload("active", download) })
 
-	updateVODDownloadProgress("active", download, "out_time_us", "25000000")
-	updateVODDownloadProgress("active", download, "speed", "0.5x")
-	got, err := GetVODDownloadProgress("active")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ETASeconds != 150 {
-		t.Fatalf("expected 150 seconds remaining, got %d", got.ETASeconds)
+			updateVODDownloadProgress("active", download, "out_time_us", "25000000")
+			updateVODDownloadProgress("active", download, "speed", "0.5x")
+			got, err := GetVODDownloadProgress("active")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ETASeconds != 150 {
+				t.Fatalf("expected 150 seconds remaining, got %d", got.ETASeconds)
+			}
+		})
 	}
 }
 
