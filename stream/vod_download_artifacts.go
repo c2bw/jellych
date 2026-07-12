@@ -16,6 +16,50 @@ func DeleteVODDownload(id string) error {
 	return vodDownloadState.Delete(id)
 }
 
+// OpenVODDownload opens a completed VOD download for playback. Active or
+// incomplete downloads are reported as not found so callers never expose a
+// file that is still being written or converted.
+func OpenVODDownload(id string) (*os.File, error) {
+	return vodDownloadState.Open(id)
+}
+
+// Open opens a completed VOD download for playback.
+func (d *VODDownloader) Open(id string) (*os.File, error) {
+	id = strings.TrimSpace(id)
+	if !vodDownloadIDRE.MatchString(id) {
+		return nil, fmt.Errorf("invalid vod id")
+	}
+
+	d.Lock()
+	defer d.Unlock()
+	if d.dir == "" {
+		return nil, ErrVODDownloadsDisabled
+	}
+	if d.active != nil {
+		if _, ok := d.active[id]; ok {
+			return nil, ErrVODDownloadNotFound
+		}
+	}
+
+	file, err := os.Open(vodDownloadPath(d.dir, id))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrVODDownloadNotFound
+		}
+		return nil, fmt.Errorf("failed to open vod download: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("failed to inspect vod download: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		_ = file.Close()
+		return nil, ErrVODDownloadNotFound
+	}
+	return file, nil
+}
+
 // Delete removes a previously downloaded VOD file from disk.
 func (d *VODDownloader) Delete(id string) error {
 	id = strings.TrimSpace(id)

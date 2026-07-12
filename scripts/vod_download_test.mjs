@@ -9,6 +9,7 @@ import {
   formatVODRemainingTime,
   vodConversionRequest,
   vodDownloadRequest,
+  vodPlaybackPath,
   vodPresetCommand,
 } from '../html/js/vod_download.js';
 
@@ -46,6 +47,13 @@ test('download request sends the selected preset as JSON', ()=>{
 
 test('download request falls back to original', ()=>{
   assert.deepEqual(JSON.parse(vodDownloadRequest().body), {preset: 'original'});
+});
+
+test('playback path uses MKV only for completed downloads', ()=>{
+  assert.equal(vodPlaybackPath('123456789', true), '/vod/123456789/file.mkv');
+  assert.equal(vodPlaybackPath('123456789', false), '/vod/123456789/index.m3u8');
+  assert.equal(vodPlaybackPath('123456789', true, true), '/vod/123456789/index.m3u8');
+  assert.equal(vodPlaybackPath('id/with slash', true), '/vod/id%2Fwith%20slash/file.mkv');
 });
 
 test('conversion request sends the selected preset as JSON', ()=>{

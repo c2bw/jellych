@@ -6,6 +6,10 @@ export function vodDownloadRequest(preset = 'original'){
   };
 }
 
+export function vodPlaybackPath(id, downloaded, active = false){
+  return '/vod/' + encodeURIComponent(id) + (downloaded && !active ? '/file.mkv' : '/index.m3u8');
+}
+
 export function vodConversionRequest(preset){
   return {
     method: 'POST',

@@ -1,5 +1,5 @@
 import { apiFetch } from './auth.js';
-import { appendVODConversionControl, appendVODDownloadPresetBadge, formatVODDuration, formatVODMediaInfo, formatVODRemainingTime, vodConversionRequest, vodDownloadRequest, vodPresetCommand } from './vod_download.js';
+import { appendVODConversionControl, appendVODDownloadPresetBadge, formatVODDuration, formatVODMediaInfo, formatVODRemainingTime, vodConversionRequest, vodDownloadRequest, vodPlaybackPath, vodPresetCommand } from './vod_download.js';
 
 const form = document.getElementById('vodForm');
 const idInput = document.getElementById('vodId');
@@ -173,7 +173,7 @@ function renderVOD(vod){
   actions.className = 'flex shrink-0 gap-2';
 
   const playlist = document.createElement('a');
-  playlist.href = '/vod/' + encodeURIComponent(id) + '/index.m3u8';
+  playlist.href = vodPlaybackPath(id, vodDownloaded(vod), vodDownloadActive(vod));
   playlist.setAttribute('aria-label', 'Play');
   playlist.title = 'Play';
   playlist.innerHTML = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"></path></svg>';

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -683,7 +684,17 @@ func (a *API) handleGetM3U(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGetVODM3U(w http.ResponseWriter, r *http.Request) {
-	playlist := a.state.BuildVODM3U(a.state.GetVODs())
+	vods := a.state.GetVODs()
+	local := make(map[string]bool, len(vods))
+	for _, vod := range vods {
+		downloaded, _, err := a.streams.VODDownloadStatus(vod.ID)
+		if err != nil && !errors.Is(err, stream.ErrVODDownloadsDisabled) {
+			slog.Warn("failed to check vod playback source", "id", vod.ID, "error", err)
+			continue
+		}
+		local[vod.ID] = downloaded
+	}
+	playlist := a.state.buildVODM3U(vods, local)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(playlist))
 }
@@ -717,5 +728,40 @@ func (a *API) handleGetVODPlaylist(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "private, max-age=30")
+	if r.Method == http.MethodHead {
+		w.Header().Set("Content-Length", strconv.Itoa(len(playlist)))
+		return
+	}
 	_, _ = w.Write(playlist)
+}
+
+func (a *API) handleGetLocalVOD(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if _, ok := a.state.FindVOD(id); !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	localFile, err := a.streams.OpenVODDownload(id)
+	if errors.Is(err, stream.ErrVODDownloadsDisabled) || errors.Is(err, stream.ErrVODDownloadNotFound) {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, "/vod/"+url.PathEscape(id)+"/index.m3u8", http.StatusTemporaryRedirect)
+		return
+	}
+	if err != nil {
+		slog.Error("failed to open local vod for playback", "id", id, "error", err)
+		http.Error(w, "failed to open local vod", http.StatusInternalServerError)
+		return
+	}
+	defer localFile.Close()
+	info, err := localFile.Stat()
+	if err != nil {
+		slog.Error("failed to inspect local vod for playback", "id", id, "error", err)
+		http.Error(w, "failed to open local vod", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "video/x-matroska")
+	w.Header().Set("Content-Disposition", "inline")
+	http.ServeContent(w, r, id+".mkv", info.ModTime(), localFile)
 }

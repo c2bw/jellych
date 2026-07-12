@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/c2bw/jellych/stream"
@@ -21,6 +22,7 @@ type StreamOperations struct {
 	StartVODDownload       func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error
 	ConvertVODDownload     func(context.Context, string, stream.VODDownloadPreset) error
 	DeleteVODDownload      func(string) error
+	OpenVODDownload        func(string) (*os.File, error)
 	RemoveVODWithArtifacts func(string, func() error) error
 	ResolveVODPlaylist     func(context.Context, string) ([]byte, error)
 }
@@ -44,6 +46,7 @@ func defaultStreamOperations() StreamOperations {
 		StartVODDownload:       stream.StartVODDownloadWithPresetAndDuration,
 		ConvertVODDownload:     stream.ConvertVODDownload,
 		DeleteVODDownload:      stream.DeleteVODDownload,
+		OpenVODDownload:        stream.OpenVODDownload,
 		RemoveVODWithArtifacts: stream.RemoveVODWithArtifacts,
 		ResolveVODPlaylist:     stream.ResolveVODPlaylist,
 	}
@@ -77,6 +80,9 @@ func fillStreamOperationDefaults(operations StreamOperations) StreamOperations {
 	}
 	if operations.DeleteVODDownload == nil {
 		operations.DeleteVODDownload = defaults.DeleteVODDownload
+	}
+	if operations.OpenVODDownload == nil {
+		operations.OpenVODDownload = defaults.OpenVODDownload
 	}
 	if operations.RemoveVODWithArtifacts == nil {
 		operations.RemoveVODWithArtifacts = defaults.RemoveVODWithArtifacts

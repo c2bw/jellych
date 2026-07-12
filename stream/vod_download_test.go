@@ -64,6 +64,95 @@ func TestVODDownloadExists(t *testing.T) {
 	}
 }
 
+func TestOpenVODDownloadOpensOnlyCompletedFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "123456789.mkv")
+	if err := os.WriteFile(path, []byte("downloaded"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
+	file, err := downloader.Open("123456789")
+	if err != nil {
+		t.Fatalf("open completed download: %v", err)
+	}
+	defer file.Close()
+	data := make([]byte, len("downloaded"))
+	if _, err := file.Read(data); err != nil {
+		t.Fatalf("read completed download: %v", err)
+	}
+	if string(data) != "downloaded" {
+		t.Fatalf("opened data = %q; want downloaded", data)
+	}
+}
+
+func TestOpenVODDownloadRejectsActiveAndIncompleteFiles(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		active bool
+		body   []byte
+	}{
+		{name: "active", active: true, body: []byte("previous completed file")},
+		{name: "empty", body: nil},
+		{name: "missing"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if test.body != nil || test.name == "empty" {
+				if err := os.WriteFile(filepath.Join(dir, "123456789.mkv"), test.body, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
+			if test.active {
+				downloader.active = map[string]*vodDownload{"123456789": newVODDownload()}
+			}
+
+			file, err := downloader.Open("123456789")
+			if file != nil {
+				_ = file.Close()
+				t.Fatal("expected no file")
+			}
+			if !errors.Is(err, ErrVODDownloadNotFound) {
+				t.Fatalf("open error = %v; want %v", err, ErrVODDownloadNotFound)
+			}
+		})
+	}
+}
+
+func TestActiveConversionDoesNotExposeOriginalVOD(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "123456789.mkv")
+	if err := os.WriteFile(path, []byte("original download"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	download := newVODDownload()
+	download.progress.Operation = "convert"
+	download.progress.Downloaded = true
+	downloader := &VODDownloader{
+		dir:       dir,
+		retention: defaultVODDownloadRetention,
+		active:    map[string]*vodDownload{"123456789": download},
+	}
+
+	file, err := downloader.Open("123456789")
+	if file != nil {
+		_ = file.Close()
+		t.Fatal("conversion unexpectedly exposed the original VOD")
+	}
+	if !errors.Is(err, ErrVODDownloadNotFound) {
+		t.Fatalf("open error = %v; want %v", err, ErrVODDownloadNotFound)
+	}
+
+	downloaded, _, err := downloader.Status("123456789")
+	if err != nil {
+		t.Fatalf("check completed VOD during conversion: %v", err)
+	}
+	if downloaded {
+		t.Fatal("conversion unexpectedly reported local playback as available")
+	}
+}
+
 func TestDeleteVODDownloadRemovesExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	SetVODDownloadDir(dir)

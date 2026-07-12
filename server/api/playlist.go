@@ -68,12 +68,20 @@ func (s *APIState) playlistVODURL(id string) string {
 	return s.playlistBaseURL() + "/vod/" + url.PathEscape(id) + "/index.m3u8"
 }
 
+func (s *APIState) playlistLocalVODURL(id string) string {
+	return s.playlistBaseURL() + "/vod/" + url.PathEscape(id) + "/file.mkv"
+}
+
 // BuildVODM3U builds a VOD M3U playlist from persisted VOD metadata.
 func BuildVODM3U(vods []VOD) string {
 	return defaultState.BuildVODM3U(vods)
 }
 
 func (s *APIState) BuildVODM3U(vods []VOD) string {
+	return s.buildVODM3U(vods, nil)
+}
+
+func (s *APIState) buildVODM3U(vods []VOD, local map[string]bool) string {
 	var b strings.Builder
 	b.WriteString("#EXTM3U\n")
 	for _, vod := range vods {
@@ -104,7 +112,11 @@ func (s *APIState) BuildVODM3U(vods []VOD) string {
 			meta += fmt.Sprintf(" tvg-date=\"%s\"", m3uAttr(vod.Date))
 		}
 		b.WriteString(fmt.Sprintf("#EXTINF:-1 %s,%s\n", meta, displayTitle))
-		b.WriteString(s.playlistVODURL(vod.ID) + "\n")
+		playbackURL := s.playlistVODURL(vod.ID)
+		if local[vod.ID] {
+			playbackURL = s.playlistLocalVODURL(vod.ID)
+		}
+		b.WriteString(playbackURL + "\n")
 	}
 	return b.String()
 }
