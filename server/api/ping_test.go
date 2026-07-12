@@ -37,7 +37,8 @@ func resetAPIStateForTest(t *testing.T) {
 		SetPlaylistBaseURL("")
 		stream.SetVODDownloadDir("")
 		resolveVODPlaylist = stream.ResolveVODPlaylist
-		startVODDownload = stream.StartVODDownloadWithPreset
+		startVODDownload = stream.StartVODDownloadWithPresetAndDuration
+		startVODConversion = stream.ConvertVODDownload
 		defaultVODMediaRegistry.Lock()
 		defaultVODMediaRegistry.byToken = nil
 		defaultVODMediaRegistry.byURL = nil
@@ -354,10 +355,12 @@ func TestDownloadVODAcceptsPresetsAndDefaultsToOriginal(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			resetAPIStateForTest(t)
-			SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+			SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789", Duration: "2h3m4s"}})
 			var got stream.VODDownloadPreset
-			startVODDownload = func(_ context.Context, _, _, _, _ string, preset stream.VODDownloadPreset) error {
+			var gotDuration time.Duration
+			startVODDownload = func(_ context.Context, _, _, _, _ string, preset stream.VODDownloadPreset, duration time.Duration) error {
 				got = preset
+				gotDuration = duration
 				return nil
 			}
 
@@ -371,6 +374,9 @@ func TestDownloadVODAcceptsPresetsAndDefaultsToOriginal(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("expected preset %q, got %q", tt.want, got)
 			}
+			if gotDuration != 2*time.Hour+3*time.Minute+4*time.Second {
+				t.Fatalf("expected Twitch duration to reach downloader, got %s", gotDuration)
+			}
 		})
 	}
 }
@@ -381,7 +387,7 @@ func TestDownloadVODRejectsInvalidPresetPayloads(t *testing.T) {
 			resetAPIStateForTest(t)
 			SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
 			called := false
-			startVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset) error {
+			startVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error {
 				called = true
 				return nil
 			}
@@ -404,7 +410,7 @@ func TestDownloadVODRejectsOversizedPayload(t *testing.T) {
 	resetAPIStateForTest(t)
 	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
 	called := false
-	startVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset) error {
+	startVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error {
 		called = true
 		return nil
 	}
@@ -418,6 +424,43 @@ func TestDownloadVODRejectsOversizedPayload(t *testing.T) {
 	}
 	if called {
 		t.Fatal("did not expect downloader to be called")
+	}
+}
+
+func TestConvertVODPassesValidatedPreset(t *testing.T) {
+	resetAPIStateForTest(t)
+	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+	var gotID string
+	var gotPreset stream.VODDownloadPreset
+	startVODConversion = func(_ context.Context, id string, preset stream.VODDownloadPreset) error {
+		gotID = id
+		gotPreset = preset
+		return nil
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/convert", strings.NewReader(`{"preset":"hevc"}`))
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+	if gotID != "123456789" || gotPreset != stream.VODDownloadPresetHEVC {
+		t.Fatalf("unexpected conversion request: id=%q preset=%q", gotID, gotPreset)
+	}
+}
+
+func TestConvertVODMapsOriginalTargetError(t *testing.T) {
+	resetAPIStateForTest(t)
+	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+	startVODConversion = func(context.Context, string, stream.VODDownloadPreset) error {
+		return stream.ErrVODConversionTargetOriginal
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/convert", strings.NewReader(`{"preset":"original"}`))
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
 }
 

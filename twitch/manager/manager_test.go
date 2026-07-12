@@ -1,7 +1,9 @@
 package manager
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/c2bw/jellych/server/api"
 	twitchapi "github.com/c2bw/jellych/twitch/api"
+	"github.com/c2bw/jellych/twitch/client"
 	"github.com/c2bw/jellych/twitch/manager/channel"
 )
 
@@ -160,7 +163,7 @@ func TestConfigurationPersistsInSQLiteAcrossRestart(t *testing.T) {
 	if _, err := m.AddChannel("jankos"); err != nil {
 		t.Fatalf("failed to add channel: %v", err)
 	}
-	vod := api.VOD{ID: "123", URL: "https://www.twitch.tv/videos/123", Title: "Test", Channel: "Jankos", Logo: "logo", Date: "date"}
+	vod := api.VOD{ID: "123", URL: "https://www.twitch.tv/videos/123", Title: "Test", Channel: "Jankos", Logo: "logo", Date: "date", Duration: "2h3m4s"}
 	if err := m.AddVOD(vod); err != nil {
 		t.Fatalf("failed to add vod: %v", err)
 	}
@@ -193,6 +196,106 @@ func TestStartRejectsNewerSchemaVersion(t *testing.T) {
 	_, err := Start(tmp)
 	if err == nil || !strings.Contains(err.Error(), "newer than supported") {
 		t.Fatalf("expected unsupported schema error, got %v", err)
+	}
+}
+
+func TestStartMigratesVersionOneVODDuration(t *testing.T) {
+	tmp := t.TempDir()
+	db := openRawDatabase(t, tmp)
+	for _, statement := range []string{
+		`CREATE TABLE channels (name TEXT PRIMARY KEY, icon_url TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL UNIQUE)`,
+		`CREATE TABLE vods (id TEXT PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', channel TEXT NOT NULL DEFAULT '', logo TEXT NOT NULL DEFAULT '', date TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL UNIQUE)`,
+		`CREATE TABLE vod_blacklist (id TEXT PRIMARY KEY)`,
+		`INSERT INTO vods (id, url, title, position) VALUES ('123', 'https://www.twitch.tv/videos/123', 'Twitch VOD 123', 0)`,
+		`PRAGMA user_version = 1`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("failed to prepare version one database: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("failed to close database: %v", err)
+	}
+
+	m, err := Start(tmp)
+	if err != nil {
+		t.Fatalf("expected migration to succeed, got %v", err)
+	}
+	defer m.Close()
+	vods := m.ListVODs()
+	if len(vods) != 1 || vods[0].Duration != "" {
+		t.Fatalf("expected migrated VOD with empty duration, got %#v", vods)
+	}
+	var version int
+	if err := m.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatalf("failed to read schema version: %v", err)
+	}
+	if version != currentSchemaVersion {
+		t.Fatalf("expected schema version %d, got %d", currentSchemaVersion, version)
+	}
+}
+
+func TestRefreshSavedVODsUpdatesDurationAndPrunesUnavailableVODs(t *testing.T) {
+	tmp := t.TempDir()
+	m, err := Start(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	for _, id := range []string{"100", "200", "300", "400"} {
+		if err := m.AddVOD(api.VOD{ID: id, URL: "https://www.twitch.tv/videos/" + id}); err != nil {
+			t.Fatalf("failed to add VOD %s: %v", id, err)
+		}
+	}
+
+	previous := fetchVODsByIDsContext
+	fetchVODsByIDsContext = func(_ context.Context, _, _ string, ids []string) (*twitchapi.VideosResponse, error) {
+		if len(ids) != 4 {
+			t.Fatalf("expected one batched metadata lookup, got %#v", ids)
+		}
+		return &twitchapi.VideosResponse{Data: []twitchapi.Video{
+			{ID: "100", Duration: "2h3m4s"},
+			{ID: "400", Duration: "1h"},
+		}}, nil
+	}
+	t.Cleanup(func() { fetchVODsByIDsContext = previous })
+
+	m.refreshSavedVODs(context.Background(), &client.TwitchClient{}, func(id string, remove func() error) (bool, error) {
+		if id == "300" {
+			return false, nil
+		}
+		err := remove()
+		return err == nil, err
+	}, true)
+
+	got := m.ListVODs()
+	if len(got) != 3 || got[0].ID != "100" || got[0].Duration != "2h3m4s" || got[1].ID != "300" || got[2].ID != "400" {
+		t.Fatalf("expected available and downloaded VODs to remain with refreshed duration, got %#v", got)
+	}
+	if _, ok := m.vodBlacklist["200"]; !ok {
+		t.Fatal("expected pruned VOD to be blacklisted")
+	}
+}
+
+func TestRefreshSavedVODsDoesNotPruneAfterMetadataFailure(t *testing.T) {
+	tmp := t.TempDir()
+	m, err := Start(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	if err := m.AddVOD(api.VOD{ID: "100", URL: "https://www.twitch.tv/videos/100"}); err != nil {
+		t.Fatal(err)
+	}
+	previous := fetchVODsByIDsContext
+	fetchVODsByIDsContext = func(context.Context, string, string, []string) (*twitchapi.VideosResponse, error) {
+		return nil, errors.New("temporary Twitch failure")
+	}
+	t.Cleanup(func() { fetchVODsByIDsContext = previous })
+
+	m.refreshSavedVODs(context.Background(), &client.TwitchClient{}, nil, true)
+	if got := m.ListVODs(); len(got) != 1 || got[0].ID != "100" {
+		t.Fatalf("expected VOD to survive failed metadata refresh, got %#v", got)
 	}
 }
 
@@ -422,6 +525,7 @@ func TestVODFromTwitchVideoUsesMetadata(t *testing.T) {
 		PublishedAt:  "2026-06-02T12:34:56Z",
 		URL:          "https://www.twitch.tv/videos/123",
 		ThumbnailURL: "https://static-cdn.test/thumb-%{width}x%{height}.jpg",
+		Duration:     "2h3m4s",
 	})
 
 	if vod.ID != "123" {
@@ -438,6 +542,9 @@ func TestVODFromTwitchVideoUsesMetadata(t *testing.T) {
 	}
 	if vod.Date != "2026-06-02T12:34:56Z" {
 		t.Fatalf("expected published date, got %q", vod.Date)
+	}
+	if vod.Duration != "2h3m4s" {
+		t.Fatalf("expected duration, got %q", vod.Duration)
 	}
 }
 

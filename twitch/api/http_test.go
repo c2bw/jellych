@@ -2,6 +2,7 @@ package twitchapi
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -43,6 +44,34 @@ func TestUserInfoContextBatchesLargeRequests(t *testing.T) {
 		channels[i] = "channel"
 	}
 	if _, err := UserInfoContext(context.Background(), "client", "token", channels); err != nil {
+		t.Fatalf("unexpected batched request error: %v", err)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("expected 3 requests, got %d", got)
+	}
+}
+
+func TestVideosByIDsContextBatchesLargeRequests(t *testing.T) {
+	original := helixHTTPClient
+	t.Cleanup(func() { helixHTTPClient = original })
+	var requests atomic.Int32
+	helixHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		if got := len(req.URL.Query()["id"]); got > 100 {
+			t.Fatalf("batch exceeded Twitch limit: %d", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"data":[]}`)),
+		}, nil
+	})}
+
+	ids := make([]string, 201)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%d", i+1)
+	}
+	if _, err := VideosByIDsContext(context.Background(), "client", "token", ids); err != nil {
 		t.Fatalf("unexpected batched request error: %v", err)
 	}
 	if got := requests.Load(); got != 3 {

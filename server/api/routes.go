@@ -41,6 +41,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("POST /api/vods", control(a.handleAddVOD))
 	mux.HandleFunc("GET /api/vods/{id}/download", a.handleGetVODDownload)
 	mux.HandleFunc("POST /api/vods/{id}/download", control(a.handleDownloadVOD))
+	mux.HandleFunc("POST /api/vods/{id}/convert", control(a.handleConvertVOD))
 	mux.HandleFunc("DELETE /api/vods/{id}/download", control(a.handleDeleteVODDownload))
 	mux.HandleFunc("DELETE /api/vods/{id}", control(a.handleRemoveVOD))
 	mux.HandleFunc("GET /api/vods.m3u", a.handleGetVODM3U)

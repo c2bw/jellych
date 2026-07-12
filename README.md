@@ -33,6 +33,8 @@ Optional flags:
 - `-config` (default `/data/config`) directory containing the persistent `jellych.db` SQLite configuration database
 - `-vods` folder where manually downloaded VODs are saved
 
+The VOD page can download directly as Original, H.264, HEVC, or VP9. A completed Original download can later be converted once to any compressed preset from its codec selector. Conversion replaces the original only after the new MKV is complete, and converted entries show both original and converted file sizes.
+
 ## Run
 
 ### Docker Compose Example
