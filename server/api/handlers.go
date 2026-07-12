@@ -600,7 +600,7 @@ func (a *API) handleJellyfinWebhook(w http.ResponseWriter, r *http.Request) {
 	case "stop", "stopped", "end":
 		slog.Info("jellyfin webhook: playback stopped", "channel", channel, "sessionId", payload.SessionID)
 		StopPlaying(channel, payload.SessionID)
-	default:
+	case "start", "started", "play", "playing":
 		slog.Info("jellyfin webhook: playback started", "channel", channel, "sessionId", payload.SessionID)
 		// Start stream if not already running
 		if err := stream.Start(channel); err != nil && !errors.Is(err, stream.ErrAlreadyStarted) {
@@ -615,6 +615,10 @@ func (a *API) handleJellyfinWebhook(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "too many playback sessions", http.StatusTooManyRequests)
 			return
 		}
+	default:
+		slog.Warn("jellyfin webhook: unsupported playback action", "action", payload.Action, "channel", channel)
+		http.Error(w, "unsupported playback action", http.StatusBadRequest)
+		return
 	}
 
 	writeText(w, http.StatusOK, "ok")
