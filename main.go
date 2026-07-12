@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -159,7 +160,7 @@ func localLiveBaseURL(addr string) (string, error) {
 		if strings.Count(trimmed, ":") == 1 {
 			parts := strings.SplitN(trimmed, ":", 2)
 			if len(parts) == 2 && parts[1] != "" {
-				return "http://" + parts[0] + ":" + parts[1], nil
+				return (&url.URL{Scheme: "http", Host: net.JoinHostPort(parts[0], parts[1])}).String(), nil
 			}
 		}
 		return "", err
@@ -167,5 +168,5 @@ func localLiveBaseURL(addr string) (string, error) {
 	if host == "0.0.0.0" || host == "" || host == "::" || host == "[::]" {
 		host = "127.0.0.1"
 	}
-	return "http://" + host + ":" + port, nil
+	return (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, port)}).String(), nil
 }
