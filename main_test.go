@@ -40,6 +40,61 @@ func TestParseVODRetentionDaysRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestParseServerURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "http", value: "http://localhost:8080", want: "http://localhost:8080"},
+		{name: "https", value: "HTTPS://jellych.example/", want: "https://jellych.example"},
+		{name: "path prefix", value: "https://example.com/jellych///", want: "https://example.com/jellych"},
+		{name: "IPv6", value: "http://[::1]:8080/", want: "http://[::1]:8080"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseServerURL(test.value)
+			if err != nil {
+				t.Fatalf("parseServerURL(%q): %v", test.value, err)
+			}
+			if got != test.want {
+				t.Fatalf("parseServerURL(%q) = %q; want %q", test.value, got, test.want)
+			}
+		})
+	}
+}
+
+func TestParseServerURLRejectsInvalidValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "empty"},
+		{name: "missing scheme", value: "localhost:8080"},
+		{name: "unsupported scheme", value: "ftp://example.com"},
+		{name: "missing host", value: "https:///jellych"},
+		{name: "credentials", value: "https://user:password@example.com"},
+		{name: "query", value: "https://example.com?token=secret"},
+		{name: "empty query", value: "https://example.com?"},
+		{name: "fragment", value: "https://example.com/#section"},
+		{name: "newline", value: "https://example.com\n#EXTINF:1,evil"},
+		{name: "trailing control character", value: "https://example.com\n"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := parseServerURL(test.value)
+			if err == nil {
+				t.Fatalf("expected parseServerURL(%q) to fail", test.value)
+			}
+			if !strings.Contains(err.Error(), "SERVER_URL") {
+				t.Fatalf("expected error to name SERVER_URL, got %v", err)
+			}
+		})
+	}
+}
+
 func TestLocalLiveBaseURL(t *testing.T) {
 	tests := []struct {
 		name string

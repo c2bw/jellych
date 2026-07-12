@@ -47,9 +47,9 @@ func main() {
 	vodsPath := flag.String("vods", "", "folder where manually downloaded VODs are saved")
 	flag.Parse()
 
-	serverURL, err := getRequiredEnv("SERVER_URL")
+	serverURL, err := parseServerURL(os.Getenv("SERVER_URL"))
 	if err != nil {
-		slog.Error("missing server url", "error", err)
+		slog.Error("invalid server url", "error", err)
 		os.Exit(1)
 	}
 	api.SetPlaylistBaseURL(serverURL)
@@ -126,6 +126,39 @@ func main() {
 	if err := stream.Stop(); err != nil {
 		slog.Warn("failed to stop live streams cleanly", "error", err)
 	}
+}
+
+func parseServerURL(raw string) (string, error) {
+	if strings.IndexFunc(raw, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+		return "", fmt.Errorf("SERVER_URL must not contain control characters")
+	}
+
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("SERVER_URL is required")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("SERVER_URL is invalid: %w", err)
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return "", fmt.Errorf("SERVER_URL must use http or https")
+	}
+	if parsed.Hostname() == "" {
+		return "", fmt.Errorf("SERVER_URL must include a hostname")
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("SERVER_URL must not include credentials")
+	}
+	if parsed.RawQuery != "" || parsed.ForceQuery {
+		return "", fmt.Errorf("SERVER_URL must not include a query string")
+	}
+	if parsed.Fragment != "" {
+		return "", fmt.Errorf("SERVER_URL must not include a fragment")
+	}
+
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
 func parseVODRetentionDays(value string) (time.Duration, error) {
