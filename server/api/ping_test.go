@@ -36,22 +36,21 @@ func resetAPIStateForTest(t *testing.T) {
 		SetControlAPISecret("")
 		SetPlaylistBaseURL("")
 		stream.SetVODDownloadDir("")
-		resolveVODPlaylist = stream.ResolveVODPlaylist
-		startVODDownload = stream.StartVODDownloadWithPresetAndDuration
-		startVODConversion = stream.ConvertVODDownload
-		defaultVODMediaRegistry.Lock()
-		defaultVODMediaRegistry.byToken = nil
-		defaultVODMediaRegistry.byURL = nil
-		defaultVODMediaRegistry.Unlock()
+		defaultAPI.streams = defaultStreamOperations()
+		defaultAPI.vodMediaHTTPClient = defaultVODMediaHTTPClient
+		defaultAPI.vodMediaRegistry.Lock()
+		defaultAPI.vodMediaRegistry.byToken = nil
+		defaultAPI.vodMediaRegistry.byURL = nil
+		defaultAPI.vodMediaRegistry.Unlock()
 
-		playMu.Lock()
-		playSessions = nil
-		jellyfinSessions = nil
-		playMu.Unlock()
+		defaultAPI.playback.playMu.Lock()
+		defaultAPI.playback.playSessions = nil
+		defaultAPI.playback.jellyfinSessions = nil
+		defaultAPI.playback.playMu.Unlock()
 
-		idleMu.Lock()
-		idleTimers = nil
-		idleMu.Unlock()
+		defaultAPI.playback.idleMu.Lock()
+		defaultAPI.playback.idleTimers = nil
+		defaultAPI.playback.idleMu.Unlock()
 	}
 	reset()
 	t.Cleanup(reset)
@@ -60,7 +59,7 @@ func resetAPIStateForTest(t *testing.T) {
 func TestVODPlaylistProxiesCrossOriginMedia(t *testing.T) {
 	resetAPIStateForTest(t)
 	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
-	resolveVODPlaylist = func(context.Context, string) ([]byte, error) {
+	defaultAPI.streams.ResolveVODPlaylist = func(context.Context, string) ([]byte, error) {
 		return []byte("#EXTM3U\n#EXTINF:4,\nhttps://d3fi1amfgojobc.cloudfront.net/path/0.ts\n"), nil
 	}
 
@@ -84,9 +83,9 @@ func TestVODPlaylistProxiesCrossOriginMedia(t *testing.T) {
 		t.Fatalf("expected local media proxy URL, got %q", playlistRec.Body.String())
 	}
 
-	originalClient := vodMediaHTTPClient
-	t.Cleanup(func() { vodMediaHTTPClient = originalClient })
-	vodMediaHTTPClient = &http.Client{Transport: apiRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+	originalClient := defaultAPI.vodMediaHTTPClient
+	t.Cleanup(func() { defaultAPI.vodMediaHTTPClient = originalClient })
+	defaultAPI.vodMediaHTTPClient = &http.Client{Transport: apiRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.String() != "https://d3fi1amfgojobc.cloudfront.net/path/0.ts" {
 			t.Fatalf("unexpected upstream URL %q", req.URL.String())
 		}
@@ -428,7 +427,7 @@ func TestDownloadVODAcceptsPresetsAndDefaultsToOriginal(t *testing.T) {
 			SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789", Duration: "2h3m4s"}})
 			var got stream.VODDownloadPreset
 			var gotDuration time.Duration
-			startVODDownload = func(_ context.Context, _, _, _, _ string, preset stream.VODDownloadPreset, duration time.Duration) error {
+			defaultAPI.streams.StartVODDownload = func(_ context.Context, _, _, _, _ string, preset stream.VODDownloadPreset, duration time.Duration) error {
 				got = preset
 				gotDuration = duration
 				return nil
@@ -457,7 +456,7 @@ func TestDownloadVODRejectsInvalidPresetPayloads(t *testing.T) {
 			resetAPIStateForTest(t)
 			SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
 			called := false
-			startVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error {
+			defaultAPI.streams.StartVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error {
 				called = true
 				return nil
 			}
@@ -480,7 +479,7 @@ func TestDownloadVODRejectsOversizedPayload(t *testing.T) {
 	resetAPIStateForTest(t)
 	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
 	called := false
-	startVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error {
+	defaultAPI.streams.StartVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error {
 		called = true
 		return nil
 	}
@@ -502,7 +501,7 @@ func TestConvertVODPassesValidatedPreset(t *testing.T) {
 	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
 	var gotID string
 	var gotPreset stream.VODDownloadPreset
-	startVODConversion = func(_ context.Context, id string, preset stream.VODDownloadPreset) error {
+	defaultAPI.streams.ConvertVODDownload = func(_ context.Context, id string, preset stream.VODDownloadPreset) error {
 		gotID = id
 		gotPreset = preset
 		return nil
@@ -522,7 +521,7 @@ func TestConvertVODPassesValidatedPreset(t *testing.T) {
 func TestConvertVODMapsOriginalTargetError(t *testing.T) {
 	resetAPIStateForTest(t)
 	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
-	startVODConversion = func(context.Context, string, stream.VODDownloadPreset) error {
+	defaultAPI.streams.ConvertVODDownload = func(context.Context, string, stream.VODDownloadPreset) error {
 		return stream.ErrVODConversionTargetOriginal
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/convert", strings.NewReader(`{"preset":"original"}`))
@@ -589,7 +588,7 @@ func TestGetVODPlaylistReturnsForbiddenForRestrictedManifest(t *testing.T) {
 		ID:  "123456789",
 		URL: "https://www.twitch.tv/videos/123456789",
 	}})
-	resolveVODPlaylist = func(context.Context, string) ([]byte, error) {
+	defaultAPI.streams.ResolveVODPlaylist = func(context.Context, string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: Twitch rejected the VOD manifest", stream.ErrVODManifestRestricted)
 	}
 
@@ -783,8 +782,8 @@ func TestStartStreamRequiresConfiguredChannel(t *testing.T) {
 func TestExpiredJellyfinSessionIsPruned(t *testing.T) {
 	resetAPIStateForTest(t)
 	now := time.Now()
-	playSessions = map[string]map[string]time.Time{"test": {"session": now.Add(-jellyfinSessionMaxAge - time.Second)}}
-	jellyfinSessions = map[string]map[string]time.Time{"test": {"session": now.Add(-jellyfinSessionMaxAge - time.Second)}}
+	defaultAPI.playback.playSessions = map[string]map[string]time.Time{"test": {"session": now.Add(-jellyfinSessionMaxAge - time.Second)}}
+	defaultAPI.playback.jellyfinSessions = map[string]map[string]time.Time{"test": {"session": now.Add(-jellyfinSessionMaxAge - time.Second)}}
 	if counts := GetPlayingCounts(now); counts["test"] != 0 {
 		t.Fatalf("expected expired Jellyfin session to be pruned, got %v", counts)
 	}

@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/c2bw/jellych/stream"
 )
 
 const playSessionTTL = 25 * time.Second
@@ -16,7 +14,8 @@ const maxPlaybackSessionIDBytes = 256
 const maxPlaybackSessionsPerChannel = 256
 const jellyfinSessionMaxAge = 24 * time.Hour
 
-var (
+// PlaybackTracker owns playback sessions and idle timers for one API instance.
+type PlaybackTracker struct {
 	playSessions map[string]map[string]time.Time
 	// jellyfinSessions tracks sessions that originate from Jellyfin webhooks.
 	// These sessions survive heartbeat expiry but retain a maximum lifetime.
@@ -24,45 +23,60 @@ var (
 	playMu           sync.Mutex
 	idleTimers       map[string]time.Time
 	idleMu           sync.Mutex
-)
+	now              func() time.Time
+}
+
+func newPlaybackTracker(now func() time.Time) *PlaybackTracker {
+	return &PlaybackTracker{now: now}
+}
 
 // RecordPlaying updates the last-seen timestamp for a playback session.
 func RecordPlaying(channel, sessionID string, now time.Time) bool {
-	playMu.Lock()
-	defer playMu.Unlock()
+	return defaultAPI.playback.RecordPlaying(channel, sessionID, now)
+}
+
+// RecordPlaying updates the last-seen timestamp for a playback session.
+func (p *PlaybackTracker) RecordPlaying(channel, sessionID string, now time.Time) bool {
+	p.playMu.Lock()
+	defer p.playMu.Unlock()
 	if sessionID == "" || len(sessionID) > maxPlaybackSessionIDBytes {
 		return false
 	}
-	if playSessions == nil {
-		playSessions = make(map[string]map[string]time.Time)
+	if p.playSessions == nil {
+		p.playSessions = make(map[string]map[string]time.Time)
 	}
-	pruneExpiredLocked(now)
-	if playSessions[channel] == nil {
-		playSessions[channel] = make(map[string]time.Time)
+	p.pruneExpiredLocked(now)
+	if p.playSessions[channel] == nil {
+		p.playSessions[channel] = make(map[string]time.Time)
 	}
-	if _, exists := playSessions[channel][sessionID]; !exists && len(playSessions[channel]) >= maxPlaybackSessionsPerChannel {
+	if _, exists := p.playSessions[channel][sessionID]; !exists && len(p.playSessions[channel]) >= maxPlaybackSessionsPerChannel {
 		return false
 	}
-	playSessions[channel][sessionID] = now
+	p.playSessions[channel][sessionID] = now
 	return true
 }
 
 // StopPlaying removes a playback session immediately.
 func StopPlaying(channel, sessionID string) {
-	playMu.Lock()
-	defer playMu.Unlock()
-	if sessions := playSessions[channel]; sessions != nil {
+	defaultAPI.playback.StopPlaying(channel, sessionID)
+}
+
+// StopPlaying removes a playback session immediately.
+func (p *PlaybackTracker) StopPlaying(channel, sessionID string) {
+	p.playMu.Lock()
+	defer p.playMu.Unlock()
+	if sessions := p.playSessions[channel]; sessions != nil {
 		delete(sessions, sessionID)
 		if len(sessions) == 0 {
-			delete(playSessions, channel)
+			delete(p.playSessions, channel)
 		}
 	}
 	// Also remove any Jellyfin marker for this session so it won't be kept alive.
-	if jellyfinSessions != nil {
-		if js := jellyfinSessions[channel]; js != nil {
+	if p.jellyfinSessions != nil {
+		if js := p.jellyfinSessions[channel]; js != nil {
 			delete(js, sessionID)
 			if len(js) == 0 {
-				delete(jellyfinSessions, channel)
+				delete(p.jellyfinSessions, channel)
 			}
 		}
 	}
@@ -70,37 +84,42 @@ func StopPlaying(channel, sessionID string) {
 
 // GetPlayingCounts returns active playback counts per channel after pruning.
 func GetPlayingCounts(now time.Time) map[string]int {
-	playMu.Lock()
-	defer playMu.Unlock()
-	pruneExpiredLocked(now)
-	if playSessions == nil {
+	return defaultAPI.playback.GetPlayingCounts(now)
+}
+
+// GetPlayingCounts returns active playback counts per channel after pruning.
+func (p *PlaybackTracker) GetPlayingCounts(now time.Time) map[string]int {
+	p.playMu.Lock()
+	defer p.playMu.Unlock()
+	p.pruneExpiredLocked(now)
+	if p.playSessions == nil {
 		return map[string]int{}
 	}
-	out := make(map[string]int, len(playSessions))
-	for channel, sessions := range playSessions {
+	out := make(map[string]int, len(p.playSessions))
+	for channel, sessions := range p.playSessions {
 		out[channel] = len(sessions)
 	}
 	return out
 }
 
-func pruneExpiredLocked(now time.Time) {
-	for channel, sessions := range jellyfinSessions {
+func (p *PlaybackTracker) pruneExpiredLocked(now time.Time) {
+	for channel, sessions := range p.jellyfinSessions {
 		for sessionID, markedAt := range sessions {
 			if now.Sub(markedAt) >= jellyfinSessionMaxAge {
 				delete(sessions, sessionID)
 			}
 		}
 		if len(sessions) == 0 {
-			delete(jellyfinSessions, channel)
+			delete(p.jellyfinSessions, channel)
 		}
 	}
-	if playSessions == nil {
+	if p.playSessions == nil {
 		return
 	}
 	cutoff := now.Add(-playSessionTTL)
-	for channel, sessions := range playSessions {
+	for channel, sessions := range p.playSessions {
 		for sessionID, lastSeen := range sessions {
-			if isJellyfinSessionLocked(channel, sessionID, now) {
+			if p.isJellyfinSessionLocked(channel, sessionID, now) {
 				continue
 			}
 			if lastSeen.Before(cutoff) {
@@ -108,16 +127,16 @@ func pruneExpiredLocked(now time.Time) {
 			}
 		}
 		if len(sessions) == 0 {
-			delete(playSessions, channel)
+			delete(p.playSessions, channel)
 		}
 	}
 }
 
-func isJellyfinSessionLocked(channel, sessionID string, now time.Time) bool {
-	if jellyfinSessions == nil {
+func (p *PlaybackTracker) isJellyfinSessionLocked(channel, sessionID string, now time.Time) bool {
+	if p.jellyfinSessions == nil {
 		return false
 	}
-	js := jellyfinSessions[channel]
+	js := p.jellyfinSessions[channel]
 	if js == nil {
 		return false
 	}
@@ -130,7 +149,7 @@ func isJellyfinSessionLocked(channel, sessionID string, now time.Time) bool {
 	}
 	delete(js, sessionID)
 	if len(js) == 0 {
-		delete(jellyfinSessions, channel)
+		delete(p.jellyfinSessions, channel)
 	}
 	return false
 }
@@ -138,47 +157,58 @@ func isJellyfinSessionLocked(channel, sessionID string, now time.Time) bool {
 // MarkJellyfinSession records that a session was started via a Jellyfin webhook
 // and should not be auto-pruned until an explicit stop is received.
 func MarkJellyfinSession(channel, sessionID string) bool {
-	playMu.Lock()
-	defer playMu.Unlock()
+	return defaultAPI.playback.MarkJellyfinSession(channel, sessionID)
+}
+
+// MarkJellyfinSession records a persistent Jellyfin playback session.
+func (p *PlaybackTracker) MarkJellyfinSession(channel, sessionID string) bool {
+	p.playMu.Lock()
+	defer p.playMu.Unlock()
 	if sessionID == "" || len(sessionID) > maxPlaybackSessionIDBytes {
 		return false
 	}
-	if jellyfinSessions == nil {
-		jellyfinSessions = make(map[string]map[string]time.Time)
+	if p.jellyfinSessions == nil {
+		p.jellyfinSessions = make(map[string]map[string]time.Time)
 	}
-	now := time.Now()
-	pruneExpiredLocked(now)
-	if jellyfinSessions[channel] == nil {
-		jellyfinSessions[channel] = make(map[string]time.Time)
+	now := p.now()
+	p.pruneExpiredLocked(now)
+	if p.jellyfinSessions[channel] == nil {
+		p.jellyfinSessions[channel] = make(map[string]time.Time)
 	}
-	if _, exists := jellyfinSessions[channel][sessionID]; !exists && len(jellyfinSessions[channel]) >= maxPlaybackSessionsPerChannel {
+	if _, exists := p.jellyfinSessions[channel][sessionID]; !exists && len(p.jellyfinSessions[channel]) >= maxPlaybackSessionsPerChannel {
 		return false
 	}
-	jellyfinSessions[channel][sessionID] = now
+	p.jellyfinSessions[channel][sessionID] = now
 	return true
 }
 
 // StartIdleMonitor reconciles playback sessions until ctx is canceled.
 func StartIdleMonitor(ctx context.Context) {
-	go idleMonitorLoop(ctx)
+	defaultAPI.StartIdleMonitor(ctx)
 }
 
-func idleMonitorLoop(ctx context.Context) {
+// StartIdleMonitor reconciles this API instance's playback sessions until ctx
+// is canceled.
+func (a *API) StartIdleMonitor(ctx context.Context) {
+	go a.idleMonitorLoop(ctx)
+}
+
+func (a *API) idleMonitorLoop(ctx context.Context) {
 	ticker := time.NewTicker(idleSweepInterval)
 	defer ticker.Stop()
 	for {
 		select {
-		case now := <-ticker.C:
-			reconcileIdleStreams(now)
+		case <-ticker.C:
+			a.reconcileIdleStreams(a.now())
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func reconcileIdleStreams(now time.Time) {
-	counts := GetPlayingCounts(now)
-	active := stream.ActiveChannels()
+func (a *API) reconcileIdleStreams(now time.Time) {
+	counts := a.playback.GetPlayingCounts(now)
+	active := a.streams.ActiveChannels()
 	activeSet := make(map[string]struct{}, len(active))
 	for _, name := range active {
 		activeSet[name] = struct{}{}
@@ -186,35 +216,35 @@ func reconcileIdleStreams(now time.Time) {
 
 	var stopList []string
 
-	idleMu.Lock()
-	if idleTimers == nil {
-		idleTimers = make(map[string]time.Time)
+	a.playback.idleMu.Lock()
+	if a.playback.idleTimers == nil {
+		a.playback.idleTimers = make(map[string]time.Time)
 	}
 	for _, channel := range active {
 		count := counts[channel]
 		if count > 0 {
-			delete(idleTimers, channel)
+			delete(a.playback.idleTimers, channel)
 			continue
 		}
-		startedAt, ok := idleTimers[channel]
+		startedAt, ok := a.playback.idleTimers[channel]
 		if !ok {
-			idleTimers[channel] = now
+			a.playback.idleTimers[channel] = now
 			continue
 		}
 		if now.Sub(startedAt) >= idleStopTTL {
-			delete(idleTimers, channel)
+			delete(a.playback.idleTimers, channel)
 			stopList = append(stopList, channel)
 		}
 	}
-	for channel := range idleTimers {
+	for channel := range a.playback.idleTimers {
 		if _, ok := activeSet[channel]; !ok {
-			delete(idleTimers, channel)
+			delete(a.playback.idleTimers, channel)
 		}
 	}
-	idleMu.Unlock()
+	a.playback.idleMu.Unlock()
 
 	for _, channel := range stopList {
-		if err := stream.StopChannel(channel); err != nil {
+		if err := a.streams.StopChannel(channel); err != nil {
 			slog.Error("failed to stop idle stream", "channel", channel, "error", err)
 		}
 	}

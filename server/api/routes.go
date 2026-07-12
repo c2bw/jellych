@@ -1,25 +1,58 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
-var defaultAPI = &API{state: defaultState}
+var defaultAPI = newAPI(defaultState, Dependencies{})
 
 // API owns the HTTP route surface for the API package.
 type API struct {
-	state *APIState
+	state              *APIState
+	streams            StreamOperations
+	playback           *PlaybackTracker
+	vodMediaRegistry   *vodMediaRegistry
+	vodMediaHTTPClient *http.Client
+	now                func() time.Time
 }
 
 // New returns an API instance with the package's configured dependencies.
 func New() *API {
-	return &API{state: defaultState}
+	return newAPI(defaultState, Dependencies{})
 }
 
 // NewWithState returns an isolated API instance backed by state.
 func NewWithState(state *APIState) *API {
+	return newAPI(state, Dependencies{})
+}
+
+// NewWithDependencies returns an API instance with isolated runtime state and
+// caller-supplied services.
+func NewWithDependencies(state *APIState, dependencies Dependencies) *API {
+	return newAPI(state, dependencies)
+}
+
+func newAPI(state *APIState, dependencies Dependencies) *API {
 	if state == nil {
 		state = &APIState{}
 	}
-	return &API{state: state}
+	now := dependencies.Now
+	if now == nil {
+		now = time.Now
+	}
+	mediaClient := dependencies.VODMediaHTTPClient
+	if mediaClient == nil {
+		mediaClient = defaultVODMediaHTTPClient
+	}
+	return &API{
+		state:              state,
+		streams:            fillStreamOperationDefaults(dependencies.Streams),
+		playback:           newPlaybackTracker(now),
+		vodMediaRegistry:   &vodMediaRegistry{},
+		vodMediaHTTPClient: mediaClient,
+		now:                now,
+	}
 }
 
 // Handler returns an http.Handler that exposes API endpoints for controlling streaming.

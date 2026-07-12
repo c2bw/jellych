@@ -23,7 +23,7 @@ const maxVODMediaTokens = 100_000
 const maxProxiedVODMediaBytes = 256 << 20
 const maxProxiedVODPlaylistBytes = 16 << 20
 
-var vodMediaHTTPClient = &http.Client{Timeout: 2 * time.Minute}
+var defaultVODMediaHTTPClient = &http.Client{Timeout: 2 * time.Minute}
 
 var errVODMediaObjectTooLarge = errors.New("vod media object too large")
 
@@ -38,8 +38,6 @@ type vodMediaRegistry struct {
 	byToken map[string]vodMediaTarget
 	byURL   map[string]string
 }
-
-var defaultVODMediaRegistry vodMediaRegistry
 
 func (r *vodMediaRegistry) register(vodID, rawURL string, now time.Time) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
@@ -123,14 +121,14 @@ func (r *vodMediaRegistry) deleteTokenLocked(token string, target vodMediaTarget
 }
 
 func (a *API) rewriteVODPlaylist(vodID string, playlist []byte) ([]byte, error) {
-	now := time.Now()
-	defaultVODMediaRegistry.prune(now)
+	now := a.now()
+	a.vodMediaRegistry.prune(now)
 	return stream.RewriteHLSPlaylistURLs(playlist, func(rawURL string) (string, error) {
 		trimmed := strings.TrimSpace(rawURL)
 		if strings.HasPrefix(trimmed, "data:") {
 			return rawURL, nil
 		}
-		token, err := defaultVODMediaRegistry.register(vodID, trimmed, now)
+		token, err := a.vodMediaRegistry.register(vodID, trimmed, now)
 		if err != nil {
 			return "", err
 		}
@@ -144,7 +142,7 @@ func (a *API) handleGetVODMedia(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	targetURL, ok := defaultVODMediaRegistry.lookup(vodID, strings.TrimSpace(r.PathValue("token")), time.Now())
+	targetURL, ok := a.vodMediaRegistry.lookup(vodID, strings.TrimSpace(r.PathValue("token")), a.now())
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -162,7 +160,7 @@ func (a *API) handleGetVODMedia(w http.ResponseWriter, r *http.Request) {
 			upstream.Header.Set(header, value)
 		}
 	}
-	resp, err := vodMediaHTTPClient.Do(upstream)
+	resp, err := a.vodMediaHTTPClient.Do(upstream)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			slog.Warn("failed to proxy VOD media", "id", vodID, "error", err)

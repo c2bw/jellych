@@ -18,10 +18,6 @@ import (
 	"github.com/c2bw/jellych/stream"
 )
 
-var resolveVODPlaylist = stream.ResolveVODPlaylist
-var startVODDownload = stream.StartVODDownloadWithPresetAndDuration
-var startVODConversion = stream.ConvertVODDownload
-
 const maxJSONRequestBytes = 1 << 20
 const maxVODStatusWorkers = 4
 
@@ -182,7 +178,7 @@ func (a *API) handleChannels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleVODs(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, buildVODResponses(a.state.GetVODs()))
+	writeJSON(w, a.buildVODResponses(a.state.GetVODs()))
 }
 
 type vodResponse struct {
@@ -203,7 +199,7 @@ type vodResponse struct {
 	EstimatedDeletionAt  string `json:"estimatedDeletionAt,omitempty"`
 }
 
-func buildVODResponses(vods []VOD) []vodResponse {
+func (a *API) buildVODResponses(vods []VOD) []vodResponse {
 	out := make([]vodResponse, 0, len(vods))
 	if len(vods) == 0 {
 		return out
@@ -217,7 +213,7 @@ func buildVODResponses(vods []VOD) []vodResponse {
 		go func() {
 			defer workers.Done()
 			for i := range jobs {
-				out[i] = buildVODResponse(vods[i])
+				out[i] = a.buildVODResponse(vods[i])
 			}
 		}()
 	}
@@ -229,8 +225,8 @@ func buildVODResponses(vods []VOD) []vodResponse {
 	return out
 }
 
-func buildVODResponse(vod VOD) vodResponse {
-	progress, err := stream.GetVODDownloadProgress(vod.ID)
+func (a *API) buildVODResponse(vod VOD) vodResponse {
+	progress, err := a.streams.GetVODDownloadProgress(vod.ID)
 	if err != nil && !errors.Is(err, stream.ErrVODDownloadsDisabled) {
 		slog.Warn("failed to check vod download status", "id", vod.ID, "error", err)
 	}
@@ -238,7 +234,7 @@ func buildVODResponse(vod VOD) vodResponse {
 	downloadActive := progress.Active
 	var estimatedDeletionAt string
 	if downloaded {
-		_, deletionAt, err := stream.VODDownloadStatus(vod.ID)
+		_, deletionAt, err := a.streams.VODDownloadStatus(vod.ID)
 		if err != nil && !errors.Is(err, stream.ErrVODDownloadsDisabled) {
 			slog.Warn("failed to check vod download retention status", "id", vod.ID, "error", err)
 		}
@@ -285,7 +281,7 @@ func (a *API) handleRemoveVOD(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "vod not found", http.StatusNotFound)
 		return
 	}
-	if err := stream.RemoveVODWithArtifacts(id, func() error {
+	if err := a.streams.RemoveVODWithArtifacts(id, func() error {
 		return a.state.RemoveVOD(id)
 	}); err != nil {
 		writeMappedError(w, err, removeVODErrors, http.StatusInternalServerError, "failed to remove vod: %v")
@@ -344,7 +340,7 @@ func (a *API) handleDownloadVOD(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		totalDuration = 0
 	}
-	if err := startVODDownload(r.Context(), vod.ID, vod.URL, vod.Title, vod.Channel, preset, totalDuration); err != nil {
+	if err := a.streams.StartVODDownload(r.Context(), vod.ID, vod.URL, vod.Title, vod.Channel, preset, totalDuration); err != nil {
 		writeMappedError(w, err, vodDownloadStartErrors, http.StatusInternalServerError, "failed to start vod download: %v")
 		return
 	}
@@ -359,7 +355,7 @@ func (a *API) handleGetVODDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	progress, err := stream.GetVODDownloadProgress(id)
+	progress, err := a.streams.GetVODDownloadProgress(id)
 	if err != nil {
 		writeMappedError(w, err, vodDownloadProgressErrors, http.StatusInternalServerError, "failed to get vod download progress: %v")
 		return
@@ -384,7 +380,7 @@ func (a *API) handleConvertVOD(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid conversion preset", http.StatusBadRequest)
 		return
 	}
-	if err := startVODConversion(r.Context(), id, preset); err != nil {
+	if err := a.streams.ConvertVODDownload(r.Context(), id, preset); err != nil {
 		writeMappedError(w, err, vodConversionErrors, http.StatusInternalServerError, "failed to start vod conversion: %v")
 		return
 	}
@@ -393,7 +389,7 @@ func (a *API) handleConvertVOD(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleDeleteVODDownload(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
-	if err := stream.DeleteVODDownload(id); err != nil {
+	if err := a.streams.DeleteVODDownload(id); err != nil {
 		writeMappedError(w, err, vodDownloadDeleteErrors, http.StatusInternalServerError, "failed to delete vod download: %v")
 		return
 	}
@@ -411,7 +407,7 @@ func (a *API) handleStartStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := stream.Start(channel); err != nil {
+	if err := a.streams.Start(channel); err != nil {
 		writeMappedError(w, err, startStreamErrors, http.StatusInternalServerError, "failed to start: %v")
 		return
 	}
@@ -476,7 +472,7 @@ func (a *API) handleStopChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := stream.StopChannel(channel); err != nil {
+	if err := a.streams.StopChannel(channel); err != nil {
 		if isIdempotentStopError(err) {
 			slog.Warn("stop channel: treating shutdown race as success", "channel", channel, "error", err)
 		} else {
@@ -493,14 +489,14 @@ func isIdempotentStopError(err error) bool {
 }
 
 func (a *API) handleActiveStreams(w http.ResponseWriter, r *http.Request) {
-	active := stream.ActiveChannels()
+	active := a.streams.ActiveChannels()
 	writeJSON(w, active)
 }
 
 func (a *API) handleGetChannelStatus(w http.ResponseWriter, r *http.Request) {
 	statuses := a.state.GetChannelStatus()
 	// Log playing counts for channels that have jellych viewers > 0
-	counts := GetPlayingCounts(time.Now())
+	counts := a.playback.GetPlayingCounts(a.now())
 	for _, s := range statuses {
 		if s.Online && counts[s.Name] > 0 {
 			slog.Debug("playing streams", "channel", s.Name, "viewers", s.Viewers, "playing", counts[s.Name])
@@ -542,9 +538,9 @@ func (a *API) handleRecordPlaying(w http.ResponseWriter, r *http.Request) {
 
 	switch strings.ToLower(strings.TrimSpace(payload.Action)) {
 	case "stop":
-		StopPlaying(channel, payload.SessionID)
+		a.playback.StopPlaying(channel, payload.SessionID)
 	case "start", "ping":
-		if !RecordPlaying(channel, payload.SessionID, time.Now()) {
+		if !a.playback.RecordPlaying(channel, payload.SessionID, a.now()) {
 			http.Error(w, "too many playback sessions", http.StatusTooManyRequests)
 			return
 		}
@@ -557,7 +553,7 @@ func (a *API) handleRecordPlaying(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleGetPlayingCounts(w http.ResponseWriter, r *http.Request) {
-	counts := GetPlayingCounts(time.Now())
+	counts := a.playback.GetPlayingCounts(a.now())
 	writeJSON(w, counts)
 }
 
@@ -602,19 +598,19 @@ func (a *API) handleJellyfinWebhook(w http.ResponseWriter, r *http.Request) {
 	switch act {
 	case "stop", "stopped", "end":
 		slog.Info("jellyfin webhook: playback stopped", "channel", channel, "sessionId", payload.SessionID)
-		StopPlaying(channel, payload.SessionID)
+		a.playback.StopPlaying(channel, payload.SessionID)
 	case "start", "started", "play", "playing":
 		slog.Info("jellyfin webhook: playback started", "channel", channel, "sessionId", payload.SessionID)
 		// Start stream if not already running
-		if err := stream.Start(channel); err != nil && !errors.Is(err, stream.ErrAlreadyStarted) {
+		if err := a.streams.Start(channel); err != nil && !errors.Is(err, stream.ErrAlreadyStarted) {
 			slog.Error("jellyfin webhook: failed to start stream", "channel", channel, "error", err)
 			writeErrorf(w, http.StatusInternalServerError, "failed to start stream: %v", err)
 			return
 		}
 		// Mark this session as originating from Jellyfin so it isn't
 		// auto-removed when web/manager heartbeats are missing.
-		if !RecordPlaying(channel, payload.SessionID, time.Now()) || !MarkJellyfinSession(channel, payload.SessionID) {
-			StopPlaying(channel, payload.SessionID)
+		if !a.playback.RecordPlaying(channel, payload.SessionID, a.now()) || !a.playback.MarkJellyfinSession(channel, payload.SessionID) {
+			a.playback.StopPlaying(channel, payload.SessionID)
 			http.Error(w, "too many playback sessions", http.StatusTooManyRequests)
 			return
 		}
@@ -664,7 +660,7 @@ func (a *API) handleStreamReady(w http.ResponseWriter, r *http.Request) {
 		minSegments = parsed
 	}
 
-	count, err := stream.PlaylistSegmentCount(channel)
+	count, err := a.streams.PlaylistSegmentCount(channel)
 	if err != nil {
 		writeErrorf(w, http.StatusInternalServerError, "failed to check stream readiness: %v", err)
 		return
@@ -702,7 +698,7 @@ func (a *API) handleGetVODPlaylist(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	playlist, err := resolveVODPlaylist(ctx, vod.URL)
+	playlist, err := a.streams.ResolveVODPlaylist(ctx, vod.URL)
 	if err != nil {
 		if !errors.Is(err, stream.ErrVODManifestRestricted) {
 			slog.Warn("failed to resolve vod playlist", "id", id, "error", err)
