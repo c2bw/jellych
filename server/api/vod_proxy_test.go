@@ -1,9 +1,43 @@
 package api
 
 import (
+	"bytes"
+	"errors"
 	"testing"
 	"time"
 )
+
+func TestCopyVODMediaObjectWithinLimit(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		body  string
+		limit int64
+	}{
+		{name: "under limit", body: "media", limit: 6},
+		{name: "exact limit", body: "media", limit: 5},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var dst bytes.Buffer
+			if err := copyVODMediaObject(&dst, bytes.NewBufferString(test.body), test.limit); err != nil {
+				t.Fatalf("copy media object: %v", err)
+			}
+			if got := dst.String(); got != test.body {
+				t.Fatalf("copied body = %q; want %q", got, test.body)
+			}
+		})
+	}
+}
+
+func TestCopyVODMediaObjectRejectsOverflowWithoutWritingExtraByte(t *testing.T) {
+	var dst bytes.Buffer
+	err := copyVODMediaObject(&dst, bytes.NewBufferString("media!"), 5)
+	if !errors.Is(err, errVODMediaObjectTooLarge) {
+		t.Fatalf("copy error = %v; want %v", err, errVODMediaObjectTooLarge)
+	}
+	if got := dst.String(); got != "media" {
+		t.Fatalf("copied body = %q; want only the five permitted bytes", got)
+	}
+}
 
 func TestVODMediaRegistryRegisterDefersBulkPruning(t *testing.T) {
 	now := time.Date(2026, time.July, 12, 12, 0, 0, 0, time.UTC)

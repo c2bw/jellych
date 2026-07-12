@@ -25,6 +25,8 @@ const maxProxiedVODPlaylistBytes = 16 << 20
 
 var vodMediaHTTPClient = &http.Client{Timeout: 2 * time.Minute}
 
+var errVODMediaObjectTooLarge = errors.New("vod media object too large")
+
 type vodMediaTarget struct {
 	vodID     string
 	url       string
@@ -187,7 +189,36 @@ func (a *API) handleGetVODMedia(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead || resp.StatusCode == http.StatusNotModified {
 		return
 	}
-	_, _ = io.Copy(w, io.LimitReader(resp.Body, maxProxiedVODMediaBytes+1))
+	if err := copyVODMediaObject(w, resp.Body, maxProxiedVODMediaBytes); err != nil {
+		if errors.Is(err, errVODMediaObjectTooLarge) {
+			slog.Warn("aborting oversized VOD media response", "id", vodID, "limit", maxProxiedVODMediaBytes)
+		} else if r.Context().Err() == nil {
+			slog.Warn("VOD media response ended before it could be completed", "id", vodID, "error", err)
+		}
+		// Headers may already contain a successful upstream status. Abort the
+		// HTTP stream so clients observe a transport failure instead of treating
+		// a partial media object as a complete 2xx response.
+		panic(http.ErrAbortHandler)
+	}
+}
+
+func copyVODMediaObject(dst io.Writer, src io.Reader, maxBytes int64) error {
+	_, err := io.CopyN(dst, src, maxBytes)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+
+	extra, err := io.CopyN(io.Discard, src, 1)
+	if extra > 0 {
+		return errVODMediaObjectTooLarge
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
 }
 
 func (a *API) proxyNestedVODPlaylist(w http.ResponseWriter, vodID, targetURL string, resp *http.Response) {
