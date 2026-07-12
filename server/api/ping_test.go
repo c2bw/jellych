@@ -239,6 +239,40 @@ func TestJellyfinWebhookRejectsUnsupportedActions(t *testing.T) {
 	}
 }
 
+func TestPlayingEndpointRejectsUnsupportedActions(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing action",
+			body: `{"sessionId":"session-1"}`,
+		},
+		{
+			name: "unknown action",
+			body: `{"action":"pnig","sessionId":"session-1"}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resetAPIStateForTest(t)
+			SetChannels([]string{"jankos"})
+
+			req := httptest.NewRequest(http.MethodPost, "/api/playing/jankos", strings.NewReader(test.body))
+			rec := httptest.NewRecorder()
+			Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
+			}
+			if counts := GetPlayingCounts(time.Now()); len(counts) != 0 {
+				t.Fatalf("unsupported action recorded playback sessions: %#v", counts)
+			}
+		})
+	}
+}
+
 func TestStopChannelIsIdempotentWhenNotRunning(t *testing.T) {
 	resetAPIStateForTest(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/stop/notrunning", nil)

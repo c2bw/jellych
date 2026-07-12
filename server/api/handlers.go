@@ -543,11 +543,14 @@ func (a *API) handleRecordPlaying(w http.ResponseWriter, r *http.Request) {
 	switch strings.ToLower(strings.TrimSpace(payload.Action)) {
 	case "stop":
 		StopPlaying(channel, payload.SessionID)
-	default:
+	case "start", "ping":
 		if !RecordPlaying(channel, payload.SessionID, time.Now()) {
 			http.Error(w, "too many playback sessions", http.StatusTooManyRequests)
 			return
 		}
+	default:
+		http.Error(w, "unsupported playback action", http.StatusBadRequest)
+		return
 	}
 
 	writeText(w, http.StatusOK, "ok")
