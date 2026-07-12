@@ -20,6 +20,7 @@ import (
 
 var resolveVODPlaylist = stream.ResolveVODPlaylist
 var startVODDownload = stream.StartVODDownloadWithPreset
+var startVODConversion = stream.ConvertVODDownload
 
 const maxJSONRequestBytes = 1 << 20
 const maxVODStatusWorkers = 4
@@ -123,6 +124,15 @@ var vodDownloadDeleteErrors = []handlerError{
 	{err: stream.ErrVODDownloadNotFound, status: http.StatusNotFound, message: "downloaded vod not found"},
 }
 
+var vodConversionErrors = []handlerError{
+	{err: stream.ErrVODDownloadsDisabled, status: http.StatusServiceUnavailable, message: "vod downloads folder is not configured; start jellych with --vods <folder>"},
+	{err: stream.ErrVODDownloadAlreadyStarted, status: http.StatusConflict, message: "vod download or conversion already started"},
+	{err: stream.ErrVODDownloadNotFound, status: http.StatusNotFound, message: "downloaded vod not found"},
+	{err: stream.ErrVODConversionRequiresOriginal, status: http.StatusConflict, message: "only original downloads can be converted"},
+	{err: stream.ErrVODConversionTargetOriginal, status: http.StatusBadRequest, message: "conversion target must be h264, hevc, or vp9"},
+	{err: stream.ErrVODRemovalInProgress, status: http.StatusConflict, message: "vod removal in progress"},
+}
+
 var addVODErrors = []handlerError{
 	{err: ErrVODAlreadyExists, status: http.StatusConflict, message: "vod already exists"},
 }
@@ -177,12 +187,20 @@ func (a *API) handleVODs(w http.ResponseWriter, r *http.Request) {
 
 type vodResponse struct {
 	VOD
-	Downloaded          bool   `json:"downloaded"`
-	DownloadActive      bool   `json:"downloadActive"`
-	DownloadSize        int64  `json:"downloadSize"`
-	DownloadRate        int64  `json:"downloadRate,omitempty"`
-	DownloadPreset      string `json:"downloadPreset,omitempty"`
-	EstimatedDeletionAt string `json:"estimatedDeletionAt,omitempty"`
+	Downloaded           bool   `json:"downloaded"`
+	DownloadActive       bool   `json:"downloadActive"`
+	DownloadSize         int64  `json:"downloadSize"`
+	DownloadRate         int64  `json:"downloadRate,omitempty"`
+	DownloadSpeed        string `json:"downloadSpeed,omitempty"`
+	DownloadPreset       string `json:"downloadPreset,omitempty"`
+	DownloadOperation    string `json:"downloadOperation,omitempty"`
+	OriginalSize         int64  `json:"originalSize,omitempty"`
+	DownloadETASeconds   int64  `json:"downloadETASeconds,omitempty"`
+	DownloadVideoCodec   string `json:"downloadVideoCodec,omitempty"`
+	DownloadVideoWidth   int    `json:"downloadVideoWidth,omitempty"`
+	DownloadVideoHeight  int    `json:"downloadVideoHeight,omitempty"`
+	DownloadTotalBitrate int64  `json:"downloadTotalBitrate,omitempty"`
+	EstimatedDeletionAt  string `json:"estimatedDeletionAt,omitempty"`
 }
 
 func buildVODResponses(vods []VOD) []vodResponse {
@@ -229,13 +247,21 @@ func buildVODResponse(vod VOD) vodResponse {
 		}
 	}
 	return vodResponse{
-		VOD:                 vod,
-		Downloaded:          downloaded,
-		DownloadActive:      downloadActive,
-		DownloadSize:        progress.TotalSize,
-		DownloadRate:        progress.BytesPerSecond,
-		DownloadPreset:      progress.Preset,
-		EstimatedDeletionAt: estimatedDeletionAt,
+		VOD:                  vod,
+		Downloaded:           downloaded,
+		DownloadActive:       downloadActive,
+		DownloadSize:         progress.TotalSize,
+		DownloadRate:         progress.BytesPerSecond,
+		DownloadSpeed:        progress.Speed,
+		DownloadPreset:       progress.Preset,
+		DownloadOperation:    progress.Operation,
+		OriginalSize:         progress.OriginalSize,
+		DownloadETASeconds:   progress.ETASeconds,
+		DownloadVideoCodec:   progress.VideoCodec,
+		DownloadVideoWidth:   progress.VideoWidth,
+		DownloadVideoHeight:  progress.VideoHeight,
+		DownloadTotalBitrate: progress.TotalBitrate,
+		EstimatedDeletionAt:  estimatedDeletionAt,
 	}
 }
 
@@ -335,6 +361,30 @@ func (a *API) handleGetVODDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, progress)
+}
+
+func (a *API) handleConvertVOD(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if _, ok := a.state.FindVOD(id); !ok {
+		http.Error(w, "vod not found", http.StatusNotFound)
+		return
+	}
+	var payload struct {
+		Preset string `json:"preset"`
+	}
+	if !decodeJSONBody(w, r, &payload) {
+		return
+	}
+	preset, err := stream.ParseVODDownloadPreset(payload.Preset)
+	if err != nil {
+		http.Error(w, "invalid conversion preset", http.StatusBadRequest)
+		return
+	}
+	if err := startVODConversion(r.Context(), id, preset); err != nil {
+		writeMappedError(w, err, vodConversionErrors, http.StatusInternalServerError, "failed to start vod conversion: %v")
+		return
+	}
+	writeText(w, http.StatusAccepted, "conversion started")
 }
 
 func (a *API) handleDeleteVODDownload(w http.ResponseWriter, r *http.Request) {

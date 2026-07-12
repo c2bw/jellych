@@ -38,6 +38,7 @@ func resetAPIStateForTest(t *testing.T) {
 		stream.SetVODDownloadDir("")
 		resolveVODPlaylist = stream.ResolveVODPlaylist
 		startVODDownload = stream.StartVODDownloadWithPreset
+		startVODConversion = stream.ConvertVODDownload
 		defaultVODMediaRegistry.Lock()
 		defaultVODMediaRegistry.byToken = nil
 		defaultVODMediaRegistry.byURL = nil
@@ -418,6 +419,43 @@ func TestDownloadVODRejectsOversizedPayload(t *testing.T) {
 	}
 	if called {
 		t.Fatal("did not expect downloader to be called")
+	}
+}
+
+func TestConvertVODPassesValidatedPreset(t *testing.T) {
+	resetAPIStateForTest(t)
+	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+	var gotID string
+	var gotPreset stream.VODDownloadPreset
+	startVODConversion = func(_ context.Context, id string, preset stream.VODDownloadPreset) error {
+		gotID = id
+		gotPreset = preset
+		return nil
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/convert", strings.NewReader(`{"preset":"hevc"}`))
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, rec.Code, rec.Body.String())
+	}
+	if gotID != "123456789" || gotPreset != stream.VODDownloadPresetHEVC {
+		t.Fatalf("unexpected conversion request: id=%q preset=%q", gotID, gotPreset)
+	}
+}
+
+func TestConvertVODMapsOriginalTargetError(t *testing.T) {
+	resetAPIStateForTest(t)
+	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+	startVODConversion = func(context.Context, string, stream.VODDownloadPreset) error {
+		return stream.ErrVODConversionTargetOriginal
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/convert", strings.NewReader(`{"preset":"original"}`))
+	rec := httptest.NewRecorder()
+	Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
 }
 

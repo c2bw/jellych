@@ -45,16 +45,7 @@ func buildVODDownloadArgs(inputURL, outputPath, title, channel string, preset VO
 		"-map", "0:a?",
 		"-map", "0:s?",
 	}
-	switch preset {
-	case VODDownloadPresetH264:
-		args = append(args, "-c:v", "libx264", "-preset", "medium", "-crf", "23", "-c:a", "aac", "-b:a", "128k", "-c:s", "copy")
-	case VODDownloadPresetHEVC:
-		args = append(args, "-c:v", "libx265", "-preset", "medium", "-crf", "25", "-c:a", "aac", "-b:a", "128k", "-c:s", "copy")
-	case VODDownloadPresetVP9:
-		args = append(args, "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-deadline", "good", "-cpu-used", "2", "-c:a", "libopus", "-b:a", "128k", "-c:s", "copy")
-	default:
-		args = append(args, "-c", "copy")
-	}
+	args = appendVODPresetCodecArgs(args, preset)
 	if title != "" {
 		args = append(args, "-metadata", "title="+title)
 	}
@@ -63,4 +54,39 @@ func buildVODDownloadArgs(inputURL, outputPath, title, channel string, preset VO
 	}
 	args = append(args, "-metadata", "jellych_download_preset="+string(preset))
 	return append(args, "-f", "matroska", outputPath)
+}
+
+func buildVODConversionArgs(inputPath, outputPath string, preset VODDownloadPreset, originalSize int64) []string {
+	args := []string{
+		"-hide_banner",
+		"-loglevel", "warning",
+		"-y",
+		"-nostdin",
+		"-nostats",
+		"-progress", "pipe:1",
+		"-i", inputPath,
+		"-map", "0:v?",
+		"-map", "0:a?",
+		"-map", "0:s?",
+		"-map_metadata", "0",
+	}
+	args = appendVODPresetCodecArgs(args, preset)
+	args = append(args,
+		"-metadata", "jellych_download_preset="+string(preset),
+		"-metadata", fmt.Sprintf("jellych_original_size=%d", originalSize),
+	)
+	return append(args, "-f", "matroska", outputPath)
+}
+
+func appendVODPresetCodecArgs(args []string, preset VODDownloadPreset) []string {
+	switch preset {
+	case VODDownloadPresetH264:
+		return append(args, "-c:v", "libx264", "-preset", "medium", "-crf", "23", "-c:a", "aac", "-b:a", "128k", "-c:s", "copy")
+	case VODDownloadPresetHEVC:
+		return append(args, "-c:v", "libx265", "-preset", "medium", "-crf", "25", "-c:a", "aac", "-b:a", "128k", "-c:s", "copy")
+	case VODDownloadPresetVP9:
+		return append(args, "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-deadline", "good", "-cpu-used", "2", "-c:a", "libopus", "-b:a", "128k", "-c:s", "copy")
+	default:
+		return append(args, "-c", "copy")
+	}
 }

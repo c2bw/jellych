@@ -1,5 +1,5 @@
 import { apiFetch } from './auth.js';
-import { appendVODDownloadPresetBadge, vodDownloadRequest } from './vod_download.js';
+import { appendVODConversionControl, appendVODDownloadPresetBadge, formatVODMediaInfo, formatVODRemainingTime, vodConversionRequest, vodDownloadRequest, vodPresetCommand } from './vod_download.js';
 
 const form = document.getElementById('vodForm');
 const idInput = document.getElementById('vodId');
@@ -13,11 +13,17 @@ const previousPageEl = document.getElementById('vodPreviousPage');
 const nextPageEl = document.getElementById('vodNextPage');
 const pageStatusEl = document.getElementById('vodPageStatus');
 const downloadPresetEl = document.getElementById('downloadPreset');
+const downloadPresetCommandEl = document.getElementById('downloadPresetCommand');
 let currentVODs = [];
 let currentPage = 1;
 let progressPollTimer = 0;
 const vodIDLength = 10;
 const vodsPerPage = 15;
+
+function updateDownloadPresetCommand(){
+  if(!downloadPresetCommandEl) return;
+  downloadPresetCommandEl.textContent = 'ffmpeg ' + vodPresetCommand(downloadPresetEl ? downloadPresetEl.value : 'original');
+}
 
 function setMessage(message, isError){
   msgEl.textContent = message || '';
@@ -77,6 +83,31 @@ function vodDownloadRate(vod){
 
 function vodDownloadPreset(vod){
   return vod.downloadPreset || vod.DownloadPreset || vod.preset || vod.Preset || '';
+}
+
+function vodDownloadSpeed(vod){
+  return vod.downloadSpeed || vod.DownloadSpeed || vod.speed || vod.Speed || '';
+}
+
+function vodDownloadOperation(vod){
+  return vod.downloadOperation || vod.DownloadOperation || vod.operation || vod.Operation || '';
+}
+
+function vodOriginalSize(vod){
+  const value = Number(vod.originalSize ?? vod.OriginalSize ?? 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function vodOriginalMediaInfo(vod){
+  const codec = String(vod.downloadVideoCodec || vod.DownloadVideoCodec || vod.videoCodec || vod.VideoCodec || '').toLowerCase();
+  const height = Number(vod.downloadVideoHeight ?? vod.DownloadVideoHeight ?? vod.videoHeight ?? vod.VideoHeight ?? 0);
+  const bitrate = Number(vod.downloadTotalBitrate ?? vod.DownloadTotalBitrate ?? vod.totalBitrate ?? vod.TotalBitrate ?? 0);
+  return formatVODMediaInfo(codec, height, bitrate);
+}
+
+function vodDownloadETASeconds(vod){
+  const value = Number(vod.downloadETASeconds ?? vod.DownloadETASeconds ?? vod.etaSeconds ?? vod.ETASeconds ?? 0);
+  return Number.isFinite(value) && value > 0 ? Math.ceil(value) : 0;
 }
 
 function formatBytes(value){
@@ -146,14 +177,14 @@ function renderVOD(vod){
 
   const downloadAction = document.createElement('button');
   downloadAction.type = 'button';
-  if(vodDownloaded(vod)){
+  if(vodDownloadActive(vod)){
+    downloadAction.textContent = vodDownloadOperation(vod) === 'convert' ? 'Converting' : 'Downloading';
+    downloadAction.className = 'button';
+    downloadAction.disabled = true;
+  }else if(vodDownloaded(vod)){
     downloadAction.textContent = 'Delete File';
     downloadAction.className = 'button button-danger';
     downloadAction.addEventListener('click', ()=>deleteDownloadedVOD(id, downloadAction));
-  }else if(vodDownloadActive(vod)){
-    downloadAction.textContent = 'Downloading';
-    downloadAction.className = 'button';
-    downloadAction.disabled = true;
   }else{
     downloadAction.textContent = 'Download';
     downloadAction.className = 'button';
@@ -180,6 +211,7 @@ function renderVOD(vod){
   titleWrap.className = 'flex min-w-0 flex-1 items-center gap-2';
 
   const downloadPreset = vodDownloadPreset(vod);
+  const originalSize = vodOriginalSize(vod);
 
   if(channelText){
     const channelBadge = document.createElement('span');
@@ -203,9 +235,6 @@ function renderVOD(vod){
   const dateText = document.createElement('span');
   dateText.textContent = formatVODDate(vodDate(vod), id);
   const size = vodDownloadSize(vod);
-  const urlText = document.createElement('span');
-  urlText.className = 'min-w-0 flex-1 truncate';
-  urlText.textContent = vodURL(vod);
   meta.appendChild(dateText);
   if(size > 0){
     const sizeSeparator = document.createElement('span');
@@ -213,21 +242,30 @@ function renderVOD(vod){
     sizeSeparator.textContent = '-';
     const sizeText = document.createElement('span');
     sizeText.className = 'shrink-0 tabular-nums text-white/55';
-    sizeText.textContent = formatBytes(size);
+    sizeText.textContent = originalSize > 0 ? formatBytes(originalSize) + ' → ' + formatBytes(size) : formatBytes(size);
+    if(originalSize > 0) sizeText.title = 'Original → converted';
     meta.appendChild(sizeSeparator);
     meta.appendChild(sizeText);
   }
-  appendVODDownloadPresetBadge(document, meta, {
-    downloaded: vodDownloaded(vod),
-    active: vodDownloadActive(vod),
-    preset: downloadPreset,
-  });
-  const urlSeparator = document.createElement('span');
-  urlSeparator.className = 'hidden sm:inline';
-  urlSeparator.textContent = '-';
-  meta.appendChild(urlSeparator);
-  meta.appendChild(urlText);
-
+  if(vodDownloaded(vod) && !vodDownloadActive(vod) && downloadPreset === 'original'){
+    appendVODConversionControl(document, meta, {
+      title: titleText,
+      onConvert: (preset, button, select)=>convertVOD(id, preset, button, select),
+    });
+    const mediaInfo = vodOriginalMediaInfo(vod);
+    if(mediaInfo){
+      const mediaInfoLabel = document.createElement('span');
+      mediaInfoLabel.className = 'shrink-0 text-xs text-white/55';
+      mediaInfoLabel.textContent = mediaInfo;
+      meta.appendChild(mediaInfoLabel);
+    }
+  }else{
+    appendVODDownloadPresetBadge(document, meta, {
+      downloaded: vodDownloaded(vod),
+      active: vodDownloadActive(vod),
+      preset: downloadPreset,
+    });
+  }
   titleRow.appendChild(actions);
   titleRow.appendChild(titleWrap);
   info.appendChild(titleRow);
@@ -241,10 +279,15 @@ function renderVOD(vod){
   }
   if(vodDownloadActive(vod)){
     const rate = vodDownloadRate(vod);
+    const speed = vodDownloadSpeed(vod);
+    const etaSeconds = vodDownloadETASeconds(vod);
+    const converting = vodDownloadOperation(vod) === 'convert';
     const downloadStatus = document.createElement('div');
     downloadStatus.className = 'mt-2 text-xs tabular-nums text-white/55';
-    const parts = ['Downloading'];
-    if(rate > 0) parts.push(formatMegabytesPerSecond(rate));
+    const parts = [converting ? 'Converting' : 'Downloading'];
+    if(converting && speed) parts.push(speed);
+    if(converting && etaSeconds > 0) parts.push(formatVODRemainingTime(etaSeconds));
+    if(!converting && rate > 0) parts.push(formatMegabytesPerSecond(rate));
     if(size > 0) parts.push(formatBytes(size));
     downloadStatus.textContent = parts.join(' - ');
     info.appendChild(downloadStatus);
@@ -398,6 +441,39 @@ async function downloadVOD(id, button){
   }
 }
 
+async function convertVOD(id, preset, button, select){
+  if(!id || preset === 'original') return;
+  button.disabled = true;
+  select.disabled = true;
+  setMessage('Starting VOD conversion...', false);
+  try{
+    const res = await apiFetch('/api/vods/' + encodeURIComponent(id) + '/convert', vodConversionRequest(preset));
+    if(!res.ok){
+      const text = await res.text();
+      throw new Error(text.trim() || res.statusText);
+    }
+    setMessage('Conversion started for VOD ' + id, false);
+    currentVODs = currentVODs.map((vod)=>{
+      if(vodID(vod) !== id) return vod;
+      return {
+        ...vod,
+        downloaded: true,
+        downloadActive: true,
+        downloadOperation: 'convert',
+        downloadPreset: preset,
+        originalSize: vodDownloadSize(vod),
+        downloadSize: 0,
+      };
+    });
+    applyVODFilter();
+    scheduleProgressPolling();
+  }catch(err){
+    setMessage('Conversion failed: ' + err.message, true);
+    button.disabled = false;
+    select.disabled = false;
+  }
+}
+
 async function deleteDownloadedVOD(id, button){
   if(!id) return;
   button.disabled = true;
@@ -417,6 +493,7 @@ async function deleteDownloadedVOD(id, button){
 }
 
 form.addEventListener('submit', addVOD);
+if(downloadPresetEl) downloadPresetEl.addEventListener('change', updateDownloadPresetCommand);
 filterEl.addEventListener('change', ()=>{
   currentPage = 1;
   applyVODFilter();
@@ -435,3 +512,4 @@ nextPageEl.addEventListener('click', ()=>{
   applyVODFilter();
 });
 loadVODs();
+updateDownloadPresetCommand();

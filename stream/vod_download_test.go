@@ -418,12 +418,15 @@ func TestCompletedVODDownloadPresetIsReadOnceAndCached(t *testing.T) {
 	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
 	originalProbe := probeVODDownloadMetadata
 	probeCalls := 0
-	probeVODDownloadMetadata = func(gotPath string) (VODDownloadPreset, error) {
+	probeVODDownloadMetadata = func(gotPath string) (vodDownloadMetadata, error) {
 		probeCalls++
 		if gotPath != path {
 			t.Fatalf("expected probe path %q, got %q", path, gotPath)
 		}
-		return VODDownloadPresetHEVC, nil
+		return vodDownloadMetadata{
+			Preset: VODDownloadPresetHEVC, OriginalSize: 12345,
+			DurationSeconds: 10, VideoCodec: "h264", VideoWidth: 1920, VideoHeight: 1080,
+		}, nil
 	}
 	t.Cleanup(func() { probeVODDownloadMetadata = originalProbe })
 
@@ -434,6 +437,15 @@ func TestCompletedVODDownloadPresetIsReadOnceAndCached(t *testing.T) {
 		}
 		if progress.Preset != "hevc" {
 			t.Fatalf("expected HEVC preset, got %q", progress.Preset)
+		}
+		if progress.OriginalSize != 12345 {
+			t.Fatalf("expected original size metadata, got %d", progress.OriginalSize)
+		}
+		if progress.VideoCodec != "h264" || progress.VideoWidth != 1920 || progress.VideoHeight != 1080 {
+			t.Fatalf("unexpected video metadata: %#v", progress)
+		}
+		if progress.TotalBitrate != 8 {
+			t.Fatalf("expected total bitrate 8 bps, got %d", progress.TotalBitrate)
 		}
 	}
 	if probeCalls != 1 {
@@ -450,12 +462,12 @@ func TestCompletedVODDownloadPresetProbeFailureIsNotCached(t *testing.T) {
 	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
 	originalProbe := probeVODDownloadMetadata
 	probeCalls := 0
-	probeVODDownloadMetadata = func(string) (VODDownloadPreset, error) {
+	probeVODDownloadMetadata = func(string) (vodDownloadMetadata, error) {
 		probeCalls++
 		if probeCalls == 1 {
-			return "", errors.New("temporary probe failure")
+			return vodDownloadMetadata{}, errors.New("temporary probe failure")
 		}
-		return VODDownloadPresetVP9, nil
+		return vodDownloadMetadata{Preset: VODDownloadPresetVP9}, nil
 	}
 	t.Cleanup(func() { probeVODDownloadMetadata = originalProbe })
 
@@ -513,6 +525,113 @@ func TestBuildVODDownloadArgsUsesPresetCodecs(t *testing.T) {
 	}
 }
 
+func TestBuildVODConversionArgsIncludesSourceMetadataAndOriginalSize(t *testing.T) {
+	args := buildVODConversionArgs("original.mkv", "converted.part", VODDownloadPresetHEVC, 987654)
+	for _, want := range []string{
+		"original.mkv", "converted.part", "libx265", "0:v?", "0:a?", "0:s?",
+		"jellych_download_preset=hevc", "jellych_original_size=987654", "matroska",
+	} {
+		if !slices.Contains(args, want) {
+			t.Fatalf("expected conversion args to contain %q, got %#v", want, args)
+		}
+	}
+}
+
+func TestFinalizeVODConversionReplacesOriginalAndRemovesBackup(t *testing.T) {
+	dir := t.TempDir()
+	originalPath := filepath.Join(dir, "123.mkv")
+	tempPath := filepath.Join(dir, "123.part")
+	backupPath := filepath.Join(dir, "123.original")
+	if err := os.WriteFile(originalPath, []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tempPath, []byte("converted"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := finalizeVODConversion(tempPath, originalPath, backupPath); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "converted" {
+		t.Fatalf("expected converted output, got %q", got)
+	}
+	if _, err := os.Stat(backupPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected backup removal, got %v", err)
+	}
+}
+
+func TestRecoverInterruptedConversionRestoresOriginal(t *testing.T) {
+	dir := t.TempDir()
+	partialDir := vodPartialDir(dir)
+	if err := os.MkdirAll(partialDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
+	backupPath := vodConversionBackupPath(dir, "123")
+	if err := os.WriteFile(backupPath, []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := downloader.recoverInterruptedConversion(dir, "123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected interrupted conversion recovery")
+	}
+	got, err := os.ReadFile(vodDownloadPath(dir, "123"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("expected restored original, got %q", got)
+	}
+}
+
+func TestDeleteDoesNotRemoveOnlyConversionBackup(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(vodPartialDir(dir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := vodConversionBackupPath(dir, "123")
+	if err := os.WriteFile(backupPath, []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	downloader := &VODDownloader{dir: dir}
+	if err := downloader.Delete("123"); !errors.Is(err, ErrVODDownloadNotFound) {
+		t.Fatalf("expected missing primary error, got %v", err)
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("expected recovery backup to remain, got %v", err)
+	}
+}
+
+func TestConvertRejectsNonOriginalAndOriginalTarget(t *testing.T) {
+	dir := t.TempDir()
+	path := vodDownloadPath(dir, "123")
+	if err := os.WriteFile(path, []byte("downloaded"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloader := &VODDownloader{
+		dir: dir,
+		presets: map[string]vodPresetCacheEntry{
+			"123": {size: info.Size(), modTime: info.ModTime(), metadata: vodDownloadMetadata{Preset: VODDownloadPresetHEVC}},
+		},
+	}
+	if err := downloader.Convert(context.Background(), "123", VODDownloadPresetVP9); !errors.Is(err, ErrVODConversionRequiresOriginal) {
+		t.Fatalf("expected original-only error, got %v", err)
+	}
+	if err := downloader.Convert(context.Background(), "123", VODDownloadPresetOriginal); !errors.Is(err, ErrVODConversionTargetOriginal) {
+		t.Fatalf("expected compressed-target error, got %v", err)
+	}
+}
+
 func TestParseVODDownloadPreset(t *testing.T) {
 	for _, value := range []string{"", "original", "h264", "hevc", "vp9", " VP9 "} {
 		if _, err := ParseVODDownloadPreset(value); err != nil {
@@ -551,6 +670,26 @@ func TestUpdateVODDownloadProgressCalculatesByteRate(t *testing.T) {
 	}
 	if got.Speed != "1.5x" {
 		t.Fatalf("expected speed to be recorded, got %q", got.Speed)
+	}
+}
+
+func TestUpdateVODDownloadProgressCalculatesConversionETA(t *testing.T) {
+	download := newVODDownload()
+	download.progress.Operation = "convert"
+	download.totalDuration = 100 * time.Second
+	vodDownloadState.Lock()
+	vodDownloadState.active = map[string]*vodDownload{"active": download}
+	vodDownloadState.Unlock()
+	t.Cleanup(func() { clearVODDownload("active", download) })
+
+	updateVODDownloadProgress("active", download, "out_time_us", "25000000")
+	updateVODDownloadProgress("active", download, "speed", "0.5x")
+	got, err := GetVODDownloadProgress("active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ETASeconds != 150 {
+		t.Fatalf("expected 150 seconds remaining, got %d", got.ETASeconds)
 	}
 }
 
