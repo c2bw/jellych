@@ -58,6 +58,8 @@ func (d *VODDownloader) StartWithPresetAndDuration(ctx context.Context, id, vodU
 
 	d.Lock()
 	dir := d.dir
+	commandContext := d.commandContext
+	resolveURL := d.resolveURL
 	if dir == "" {
 		d.Unlock()
 		return ErrVODDownloadsDisabled
@@ -92,12 +94,13 @@ func (d *VODDownloader) StartWithPresetAndDuration(ctx context.Context, id, vodU
 		d.Unlock()
 		return fmt.Errorf("failed to check vod output file: %w", err)
 	}
-	downloadCtx, cancel := context.WithCancel(ctx)
+	startupCtx, operationCtx, cancelStartup, cancelOperation := newVODOperationContexts(ctx)
 	download := newVODDownload()
 	download.progress.Preset = string(validatedPreset)
 	download.progress.Operation = "download"
 	download.totalDuration = totalDuration
-	download.cancel = cancel
+	download.cancelOperation = cancelOperation
+	download.cancelStartup = cancelStartup
 	d.active[id] = download
 	d.Unlock()
 
@@ -106,7 +109,10 @@ func (d *VODDownloader) StartWithPresetAndDuration(ctx context.Context, id, vodU
 		return fmt.Errorf("failed to create vods folder: %w", err)
 	}
 
-	inputURL, err := resolveVODDownloadURL(downloadCtx, vodURL)
+	if resolveURL == nil {
+		resolveURL = resolveVODDownloadURL
+	}
+	inputURL, err := resolveURL(startupCtx, vodURL)
 	if err != nil {
 		d.finishDownload(id, download, "", outputPath, time.Now(), err)
 		return err
@@ -123,7 +129,7 @@ func (d *VODDownloader) StartWithPresetAndDuration(ctx context.Context, id, vodU
 		return err
 	}
 
-	cmd := exec.Command("ffmpeg", buildVODDownloadArgs(inputURL, tempPath, title, channel, validatedPreset)...)
+	cmd := newVODCommand(operationCtx, commandContext, "ffmpeg", buildVODDownloadArgs(inputURL, tempPath, title, channel, validatedPreset)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		d.finishDownload(id, download, tempPath, outputPath, time.Now(), err)
@@ -137,7 +143,7 @@ func (d *VODDownloader) StartWithPresetAndDuration(ctx context.Context, id, vodU
 
 	startedAt := time.Now()
 	d.Lock()
-	if d.stopping || download.stopping || d.active == nil || d.active[id] != download {
+	if d.stopping || download.stopping || startupCtx.Err() != nil || d.active == nil || d.active[id] != download {
 		d.Unlock()
 		d.finishDownload(id, download, tempPath, outputPath, startedAt, context.Canceled)
 		return context.Canceled
@@ -146,6 +152,7 @@ func (d *VODDownloader) StartWithPresetAndDuration(ctx context.Context, id, vodU
 	download.tempPath = tempPath
 	download.outputPath = outputPath
 	download.startedAt = startedAt
+	download.cancelStartup()
 	if err := cmd.Start(); err != nil {
 		d.Unlock()
 		d.finishDownload(id, download, tempPath, outputPath, startedAt, err)
@@ -200,6 +207,7 @@ func (d *VODDownloader) Convert(ctx context.Context, id string, preset VODDownlo
 
 	d.Lock()
 	dir := d.dir
+	commandContext := d.commandContext
 	if dir == "" {
 		d.Unlock()
 		return ErrVODDownloadsDisabled
@@ -236,14 +244,15 @@ func (d *VODDownloader) Convert(ctx context.Context, id string, preset VODDownlo
 		d.Unlock()
 		return fmt.Errorf("vod download changed during conversion setup")
 	}
-	_, cancel := context.WithCancel(ctx)
+	startupCtx, operationCtx, cancelStartup, cancelOperation := newVODOperationContexts(ctx)
 	download := newVODDownload()
 	download.progress.Preset = string(validatedPreset)
 	download.progress.Operation = "convert"
 	download.progress.Downloaded = true
 	download.progress.OriginalSize = info.Size()
 	download.totalDuration = time.Duration(progress.DurationSeconds * float64(time.Second))
-	download.cancel = cancel
+	download.cancelOperation = cancelOperation
+	download.cancelStartup = cancelStartup
 	d.active[id] = download
 	d.Unlock()
 
@@ -256,7 +265,7 @@ func (d *VODDownloader) Convert(ctx context.Context, id string, preset VODDownlo
 		d.finishConversion(id, download, "", outputPath, time.Now(), err)
 		return err
 	}
-	cmd := exec.Command("ffmpeg", buildVODConversionArgs(outputPath, tempPath, validatedPreset, info.Size())...)
+	cmd := newVODCommand(operationCtx, commandContext, "ffmpeg", buildVODConversionArgs(outputPath, tempPath, validatedPreset, info.Size())...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		d.finishConversion(id, download, tempPath, outputPath, time.Now(), err)
@@ -270,7 +279,7 @@ func (d *VODDownloader) Convert(ctx context.Context, id string, preset VODDownlo
 
 	startedAt := time.Now()
 	d.Lock()
-	if d.stopping || download.stopping || d.active == nil || d.active[id] != download {
+	if d.stopping || download.stopping || startupCtx.Err() != nil || d.active == nil || d.active[id] != download {
 		d.Unlock()
 		d.finishConversion(id, download, tempPath, outputPath, startedAt, context.Canceled)
 		return context.Canceled
@@ -279,6 +288,7 @@ func (d *VODDownloader) Convert(ctx context.Context, id string, preset VODDownlo
 	download.tempPath = tempPath
 	download.outputPath = outputPath
 	download.startedAt = startedAt
+	download.cancelStartup()
 	if err := cmd.Start(); err != nil {
 		d.Unlock()
 		d.finishConversion(id, download, tempPath, outputPath, startedAt, err)
@@ -309,9 +319,7 @@ func (d *VODDownloader) Stop() error {
 	active := make(map[string]*vodDownload, len(d.active))
 	for id, download := range d.active {
 		download.stopping = true
-		if download.cancel != nil {
-			download.cancel()
-		}
+		download.cancelContexts()
 		active[id] = download
 	}
 	d.Unlock()
@@ -354,6 +362,50 @@ func newVODDownload() *vodDownload {
 	return &vodDownload{progress: progress, done: make(chan struct{})}
 }
 
+func newVODOperationContexts(requestCtx context.Context) (context.Context, context.Context, context.CancelFunc, context.CancelFunc) {
+	// Startup follows the initiating request so abandoned requests do not keep
+	// resolving or preparing work. The accepted operation retains request values
+	// but owns cancellation independently for its background lifetime.
+	startupCtx, cancelStartupContext := context.WithCancel(requestCtx)
+	operationCtx, cancelOperation := context.WithCancel(context.WithoutCancel(requestCtx))
+	stopOperationPropagation := context.AfterFunc(operationCtx, cancelStartupContext)
+	cancelStartup := func() {
+		stopOperationPropagation()
+		cancelStartupContext()
+	}
+	return startupCtx, operationCtx, cancelStartup, cancelOperation
+}
+
+func newVODCommand(ctx context.Context, commandContext func(context.Context, string, ...string) *exec.Cmd, name string, args ...string) *exec.Cmd {
+	if commandContext == nil {
+		commandContext = exec.CommandContext
+	}
+	cmd := commandContext(ctx, name, args...)
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		if err := cmd.Process.Signal(os.Interrupt); err == nil || errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
+		return nil
+	}
+	cmd.WaitDelay = vodDownloadStopTimeout
+	return cmd
+}
+
+func (download *vodDownload) cancelContexts() {
+	if download.cancelOperation != nil {
+		download.cancelOperation()
+	}
+	if download.cancelStartup != nil {
+		download.cancelStartup()
+	}
+}
+
 func (d *VODDownloader) createPartialFile(id string, download *vodDownload, dir string) (string, error) {
 	d.Lock()
 	defer d.Unlock()
@@ -380,7 +432,7 @@ func (d *VODDownloader) finishDownload(id string, download *vodDownload, tempPat
 		d.Unlock()
 
 		err := runErr
-		if err == nil && stopping {
+		if stopping {
 			err = context.Canceled
 		}
 		if err == nil {
@@ -404,9 +456,7 @@ func (d *VODDownloader) finishDownload(id string, download *vodDownload, tempPat
 		}
 
 		d.clear(id, download)
-		if download.cancel != nil {
-			download.cancel()
-		}
+		download.cancelContexts()
 		close(download.done)
 	})
 }
@@ -418,7 +468,7 @@ func (d *VODDownloader) finishConversion(id string, download *vodDownload, tempP
 		d.Unlock()
 
 		err := runErr
-		if err == nil && stopping {
+		if stopping {
 			err = context.Canceled
 		}
 		if err == nil {
@@ -456,9 +506,7 @@ func (d *VODDownloader) finishConversion(id string, download *vodDownload, tempP
 		}
 
 		d.clear(id, download)
-		if download.cancel != nil {
-			download.cancel()
-		}
+		download.cancelContexts()
 		close(download.done)
 	})
 }
@@ -519,36 +567,22 @@ func (d *VODDownloader) stopDownload(id string, download *vodDownload) error {
 
 	d.Lock()
 	download.stopping = true
-	if download.cancel != nil {
-		download.cancel()
-	}
+	download.cancelContexts()
 	cmd := download.cmd
 	done := download.done
 	outputPath := download.outputPath
 	startedAt := download.startedAt
 	d.Unlock()
 
-	if cmd == nil || cmd.Process == nil {
-		if waitForVODDownloadDone(done, vodDownloadStopTimeout) {
-			return nil
-		}
-		return fmt.Errorf("%w: timed out stopping vod download startup %s", ErrStopTimeout, id)
+	waitTimeout := vodDownloadStopTimeout
+	if cmd != nil && cmd.Process != nil {
+		// CommandContext allows one graceful-stop interval before forcing exit.
+		waitTimeout += vodDownloadStopTimeout
 	}
-
-	signalErr := cmd.Process.Signal(os.Interrupt)
-	if signalErr == nil || errors.Is(signalErr, os.ErrProcessDone) {
-		if waitForVODDownloadDone(done, vodDownloadStopTimeout) {
-			slog.Info("vod download stopped", "id", id, "output", outputPath, "elapsed", time.Since(startedAt))
-			return nil
-		}
+	if !waitForVODDownloadDone(done, waitTimeout) {
+		return fmt.Errorf("%w: timed out stopping vod download %s", ErrStopTimeout, id)
 	}
-	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return fmt.Errorf("failed to kill vod download %s: %w", id, err)
-	}
-	if !waitForVODDownloadDone(done, vodDownloadStopTimeout) {
-		return fmt.Errorf("%w: killed vod download %s did not exit", ErrStopTimeout, id)
-	}
-	slog.Warn("vod download required forced kill", "id", id, "output", outputPath)
+	slog.Info("vod download stopped", "id", id, "output", outputPath, "elapsed", time.Since(startedAt))
 	return nil
 }
 

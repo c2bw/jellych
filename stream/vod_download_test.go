@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -112,7 +113,7 @@ func TestVODDownloaderStopPreventsResolvingDownloadFromStartingProcess(t *testin
 	downloader := &VODDownloader{retention: defaultVODDownloadRetention}
 	download := newVODDownload()
 	ctx, cancel := context.WithCancel(context.Background())
-	download.cancel = cancel
+	download.cancelOperation = cancel
 	downloader.active = map[string]*vodDownload{"123456789": download}
 	go func() {
 		<-ctx.Done()
@@ -124,6 +125,95 @@ func TestVODDownloaderStopPreventsResolvingDownloadFromStartingProcess(t *testin
 	}
 	if downloader.prepareStart("123456789", download) {
 		t.Fatal("expected shutdown to prevent resolving download from starting ffmpeg")
+	}
+}
+
+func TestVODDownloaderRequestCancellationStopsResolution(t *testing.T) {
+	dir := t.TempDir()
+	resolveStarted := make(chan struct{})
+	commandStarted := make(chan struct{}, 1)
+	downloader := &VODDownloader{
+		dir:       dir,
+		retention: defaultVODDownloadRetention,
+		resolveURL: func(ctx context.Context, _ string) (string, error) {
+			close(resolveStarted)
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+		commandContext: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			commandStarted <- struct{}{}
+			return exec.CommandContext(ctx, name, args...)
+		},
+	}
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		result <- downloader.Start(requestCtx, "123456789", "https://www.twitch.tv/videos/123456789", "Test VOD", "testchannel")
+	}()
+	<-resolveStarted
+	cancelRequest()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("start error = %v; want context cancellation", err)
+	}
+	select {
+	case <-commandStarted:
+		t.Fatal("request cancellation allowed ffmpeg to start")
+	default:
+	}
+}
+
+func TestVODDownloaderAcceptedJobOwnsCommandContext(t *testing.T) {
+	operationContext := make(chan context.Context, 1)
+	downloader := &VODDownloader{
+		dir:       t.TempDir(),
+		retention: defaultVODDownloadRetention,
+		resolveURL: func(context.Context, string) (string, error) {
+			return "https://example.test/index.m3u8", nil
+		},
+		commandContext: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			operationContext <- ctx
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestVODDownloadCommandHelper$")
+			cmd.Env = append(os.Environ(), "GO_WANT_VOD_DOWNLOAD_HELPER=1")
+			return cmd
+		},
+	}
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	if err := downloader.Start(requestCtx, "123456789", "https://www.twitch.tv/videos/123456789", "Test VOD", "testchannel"); err != nil {
+		t.Fatalf("start download: %v", err)
+	}
+	operationCtx := <-operationContext
+	cancelRequest()
+
+	select {
+	case <-operationCtx.Done():
+		t.Fatal("accepted job inherited request cancellation")
+	case <-time.After(100 * time.Millisecond):
+	}
+	downloader.Lock()
+	download := downloader.active["123456789"]
+	downloader.Unlock()
+	if download == nil || !downloader.prepareStart("123456789", download) {
+		t.Fatal("accepted job stopped after request context ended")
+	}
+
+	if err := downloader.Stop(); err != nil {
+		t.Fatalf("stop downloader: %v", err)
+	}
+	select {
+	case <-operationCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("explicit stop did not cancel the command context")
+	}
+}
+
+func TestVODDownloadCommandHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_VOD_DOWNLOAD_HELPER") != "1" {
+		return
+	}
+	for {
+		time.Sleep(time.Second)
 	}
 }
 
@@ -239,7 +329,7 @@ func TestRemoveVODWithArtifactsCancelsActiveDownloadAndBlocksRestart(t *testing.
 	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
 	download := newVODDownload()
 	ctx, cancel := context.WithCancel(context.Background())
-	download.cancel = cancel
+	download.cancelOperation = cancel
 	downloader.active = map[string]*vodDownload{"123456789": download}
 	finished := make(chan struct{})
 	go func() {

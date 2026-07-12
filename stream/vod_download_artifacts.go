@@ -85,9 +85,7 @@ func (d *VODDownloader) RemoveWithArtifacts(id string, removeMetadata func() err
 	download := d.active[id]
 	if download != nil {
 		download.stopping = true
-		if download.cancel != nil {
-			download.cancel()
-		}
+		download.cancelContexts()
 	}
 	dir := d.dir
 	d.Unlock()

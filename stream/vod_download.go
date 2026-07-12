@@ -36,7 +36,8 @@ type vodDownload struct {
 	lastTotalSizeUpdate time.Time
 	cmd                 *exec.Cmd
 	done                chan struct{}
-	cancel              context.CancelFunc
+	cancelOperation     context.CancelFunc
+	cancelStartup       context.CancelFunc
 	stopping            bool
 	finishOnce          sync.Once
 	tempPath            string
@@ -69,12 +70,14 @@ type VODDownloadProgress struct {
 
 type VODDownloader struct {
 	sync.Mutex
-	dir       string
-	retention time.Duration
-	active    map[string]*vodDownload
-	removing  map[string]struct{}
-	presets   map[string]vodPresetCacheEntry
-	stopping  bool
+	dir            string
+	retention      time.Duration
+	active         map[string]*vodDownload
+	removing       map[string]struct{}
+	presets        map[string]vodPresetCacheEntry
+	stopping       bool
+	commandContext func(context.Context, string, ...string) *exec.Cmd
+	resolveURL     func(context.Context, string) (string, error)
 }
 
 type vodPresetCacheEntry struct {
