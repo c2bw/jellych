@@ -196,6 +196,7 @@ type vodResponse struct {
 	DownloadPreset       string `json:"downloadPreset,omitempty"`
 	DownloadOperation    string `json:"downloadOperation,omitempty"`
 	OriginalSize         int64  `json:"originalSize,omitempty"`
+	EstimatedSize        int64  `json:"estimatedSize,omitempty"`
 	DownloadETASeconds   int64  `json:"downloadETASeconds,omitempty"`
 	DownloadVideoCodec   string `json:"downloadVideoCodec,omitempty"`
 	DownloadVideoWidth   int    `json:"downloadVideoWidth,omitempty"`
@@ -257,6 +258,7 @@ func (a *API) buildVODResponse(vod VOD) vodResponse {
 		DownloadPreset:       progress.Preset,
 		DownloadOperation:    progress.Operation,
 		OriginalSize:         progress.OriginalSize,
+		EstimatedSize:        progress.EstimatedSize,
 		DownloadETASeconds:   progress.ETASeconds,
 		DownloadVideoCodec:   progress.VideoCodec,
 		DownloadVideoWidth:   progress.VideoWidth,

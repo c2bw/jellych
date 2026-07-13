@@ -112,6 +112,11 @@ function vodOriginalSize(vod){
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+function vodEstimatedSize(vod){
+  const value = Number(vod.estimatedSize ?? vod.EstimatedSize ?? 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 function vodOriginalMediaInfo(vod){
   const codec = String(vod.downloadVideoCodec || vod.DownloadVideoCodec || vod.videoCodec || vod.VideoCodec || '').toLowerCase();
   const height = Number(vod.downloadVideoHeight ?? vod.DownloadVideoHeight ?? vod.videoHeight ?? vod.VideoHeight ?? 0);
@@ -307,6 +312,7 @@ function renderVOD(vod){
     const speed = vodDownloadSpeed(vod);
     const etaSeconds = vodDownloadETASeconds(vod);
     const converting = vodDownloadOperation(vod) === 'convert';
+    const estimatedSize = vodEstimatedSize(vod);
     const downloadStatus = document.createElement('div');
     downloadStatus.className = 'mt-2 text-xs tabular-nums text-white/55';
     const parts = [converting ? 'Converting' : 'Downloading'];
@@ -314,6 +320,7 @@ function renderVOD(vod){
     if(etaSeconds > 0) parts.push(formatVODRemainingTime(etaSeconds));
     if(!converting && rate > 0) parts.push(formatMegabytesPerSecond(rate));
     if(size > 0) parts.push(formatBytes(size));
+    if(converting && estimatedSize > 0) parts.push('~' + formatBytes(estimatedSize) + ' estimated');
     downloadStatus.textContent = parts.join(' - ');
     info.appendChild(downloadStatus);
   }

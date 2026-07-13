@@ -193,6 +193,7 @@ func (d *VODDownloader) updateProgress(id string, download *vodDownload, key, va
 		if totalSize, err := strconv.ParseInt(value, 10, 64); err == nil && totalSize >= 0 {
 			updateVODDownloadByteRate(download, totalSize, progress.UpdatedAt)
 			progress.TotalSize = totalSize
+			updateVODEstimatedSize(download)
 		}
 	case "speed":
 		progress.Speed = value
@@ -201,10 +202,24 @@ func (d *VODDownloader) updateProgress(id string, download *vodDownload, key, va
 		if micros, err := strconv.ParseInt(value, 10, 64); err == nil && micros >= 0 {
 			download.processedDuration = time.Duration(micros) * time.Microsecond
 			updateVODETA(download)
+			updateVODEstimatedSize(download)
 		}
 	case "progress":
 		progress.Progress = value
 	}
+}
+
+func updateVODEstimatedSize(download *vodDownload) {
+	progress := &download.progress
+	if progress.Operation != "convert" || progress.TotalSize <= 0 || download.totalDuration <= 0 || download.processedDuration <= 0 {
+		return
+	}
+	estimated := float64(progress.TotalSize) * float64(download.totalDuration) / float64(download.processedDuration)
+	if estimated >= float64(math.MaxInt64) {
+		progress.EstimatedSize = math.MaxInt64
+		return
+	}
+	progress.EstimatedSize = int64(math.Ceil(estimated))
 }
 
 func updateVODETA(download *vodDownload) {

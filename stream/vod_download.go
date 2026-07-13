@@ -58,6 +58,7 @@ type VODDownloadProgress struct {
 	Preset          string    `json:"preset,omitempty"`
 	Operation       string    `json:"operation,omitempty"`
 	OriginalSize    int64     `json:"originalSize,omitempty"`
+	EstimatedSize   int64     `json:"estimatedSize,omitempty"`
 	ETASeconds      int64     `json:"etaSeconds,omitempty"`
 	DurationSeconds float64   `json:"-"`
 	VideoCodec      string    `json:"videoCodec,omitempty"`

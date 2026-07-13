@@ -995,6 +995,48 @@ func TestUpdateVODDownloadProgressCalculatesETA(t *testing.T) {
 	}
 }
 
+func TestUpdateVODDownloadProgressEstimatesConversionSizeImmediately(t *testing.T) {
+	download := newVODDownload()
+	download.progress.Operation = "convert"
+	download.totalDuration = 100 * time.Second
+	vodDownloadState.Lock()
+	vodDownloadState.active = map[string]*vodDownload{"active": download}
+	vodDownloadState.Unlock()
+	t.Cleanup(func() { clearVODDownload("active", download) })
+
+	updateVODDownloadProgress("active", download, "total_size", "2500")
+	updateVODDownloadProgress("active", download, "out_time_us", "10000000")
+
+	got, err := GetVODDownloadProgress("active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EstimatedSize != 25000 {
+		t.Fatalf("expected estimated final size 25000, got %d", got.EstimatedSize)
+	}
+}
+
+func TestUpdateVODDownloadProgressDoesNotEstimateDownloadSize(t *testing.T) {
+	download := newVODDownload()
+	download.progress.Operation = "download"
+	download.totalDuration = 100 * time.Second
+	vodDownloadState.Lock()
+	vodDownloadState.active = map[string]*vodDownload{"active": download}
+	vodDownloadState.Unlock()
+	t.Cleanup(func() { clearVODDownload("active", download) })
+
+	updateVODDownloadProgress("active", download, "total_size", "2500")
+	updateVODDownloadProgress("active", download, "out_time_us", "10000000")
+
+	got, err := GetVODDownloadProgress("active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EstimatedSize != 0 {
+		t.Fatalf("expected no download size estimate, got %d", got.EstimatedSize)
+	}
+}
+
 func writeVODDownloadTestFile(t *testing.T, dir, name string, modTime time.Time) {
 	t.Helper()
 	path := filepath.Join(dir, name)
