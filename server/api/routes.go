@@ -70,6 +70,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("GET /api/ping", a.handlePing)
 	mux.HandleFunc("GET /api/ping/", a.handlePing)
 	mux.HandleFunc("GET /api/channels", a.handleChannels)
+	mux.HandleFunc("GET /api/vod-presets", a.handleVODPresets)
 	mux.HandleFunc("GET /api/vods", a.handleVODs)
 	mux.HandleFunc("POST /api/vods", control(a.handleAddVOD))
 	mux.HandleFunc("GET /api/vods/{id}/download", a.handleGetVODDownload)

@@ -135,6 +135,27 @@ func TestPingEndpoint(t *testing.T) {
 	}
 }
 
+func TestVODPresetsEndpointReturnsResolvedCommands(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/vod-presets", nil)
+	rec := httptest.NewRecorder()
+
+	Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var commands map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &commands); err != nil {
+		t.Fatalf("decode preset commands: %v", err)
+	}
+	if !strings.Contains(commands["hevc"], "-x265-params pools=") {
+		t.Fatalf("expected resolved HEVC threading, got %q", commands["hevc"])
+	}
+	if !strings.Contains(commands["vp9"], "-row-mt 1") {
+		t.Fatalf("expected resolved VP9 threading, got %q", commands["vp9"])
+	}
+}
+
 func TestControlAPISecretProtectsMutations(t *testing.T) {
 	resetAPIStateForTest(t)
 	SetControlAPISecret("test-secret")

@@ -81,6 +81,15 @@ test('preset command preview matches the FFmpeg codec settings', ()=>{
   assert.match(vodPresetCommand('vp9'), /libvpx-vp9.*-crf 32.*libopus/);
 });
 
+test('preset command preview uses server-resolved settings', ()=>{
+  const commands = {
+    original: '-c copy',
+    hevc: '-c:v libx265 -x265-params pools=24:frame-threads=6',
+  };
+  assert.equal(vodPresetCommand('hevc', commands), commands.hevc);
+  assert.match(vodPresetCommand('vp9', commands), /libvpx-vp9/);
+});
+
 test('original media codec and quality are formatted for display', ()=>{
   assert.equal(formatVODMediaInfo('h264', 1080, 6_200_000), 'H.264 · 1080p · 6.20 Mbps');
   assert.equal(formatVODMediaInfo('hevc', 720), 'HEVC · 720p');

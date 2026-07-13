@@ -178,6 +178,10 @@ func (a *API) handleChannels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, a.state.GetChannels())
 }
 
+func (a *API) handleVODPresets(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, stream.VODPresetCommands())
+}
+
 func (a *API) handleVODs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, a.buildVODResponses(a.state.GetVODs()))
 }

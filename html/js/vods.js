@@ -17,12 +17,22 @@ const downloadPresetCommandEl = document.getElementById('downloadPresetCommand')
 let currentVODs = [];
 let currentPage = 1;
 let progressPollTimer = 0;
+let resolvedVODPresetCommands = null;
 const vodIDLength = 10;
 const vodsPerPage = 15;
 
 function updateDownloadPresetCommand(){
   if(!downloadPresetCommandEl) return;
-  downloadPresetCommandEl.textContent = 'ffmpeg ' + vodPresetCommand(downloadPresetEl ? downloadPresetEl.value : 'original');
+  downloadPresetCommandEl.textContent = 'ffmpeg ' + vodPresetCommand(downloadPresetEl ? downloadPresetEl.value : 'original', resolvedVODPresetCommands);
+}
+
+async function loadVODPresetCommands(){
+  try{
+    resolvedVODPresetCommands = await fetchJSON('/api/vod-presets');
+    updateDownloadPresetCommand();
+  }catch{
+    resolvedVODPresetCommands = null;
+  }
 }
 
 function setMessage(message, isError){
@@ -527,4 +537,5 @@ nextPageEl.addEventListener('click', ()=>{
   applyVODFilter();
 });
 loadVODs();
+loadVODPresetCommands();
 updateDownloadPresetCommand();

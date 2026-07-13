@@ -3,10 +3,12 @@ package stream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -735,8 +737,8 @@ func TestBuildVODDownloadArgsUsesPresetCodecs(t *testing.T) {
 	}{
 		{name: "original", preset: VODDownloadPresetOriginal, want: []string{"-c", "copy"}},
 		{name: "h264", preset: VODDownloadPresetH264, want: []string{"libx264", "medium", "23", "aac", "128k", "copy"}},
-		{name: "hevc", preset: VODDownloadPresetHEVC, want: []string{"libx265", "medium", "25", "aac", "128k", "copy"}},
-		{name: "vp9", preset: VODDownloadPresetVP9, want: []string{"libvpx-vp9", "32", "0", "good", "2", "libopus", "128k", "copy"}},
+		{name: "hevc", preset: VODDownloadPresetHEVC, want: []string{"libx265", "medium", "25", "-x265-params", x265ThreadParams(availableCPUCount()), "aac", "128k", "copy"}},
+		{name: "vp9", preset: VODDownloadPresetVP9, want: []string{"libvpx-vp9", "32", "0", "good", "2", "-threads", fmt.Sprintf("%d", vpxThreadCount(availableCPUCount())), "-row-mt", "1", "libopus", "128k", "copy"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -747,6 +749,77 @@ func TestBuildVODDownloadArgsUsesPresetCodecs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestX265ThreadParamsScalesWithAvailableCPUs(t *testing.T) {
+	tests := []struct {
+		cpus int
+		want string
+	}{
+		{cpus: 0, want: "pools=1:frame-threads=1"},
+		{cpus: 1, want: "pools=1:frame-threads=1"},
+		{cpus: 8, want: "pools=8:frame-threads=2"},
+		{cpus: 24, want: "pools=24:frame-threads=6"},
+		{cpus: 64, want: "pools=64:frame-threads=6"},
+	}
+
+	for _, tt := range tests {
+		if got := x265ThreadParams(tt.cpus); got != tt.want {
+			t.Errorf("x265ThreadParams(%d) = %q, want %q", tt.cpus, got, tt.want)
+		}
+	}
+}
+
+func TestVPXThreadCountUsesAvailableCPUsUpToRecommendedLimit(t *testing.T) {
+	tests := []struct {
+		cpus int
+		want int
+	}{
+		{cpus: 0, want: 1},
+		{cpus: 1, want: 1},
+		{cpus: 8, want: 8},
+		{cpus: 16, want: 16},
+		{cpus: 24, want: 16},
+	}
+
+	for _, tt := range tests {
+		if got := vpxThreadCount(tt.cpus); got != tt.want {
+			t.Errorf("vpxThreadCount(%d) = %d, want %d", tt.cpus, got, tt.want)
+		}
+	}
+}
+
+func TestEffectiveCPUCountRespectsCgroupQuota(t *testing.T) {
+	tests := []struct {
+		name    string
+		logical int
+		cpuMax  string
+		want    int
+	}{
+		{name: "unlimited", logical: 8, cpuMax: "max 100000", want: 8},
+		{name: "one CPU quota", logical: 8, cpuMax: "100000 100000", want: 1},
+		{name: "fractional quota rounds up", logical: 8, cpuMax: "150000 100000", want: 2},
+		{name: "quota cannot exceed affinity", logical: 4, cpuMax: "800000 100000", want: 4},
+		{name: "invalid data", logical: 8, cpuMax: "invalid", want: 8},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveCPUCount(tt.logical, tt.cpuMax); got != tt.want {
+				t.Errorf("effectiveCPUCount(%d, %q) = %d, want %d", tt.logical, tt.cpuMax, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVODPresetCommandsContainResolvedThreadSettings(t *testing.T) {
+	commands := VODPresetCommands()
+	if !strings.Contains(commands["hevc"], "-x265-params "+x265ThreadParams(availableCPUCount())) {
+		t.Fatalf("HEVC command does not contain resolved x265 threading: %q", commands["hevc"])
+	}
+	if !strings.Contains(commands["vp9"], fmt.Sprintf("-threads %d -row-mt 1", vpxThreadCount(availableCPUCount()))) {
+		t.Fatalf("VP9 command does not contain resolved libvpx threading: %q", commands["vp9"])
 	}
 }
 

@@ -18,14 +18,15 @@ export function vodConversionRequest(preset){
   };
 }
 
-export function vodPresetCommand(preset = 'original'){
-  const commands = {
+export function vodPresetCommand(preset = 'original', resolvedCommands = null){
+  const fallbackCommands = {
     original: '-c copy',
     h264: '-c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k -c:s copy',
     hevc: '-c:v libx265 -preset medium -crf 25 -c:a aac -b:a 128k -c:s copy',
     vp9: '-c:v libvpx-vp9 -crf 32 -b:v 0 -deadline good -cpu-used 2 -c:a libopus -b:a 128k -c:s copy',
   };
-  return commands[preset] || commands.original;
+  const commands = resolvedCommands && typeof resolvedCommands === 'object' ? resolvedCommands : fallbackCommands;
+  return commands[preset] || fallbackCommands[preset] || commands.original || fallbackCommands.original;
 }
 
 export function formatVODRemainingTime(seconds){
