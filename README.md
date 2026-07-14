@@ -2,6 +2,8 @@
 
 A lightweight server that leverages [`ffmpeg`](https://github.com/ffmpeg/ffmpeg) to stream Twitch livestreams via `Web-UI` and `Jellyfin` (*requires [Jellyfin Plugin](https://github.com/c2bw/jellyfin-plugin-jellych)*).
 
+It can also download Twitch VODs which can then be watched in Jellyfin/Jellych.
+
 <img src="docs/images/home.jpg" alt="Jellych web UI" height="450">
 
 ## Configuration
@@ -20,13 +22,6 @@ Optional environment variables:
 - `VOD_RETENTION_DAYS` number of days to keep downloaded VOD files (default `30`, must be a positive integer)
 - `JELLYCH_API_SECRET` protects mutating control API routes when set. Clients may send it as `Authorization: Bearer <secret>` or `X-Jellych-API-Secret`. A trusted reverse proxy can inject this header after authenticating browser users.
 
-> [!WARNING]
-> Control API authentication is disabled unless `JELLYCH_API_SECRET` is set.
-> If you expose Jellych outside a trusted LAN, configure that secret and put
-> the browser UI behind a reverse proxy or tunnel that authenticates users and
-> injects the control header. `JELLYFIN_WEBHOOK_SECRET` separately protects the
-> Jellyfin webhook endpoint.
-
 Optional flags:
 
 - `-addr` (default `:8080`) HTTP listen address
@@ -36,17 +31,6 @@ Optional flags:
 The VOD page can download directly as Original, H.264, HEVC, or VP9. A completed Original download can later be converted once to any compressed preset from its codec selector. Conversion replaces the original only after the new MKV is complete, and converted entries show both original and converted file sizes.
 
 ## Run
-
-### Frontend assets
-
-The compiled Tailwind stylesheet and pinned Hls.js browser bundle are committed
-under `html/` so normal Go builds do not require Node.js. After changing frontend
-classes, Tailwind configuration, or browser dependencies, regenerate them with:
-
-```bash
-npm ci
-npm run build
-```
 
 ### Docker Compose Example
 
@@ -58,6 +42,7 @@ services:
     environment:
       - LOG_LEVEL=INFO
       - VOD_RETENTION_DAYS=30
+      # https://dev.twitch.tv/docs/api/get-started/
       - TWITCH_CLIENT_ID=your_client_id
       - TWITCH_CLIENT_SECRET=your_client_secret
       - SERVER_URL=http://localhost:8080
@@ -82,7 +67,7 @@ volumes:
 
 #### Jellyfin VODs library setup
 
-The VODs library is optional, but it allows you to watch Twitch VODs in Jellyfin. To set it up, create a new library in Jellyfin and point it to the folder where VODs are saved (the `-vods` folder). After that, configure the library:
+The VODs library is optional, but it allows to watch Twitch VODs in Jellyfin. To set it up, create a new library in Jellyfin and point it to the folder where VODs are saved (the `-vods` folder). After that, configure the library:
 
 - Dashboard > Libraries > Manage Library -> remove all metadata downloaders; select only `screen grabber` for the remaining options
 - Select `Prefer embedded titles over filenames` to have the VOD title displayed in Jellyfin instead of the filename (requires rescan if the VODs were already downloaded)
