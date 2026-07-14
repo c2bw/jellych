@@ -47,6 +47,7 @@ function fakeManagedHls(){
 class FakeHls {
   static Events = {
     MANIFEST_PARSED: 'manifestParsed',
+    FRAG_BUFFERED: 'fragBuffered',
     ERROR: 'error',
   };
 
@@ -199,4 +200,46 @@ test('Hls.js is preferred when native HLS is also reported', (t)=>{
   assert.ok(player.hls instanceof FakeHls);
   assert.equal(player.usingNativeHls, false);
   assert.equal(video.src, '');
+});
+
+test('bandwidth reports smoothed media bitrate instead of fragment download throughput', (t)=>{
+  enableFakeHls(t);
+  const video = new NativeHLSVideo();
+  const player = new Player(video);
+  t.after(()=>player.stop());
+
+  player.play('/live/testchannel/index.m3u8');
+  const onFragmentBuffered = player.hls.handlers.get(FakeHls.Events.FRAG_BUFFERED);
+
+  // A 1 MB fragment containing two seconds of media is a 4 Mbps stream,
+  // regardless of whether localhost delivered it in one millisecond.
+  onFragmentBuffered(null, { frag: { duration: 2 }, stats: { loaded: 1_000_000 } });
+  assert.equal(player.getBandwidthEstimate(), 4_000_000);
+
+  // Smooth variable-size fragments rather than making the display jump.
+  onFragmentBuffered(null, { frag: { duration: 2 }, stats: { loaded: 2_000_000 } });
+  assert.equal(player.getBandwidthEstimate(), 5_000_000);
+});
+
+test('bandwidth accepts fragment-owned loader stats', ()=>{
+  const video = new NativeHLSVideo();
+  const player = new Player(video);
+
+  player.recordFragmentBitrate({ frag: { duration: 2, stats: { loaded: 1_000_000 } } });
+
+  assert.equal(player.getBandwidthEstimate(), 4_000_000);
+});
+
+test('bandwidth estimate resets between playbacks', (t)=>{
+  enableFakeHls(t);
+  const video = new NativeHLSVideo();
+  const player = new Player(video);
+  t.after(()=>player.stop());
+
+  player.play('/live/first/index.m3u8');
+  player.recordFragmentBitrate({ frag: { duration: 1 }, stats: { loaded: 500_000 } });
+  assert.equal(player.getBandwidthEstimate(), 4_000_000);
+
+  player.play('/live/second/index.m3u8');
+  assert.ok(Number.isNaN(player.getBandwidthEstimate()));
 });

@@ -1,10 +1,8 @@
-let globalBandwidthEstimate = NaN;
-let bandwidthObserverStarted = false;
-
 const NATIVE_RECOVERY_BASE_DELAY_MS = 500;
 const NATIVE_RECOVERY_MAX_DELAY_MS = 8000;
 const NATIVE_RECOVERY_MAX_ATTEMPTS = 5;
 const MEDIA_ERR_NETWORK = 2;
+const BITRATE_SAMPLE_WEIGHT = 0.25;
 
 function isPositiveFinite(value){
   return Number.isFinite(value) && value > 0;
@@ -23,28 +21,6 @@ function cacheBustedUrl(url){
   return url + separator + '_jellych_live=' + Date.now();
 }
 
-function startBandwidthObserver(){
-  if(bandwidthObserverStarted) return;
-  bandwidthObserverStarted = true;
-  if(!window.PerformanceObserver) return;
-  try{
-    const observer = new PerformanceObserver((list) => {
-      const entries = list.getEntries();
-      for(const entry of entries){
-        if(entry.name && (entry.name.includes('.ts') || entry.name.includes('.m3u8'))){
-          const transferSize = entry.transferSize || entry.encodedBodySize || entry.decodedBodySize;
-          const duration = entry.duration; // ms
-          if(transferSize > 0 && duration > 0){
-            const bps = (transferSize * 8 * 1000) / duration;
-            if(isPositiveFinite(bps)) globalBandwidthEstimate = bps;
-          }
-        }
-      }
-    });
-    observer.observe({ type: 'resource', buffered: true });
-  }catch(e){ /* ignore */ }
-}
-
 export class Player {
   constructor(video){
     this.video = video;
@@ -55,13 +31,30 @@ export class Player {
     this.usingNativeHls = false;
     this.nativeRecoveryTimer = null;
     this.nativeRecoveryAttempts = 0;
+    this.bandwidthEstimate = NaN;
     this.video.addEventListener('error', ()=>this.recoverNativeError());
     this.video.addEventListener('playing', ()=>{
       if(!this.usingNativeHls) return;
       this.clearNativeRecovery();
       this.nativeRecoveryAttempts = 0;
     });
-    startBandwidthObserver();
+  }
+
+  recordFragmentBitrate(data){
+    const frag = data && data.frag;
+    const part = data && data.part;
+    const stats = (data && data.stats) || (part && part.stats) || (frag && frag.stats);
+    const duration = Number((part && part.duration) || (frag && frag.duration));
+    const loaded = Number(stats && (stats.loaded || stats.total));
+    const payloadBytes = Number(data && data.payload && data.payload.byteLength);
+    const bytes = isPositiveFinite(loaded) ? loaded : payloadBytes;
+    if(!isPositiveFinite(duration) || !isPositiveFinite(bytes)) return;
+
+    const sample = (bytes * 8) / duration;
+    if(!isPositiveFinite(sample)) return;
+    this.bandwidthEstimate = isPositiveFinite(this.bandwidthEstimate)
+      ? this.bandwidthEstimate * (1 - BITRATE_SAMPLE_WEIGHT) + sample * BITRATE_SAMPLE_WEIGHT
+      : sample;
   }
 
   clearNativeRecovery(){
@@ -128,6 +121,9 @@ export class Player {
       hls.loadSource(url);
       hls.attachMedia(this.video);
       hls.on(Hls.Events.MANIFEST_PARSED, ()=>safePlay(this.video));
+      hls.on(Hls.Events.FRAG_BUFFERED, (_, data)=>{
+        if(this.hls === hls) this.recordFragmentBitrate(data);
+      });
       hls.on(Hls.Events.ERROR, (_, data)=>{
         if(!this.wantsPlayback || this.hls !== hls) return;
         if(!data) return;
@@ -163,6 +159,7 @@ export class Player {
     this.currentUrl = '';
     this.usingNativeHls = false;
     this.nativeRecoveryAttempts = 0;
+    this.bandwidthEstimate = NaN;
     this.clearNativeRecovery();
     if(this.networkRecoveryTimer){ clearTimeout(this.networkRecoveryTimer); this.networkRecoveryTimer = null; }
     if(this.hls){ try{ this.hls.destroy(); }catch(e){} this.hls = null; }
@@ -192,15 +189,6 @@ export class Player {
   }
 
   getBandwidthEstimate(){
-    const candidates = [
-      globalBandwidthEstimate,
-      this.hls && this.hls.bandwidthEstimate,
-      this.hls && this.hls.abrEwmaDefaultEstimate,
-      this.hls && this.hls.abrController && this.hls.abrController.bandwidthEstimate,
-    ];
-    for(const value of candidates){
-      if(isPositiveFinite(value)) return value;
-    }
-    return NaN;
+    return isPositiveFinite(this.bandwidthEstimate) ? this.bandwidthEstimate : NaN;
   }
 }
