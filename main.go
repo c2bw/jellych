@@ -22,7 +22,7 @@ import (
 	"github.com/c2bw/jellych/twitch/client"
 )
 
-const version = "0.0.11"
+const version = "0.0.12"
 
 //go:embed html
 var webAssets embed.FS
