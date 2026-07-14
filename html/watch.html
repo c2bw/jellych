@@ -3,59 +3,118 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Watch - Local HLS Player</title>
+  <meta name="theme-color" content="#09090b" />
+  <title>Live - Jellych</title>
   <link rel="icon" href="/html/assets/img/twitch_jellyfish_icon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/html/assets/app.css" />
 </head>
-<body class="bg-[#111] text-[#eee] font-sans m-0 overflow-x-hidden">
-  <div class="p-2">
-    <header class="flex items-center gap-3 justify-center text-center w-full py-0">
-      <a href="/" class="flex items-center gap-2">
-        <img src="/html/assets/img/twitch_jellyfish_icon.svg" alt="Jellyfish icon" class="w-12 h-12 rounded-md shrink-0" />
-        <h1 class="text-lg font-bold">Jellych</h1>
+<body class="app-body">
+  <div class="app-frame watch-frame">
+    <header class="site-header">
+      <a href="/" class="brand" aria-label="Jellych home">
+        <span class="brand-mark"><img src="/html/assets/img/twitch_jellyfish_icon.svg" alt="" /></span>
+        <span class="brand-copy">
+          <strong>Jellych</strong>
+          <span>Stream console</span>
+        </span>
       </a>
-      <a href="/vods" class="rounded-md border border-white/10 bg-white/5 px-3 py-1 text-sm text-white/80 no-underline transition-colors hover:border-[#4aa3ff] hover:text-white">VODs</a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="/watch" class="nav-link is-active" aria-current="page">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+          Live
+        </a>
+        <a href="/vods" class="nav-link">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5zM9 9v6l6-3z" /></svg>
+          VODs
+        </a>
+      </nav>
     </header>
 
-    <div class="flex gap-4 items-start mt-3 overflow-hidden">
-      <div class="w-[260px] shrink-0 flex flex-col gap-3">
-        <div id="statsOverlay" class="rounded-lg border border-white/10 bg-black/65 p-3 text-[12px] text-white shadow-lg backdrop-blur">
-          <div class="mb-2 flex items-center justify-between gap-3">
-            <div class="font-semibold tracking-wide text-white/90">Render stats</div>
+    <main class="watch-layout">
+      <aside class="control-rail">
+        <section id="statsOverlay" class="surface-card stats-card">
+          <div class="section-heading compact-heading">
+            <div>
+              <span class="eyebrow">Playback</span>
+              <h2>Signal health</h2>
+            </div>
             <div id="statsState" class="stats-chip">Idle</div>
           </div>
-          <div id="statsGrid" class="grid grid-cols-2 gap-2"></div>
-        </div>
+          <div id="statsGrid" class="stats-grid"></div>
+        </section>
 
-        <div id="manager" class="p-2 bg-[#1a1a1b] rounded border border-[#333]">
-          <h3 class="m-0 mb-2 text-[13px] font-bold">Manage</h3>
-          <div class="flex flex-col gap-1.5">
-            <div class="flex gap-2 items-center">
-              <input id="newName" placeholder="Channel name" class="bg-[#222] border border-[#333] rounded p-1.5 flex-1 min-w-[120px] outline-none focus:border-[#4aa3ff]" />
-              <button id="addBtn" class="bg-[#333] hover:bg-[#444] py-1.5 px-3 rounded text-sm transition-colors">Add</button>
+        <section id="manager" class="surface-card manager-card">
+          <div class="section-heading compact-heading">
+            <div>
+              <span class="eyebrow">Sources</span>
+              <h2>Manage channels</h2>
             </div>
-            <div class="flex gap-2 items-center">
-              <select id="removeSelect" class="bg-[#222] border border-[#333] rounded p-1.5 flex-1 min-w-[120px] outline-none focus:border-[#4aa3ff]"></select>
-              <button id="removeBtn" class="bg-[#333] hover:bg-[#444] py-1.5 px-3 rounded text-sm transition-colors">Remove</button>
-            </div>
-            <div id="managerMsg" class="text-gray-400 text-[90%] min-h-[18px]"></div>
           </div>
-        </div>
+          <div class="manager-controls">
+            <div class="control-group">
+              <input id="newName" placeholder="Channel name" class="field compact-field" aria-label="Channel name" />
+              <button id="addBtn" class="button button-primary compact-button" type="button">Add</button>
+            </div>
+            <div class="control-group">
+              <select id="removeSelect" class="field compact-field" aria-label="Channel to remove"></select>
+              <button id="removeBtn" class="button compact-button" type="button">Remove</button>
+            </div>
+            <div id="managerMsg" class="form-message" aria-live="polite"></div>
+          </div>
+        </section>
 
-        <div id="channels" class="max-h-[72vh] overflow-y-auto p-2 bg-[#0f0f10] rounded-md border border-[#222]">
-          <div id="channelsList" class="flex flex-col gap-1">Loading channels..</div>
-        </div>
-      </div>
+        <section id="channels" class="surface-card channels-card">
+          <div class="section-heading channels-heading">
+            <div>
+              <span class="eyebrow">Directory</span>
+              <h2>Channels</h2>
+            </div>
+          </div>
+          <div id="channelsList" class="channel-list">Loading channels…</div>
+        </section>
+      </aside>
 
-      <div class="flex-1 min-w-0">
-        <div class="group relative overflow-hidden rounded-md bg-black">
-          <div id="playerTitle" class="pointer-events-none absolute inset-x-0 top-0 z-10 hidden bg-gradient-to-b from-black/80 to-transparent px-4 pb-8 pt-3 text-base font-semibold text-white opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+      <section class="player-column" aria-label="Stream player">
+        <div id="playerStage" class="player-stage" tabindex="0">
+          <div id="playerTitle" class="player-title hidden">
             <div class="truncate"></div>
           </div>
-          <video id="player" controls playsinline class="w-full h-auto bg-black"></video>
+          <video id="player" playsinline preload="metadata"></video>
+          <div class="player-idle" aria-hidden="true">
+            <img src="/html/assets/img/twitch_jellyfish_icon.svg" alt="" />
+            <span>Select a live channel to begin</span>
+          </div>
+          <button id="playerCenterPlay" class="player-center-play hidden" type="button" aria-label="Play stream">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+          </button>
+          <div id="playerControls" class="player-controls">
+            <div class="player-controls-left">
+              <button id="playerPlayToggle" class="player-control-button" type="button" aria-label="Play" disabled>
+                <svg class="player-icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+                <svg class="player-icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h3v14H8zM14 5h3v14h-3z" /></svg>
+              </button>
+              <span class="player-live-badge"><i></i> Live</span>
+            </div>
+            <div class="player-controls-right">
+              <div class="player-volume">
+                <button id="playerMuteToggle" class="player-control-button" type="button" aria-label="Mute">
+                  <svg class="player-icon-volume" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9zm12.5.5a4 4 0 0 1 0 5M19.5 7a7 7 0 0 1 0 10" /></svg>
+                  <svg class="player-icon-muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9zm12 1 4 4m0-4-4 4" /></svg>
+                </button>
+                <input id="playerVolume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume" />
+              </div>
+              <button id="playerPipToggle" class="player-control-button" type="button" aria-label="Picture in picture" title="Picture in picture">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM12 12h6v5h-6z" /></svg>
+              </button>
+              <button id="playerFullscreenToggle" class="player-control-button" type="button" aria-label="Enter fullscreen" title="Fullscreen">
+                <svg class="player-icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /></svg>
+                <svg class="player-icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5" /></svg>
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
   </div>
 
   <script src="/html/vendor/hls.min.js"></script>

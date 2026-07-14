@@ -3,70 +3,99 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>VODs - Jellych</title>
+  <meta name="theme-color" content="#09090b" />
+  <title>VOD Library - Jellych</title>
   <link rel="icon" href="/html/assets/img/twitch_jellyfish_icon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/html/assets/app.css" />
 </head>
-<body class="min-h-screen bg-[#111] text-[#eee] font-sans">
-  <div class="mx-auto flex min-h-screen w-full max-w-5xl flex-col px-4 py-4 sm:px-6">
-    <header class="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-4">
-      <a href="/" class="flex items-center gap-2 text-white no-underline">
-        <img src="/html/assets/img/twitch_jellyfish_icon.svg" alt="Jellyfish icon" class="h-11 w-11 rounded-md" />
-        <div>
-          <div class="text-lg font-bold leading-tight">Jellych</div>
-          <div class="text-xs text-white/50">VOD library</div>
-        </div>
+<body class="app-body">
+  <div class="app-frame library-frame">
+    <header class="site-header">
+      <a href="/" class="brand" aria-label="Jellych home">
+        <span class="brand-mark"><img src="/html/assets/img/twitch_jellyfish_icon.svg" alt="" /></span>
+        <span class="brand-copy">
+          <strong>Jellych</strong>
+          <span>VOD library</span>
+        </span>
       </a>
-      <nav class="flex items-center gap-2 text-sm">
-        <a href="/watch" class="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-white/80 no-underline transition-colors hover:border-[#4aa3ff] hover:text-white">Live</a>
-        <a href="/api/vods.m3u" class="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-white/80 no-underline transition-colors hover:border-[#4aa3ff] hover:text-white">M3U</a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="/watch" class="nav-link">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+          Live
+        </a>
+        <span class="nav-link is-active" aria-current="page">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5zM9 9v6l6-3z" /></svg>
+          VODs
+        </span>
+        <a href="/api/vods.m3u" class="nav-link nav-icon-link" target="_blank" rel="noopener noreferrer" title="Open M3U playlist in a new tab" aria-label="Open M3U playlist in a new tab">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" /></svg>
+        </a>
       </nav>
     </header>
 
-    <main class="grid min-w-0 flex-1 gap-4 py-4 lg:grid-cols-[360px_minmax(0,1fr)]">
-      <section class="min-w-0 rounded-lg border border-[#333] bg-[#1a1a1b] p-4">
-        <h1 class="mb-4 text-base font-bold">Add VOD</h1>
-        <form id="vodForm" class="flex flex-col gap-3">
-          <label class="flex flex-col gap-1.5 text-sm text-white/75">
-            VOD ID
-            <input id="vodId" class="field" type="text" inputmode="numeric" minlength="10" maxlength="10" pattern="[0-9]{10}" placeholder="1234567890" required />
-          </label>
-          <button id="addVodBtn" class="button" type="submit">Add VOD</button>
-          <div id="vodMsg" class="min-h-[20px] text-sm text-white/50"></div>
-        </form>
-        <div class="mt-5 border-t border-white/10 pt-4">
-          <h2 class="mb-3 text-sm font-bold">Download Settings</h2>
-          <label class="flex flex-col gap-1.5 text-sm text-white/75">
-            Compression preset
+    <main class="library-layout">
+      <aside class="library-sidebar">
+        <section class="surface-card add-vod-card">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">New capture</span>
+              <h1>Add a VOD</h1>
+              <p>Queue a Twitch archive by its 10-digit ID.</p>
+            </div>
+          </div>
+          <form id="vodForm" class="vod-form">
+            <label class="field-label" for="vodId">VOD ID</label>
+            <div class="input-with-prefix">
+              <span>#</span>
+              <input id="vodId" class="field" type="text" inputmode="numeric" minlength="10" maxlength="10" pattern="[0-9]{10}" placeholder="1234567890" required />
+            </div>
+            <button id="addVodBtn" class="button button-primary" type="submit">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+              Add to library
+            </button>
+            <div id="vodMsg" class="form-message" aria-live="polite"></div>
+          </form>
+
+          <div class="settings-block">
+            <div class="settings-heading">
+              <span class="eyebrow">Download profile</span>
+              <span class="settings-hint">Applied to new downloads</span>
+            </div>
+            <label class="field-label" for="downloadPreset">Compression preset</label>
             <select id="downloadPreset" class="field">
               <option value="original">Original</option>
               <option value="h264">H.264</option>
               <option value="hevc">HEVC</option>
               <option value="vp9">VP9</option>
             </select>
-            <code id="downloadPresetCommand" class="mt-1 block overflow-x-auto rounded border border-white/10 bg-black/35 px-3 py-2 text-xs leading-relaxed text-white/60"></code>
-          </label>
-        </div>
-      </section>
+            <code id="downloadPresetCommand" class="command-preview"></code>
+          </div>
+        </section>
+      </aside>
 
-      <section class="min-w-0 rounded-lg border border-[#222] bg-[#0f0f10] p-4">
-        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 class="text-base font-bold">Saved VODs</h2>
-          <div class="flex flex-wrap items-center gap-2">
-            <select id="vodChannelFilter" class="field w-auto max-w-[180px] py-1.5 text-xs" aria-label="Filter VODs by channel">
+      <section class="surface-card vod-library-card">
+        <div class="library-toolbar">
+          <div class="section-heading compact-heading">
+            <div>
+              <span class="eyebrow">Archive</span>
+              <h2>Saved VODs</h2>
+            </div>
+          </div>
+          <div class="filter-bar">
+            <select id="vodChannelFilter" class="field filter-field" aria-label="Filter VODs by channel">
               <option value="all">All channels</option>
             </select>
-            <select id="vodFilter" class="field w-auto py-1.5 text-xs" aria-label="Filter VODs">
+            <select id="vodFilter" class="field filter-field" aria-label="Filter VODs">
               <option value="all">All VODs</option>
               <option value="downloaded">Downloaded only</option>
             </select>
           </div>
         </div>
-        <div id="vodList" class="flex min-w-0 flex-col gap-2">Loading VODs...</div>
-        <nav id="vodPagination" class="mt-4 hidden items-center justify-between gap-3 border-t border-white/10 pt-3" aria-label="VOD pages">
-          <button id="vodPreviousPage" class="button py-1.5" type="button">Previous</button>
-          <span id="vodPageStatus" class="text-xs text-white/55" aria-live="polite"></span>
-          <button id="vodNextPage" class="button py-1.5" type="button">Next</button>
+        <div id="vodList" class="vod-list">Loading VODs…</div>
+        <nav id="vodPagination" class="pagination hidden" aria-label="VOD pages">
+          <button id="vodPreviousPage" class="button compact-button" type="button">Previous</button>
+          <span id="vodPageStatus" aria-live="polite"></span>
+          <button id="vodNextPage" class="button compact-button" type="button">Next</button>
         </nav>
       </section>
     </main>

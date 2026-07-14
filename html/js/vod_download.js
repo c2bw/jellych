@@ -79,7 +79,7 @@ export function appendVODConversionControl(documentRef, container, {title, onCon
   separator.className = 'hidden sm:inline';
   separator.textContent = '-';
   const select = documentRef.createElement('select');
-  select.className = 'shrink-0 rounded border border-[#4aa3ff]/30 bg-[#4aa3ff]/10 px-2 py-0.5 text-xs font-semibold text-[#8fc7ff] outline-none';
+  select.className = 'vod-convert-select';
   select.setAttribute('aria-label', 'Conversion preset for ' + title);
   for(const [value, label] of [['original', 'Original'], ['h264', 'H.264'], ['hevc', 'HEVC'], ['vp9', 'VP9']]){
     const option = documentRef.createElement('option');

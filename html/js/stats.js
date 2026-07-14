@@ -5,9 +5,9 @@ export function initStats({ video, player, statsOverlay, statsState, statsGrid }
 
   function renderCards(items){
     statsGrid.innerHTML = items.map(({label, value}) => `
-      <div class="rounded-md border border-white/10 bg-white/5 px-2 py-1.5">
-        <div class="text-[10px] uppercase tracking-[0.14em] text-white/45">${label}</div>
-        <div class="mt-0.5 font-medium text-white/90">${value}</div>
+      <div class="stat-tile">
+        <div class="stat-label">${label}</div>
+        <div class="stat-value">${value}</div>
       </div>
     `).join('');
   }

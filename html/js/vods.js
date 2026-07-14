@@ -37,7 +37,7 @@ async function loadVODPresetCommands(){
 
 function setMessage(message, isError){
   msgEl.textContent = message || '';
-  msgEl.className = isError ? 'min-h-[20px] text-sm text-red-400' : 'min-h-[20px] text-sm text-white/50';
+  msgEl.className = isError ? 'form-message text-red-400' : 'form-message';
 }
 
 async function fetchJSON(url, options){
@@ -171,7 +171,7 @@ function sortVODsByDate(vods){
 function renderEmpty(message){
   listEl.innerHTML = '';
   const empty = document.createElement('div');
-  empty.className = 'rounded-md border border-dashed border-white/10 p-4 text-sm text-white/45';
+  empty.className = 'empty-state';
   empty.textContent = message;
   listEl.appendChild(empty);
 }
@@ -182,10 +182,10 @@ function renderVOD(vod){
   const channelText = vodChannel(vod);
   const fullTitle = channelText ? channelText + ' - ' + titleText : titleText;
   const row = document.createElement('div');
-  row.className = 'min-w-0 rounded-md border border-white/10 bg-white/[0.03] p-3';
+  row.className = 'vod-row';
 
   const actions = document.createElement('div');
-  actions.className = 'flex shrink-0 gap-2';
+  actions.className = 'vod-actions';
 
   const playlist = document.createElement('a');
   playlist.href = vodPlaybackPath(id, vodDownloaded(vod), vodDownloadActive(vod));
@@ -224,10 +224,10 @@ function renderVOD(vod){
   info.className = 'min-w-0';
 
   const titleRow = document.createElement('div');
-  titleRow.className = 'flex min-w-0 items-center gap-3';
+  titleRow.className = 'vod-title-row';
 
   const titleWrap = document.createElement('div');
-  titleWrap.className = 'flex min-w-0 flex-1 items-center gap-2';
+  titleWrap.className = 'vod-title-wrap';
 
   const downloadPreset = vodDownloadPreset(vod);
   const originalSize = vodOriginalSize(vod);
@@ -236,7 +236,7 @@ function renderVOD(vod){
     const channelBadge = document.createElement('span');
     channelBadge.textContent = channelText;
     channelBadge.title = channelText;
-    channelBadge.className = 'max-w-[160px] shrink-0 truncate rounded border border-white/10 bg-black/40 px-2 py-1 text-xs font-semibold text-white/70';
+    channelBadge.className = 'channel-badge';
     titleWrap.appendChild(channelBadge);
   }
 
@@ -246,15 +246,26 @@ function renderVOD(vod){
   title.rel = 'noopener noreferrer';
   title.textContent = titleText;
   title.title = fullTitle;
-  title.className = 'block min-w-0 flex-1 truncate font-semibold text-white no-underline hover:text-[#4aa3ff]';
+  title.className = 'vod-title';
   titleWrap.appendChild(title);
 
   const meta = document.createElement('div');
-  meta.className = 'mt-1 flex min-w-0 flex-col gap-1 text-xs text-white/45 sm:flex-row sm:items-center';
+  meta.className = 'vod-meta';
   const dateText = document.createElement('span');
   dateText.textContent = formatVODDate(vodDate(vod), id);
   const size = vodDownloadSize(vod);
   meta.appendChild(dateText);
+  if(id){
+    const idSeparator = document.createElement('span');
+    idSeparator.className = 'hidden sm:inline';
+    idSeparator.textContent = '-';
+    const idText = document.createElement('span');
+    idText.className = 'vod-id';
+    idText.textContent = 'VOD #' + id;
+    idText.title = 'Twitch VOD ID';
+    meta.appendChild(idSeparator);
+    meta.appendChild(idText);
+  }
   const duration = formatVODDuration(vodDuration(vod));
   if(duration){
     const durationSeparator = document.createElement('span');
@@ -303,7 +314,7 @@ function renderVOD(vod){
   const deletionAt = vod.estimatedDeletionAt || vod.EstimatedDeletionAt || '';
   if(vodDownloaded(vod) && deletionAt){
     const deletionText = document.createElement('div');
-    deletionText.className = 'mt-1 text-xs text-amber-300/70';
+    deletionText.className = 'vod-status text-amber-300/70';
     deletionText.textContent = 'Estimated deletion: ' + formatVODDate(deletionAt, deletionAt);
     info.appendChild(deletionText);
   }
@@ -314,7 +325,7 @@ function renderVOD(vod){
     const converting = vodDownloadOperation(vod) === 'convert';
     const estimatedSize = vodEstimatedSize(vod);
     const downloadStatus = document.createElement('div');
-    downloadStatus.className = 'mt-2 text-xs tabular-nums text-white/55';
+    downloadStatus.className = 'vod-status';
     const parts = [converting ? 'Converting' : 'Downloading'];
     if(speed) parts.push(speed);
     if(etaSeconds > 0) parts.push(formatVODRemainingTime(etaSeconds));

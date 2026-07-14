@@ -58,7 +58,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
 
   function showManagerMsg(msg, isError){
     managerMsgEl.textContent = msg || '';
-    managerMsgEl.className = isError ? 'text-red-500 text-[90%] min-h-[18px]' : 'text-gray-400 text-[90%] min-h-[18px]';
+    managerMsgEl.className = isError ? 'form-message text-red-400' : 'form-message';
     if(msg){ setTimeout(()=>{ managerMsgEl.textContent = ''; }, 3500); }
   }
 
@@ -104,7 +104,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
   }
 
   function setPlayButtonState(button, playing){
-    if(!button) return;
+    if(button == null) return;
     button.textContent = playing ? 'Pause' : 'Play';
     button.classList.toggle('btn-playing', playing);
   }
@@ -231,7 +231,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
 
   function buildChannelRow(channelKey){
     const row = document.createElement('div');
-    row.className = 'flex items-center gap-1.5 p-1.5 hover:bg-[#1a1a1b] rounded transition-colors group';
+    row.className = 'channel-row group';
     row.tabIndex = 0;
     row.dataset.channel = channelKey;
     return row;
@@ -239,20 +239,20 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
 
   function buildNameSection(channelName){
     const nameWrap = document.createElement('div');
-    nameWrap.className = 'flex-1 min-w-0 flex flex-col';
+    nameWrap.className = 'channel-name-wrap';
 
     const nameRow = document.createElement('div');
-    nameRow.className = 'flex items-center gap-1 min-w-0';
+    nameRow.className = 'channel-name-line';
 
     const nameLink = document.createElement('a');
     nameLink.textContent = channelName;
     nameLink.href = 'https://twitch.tv/' + encodeURIComponent(channelName);
     nameLink.target = '_blank';
     nameLink.rel = 'noopener noreferrer';
-    nameLink.className = 'min-w-0 font-semibold no-underline text-inherit truncate';
+    nameLink.className = 'channel-name';
 
     const metaText = document.createElement('div');
-    metaText.className = 'text-[11px] text-gray-400 truncate streamer-meta';
+    metaText.className = 'streamer-meta';
     metaText.textContent = '';
 
     nameRow.appendChild(nameLink);
@@ -264,10 +264,10 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
 
   function buildPlayCount(){
     const playWrap = document.createElement('span');
-    playWrap.className = 'inline-flex items-center gap-1 play-count';
+    playWrap.className = 'play-count';
 
     const playDot = document.createElement('span');
-    playDot.className = 'inline-block w-1.5 h-1.5 rounded-full bg-emerald-400';
+    playDot.className = 'play-count-dot';
 
     const playValue = document.createElement('span');
     playValue.className = 'play-count-value';
@@ -280,11 +280,11 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
 
   function buildActionButtons(channelKey){
     const startStop = document.createElement('button');
-    startStop.className = 'btn-base text-sm start-stop';
+    startStop.className = 'btn-base start-stop';
     startStop.textContent = 'Start';
 
     const playPause = document.createElement('button');
-    playPause.className = 'btn-base text-sm play-pause';
+    playPause.className = 'btn-base play-pause';
     playPause.textContent = 'Play';
     playPause.disabled = true;
 
