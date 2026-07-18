@@ -174,9 +174,7 @@ type StreamRegistry struct {
 }
 
 func newStreamRegistry(mu *sync.Mutex, managers *map[string]*manager) *StreamRegistry {
-	var storeMu sync.RWMutex
-	items := make(map[string]map[string][]byte)
-	store := NewLiveStore(&storeMu, &items)
+	store := NewIsolatedLiveStore()
 	token := newLiveWriteToken()
 	return &StreamRegistry{
 		mu:       mu,

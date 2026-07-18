@@ -11,9 +11,7 @@ type liveTestFixture struct {
 }
 
 func newLiveTestFixture() *liveTestFixture {
-	var storeMu sync.RWMutex
-	items := make(map[string]map[string][]byte)
-	store := NewLiveStore(&storeMu, &items)
+	store := NewIsolatedLiveStore()
 
 	var registryMu sync.Mutex
 	managers := make(map[string]*manager)

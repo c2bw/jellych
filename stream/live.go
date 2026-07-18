@@ -45,6 +45,9 @@ func newLiveWriteToken() string {
 type LiveStore struct {
 	mu              *sync.RWMutex
 	items           *map[string]map[string][]byte
+	channelBytes    map[string]int
+	totalBytes      int
+	trackedBytes    bool
 	deleteAfter     map[string]map[string]time.Time
 	deleteGrace     time.Duration
 	maxChannelBytes int
@@ -52,10 +55,27 @@ type LiveStore struct {
 	now             func() time.Time
 }
 
+// NewLiveStore wraps caller-owned synchronized storage. Capacity checks scan
+// that storage so direct caller mutations remain visible. New code should use
+// NewIsolatedLiveStore when external backing-map access is not required.
 func NewLiveStore(mu *sync.RWMutex, items *map[string]map[string][]byte) *LiveStore {
+	return newLiveStore(mu, items, false)
+}
+
+// NewIsolatedLiveStore returns a store that exclusively owns its backing map
+// and maintains constant-time capacity accounting.
+func NewIsolatedLiveStore() *LiveStore {
+	mu := &sync.RWMutex{}
+	items := make(map[string]map[string][]byte)
+	return newLiveStore(mu, &items, true)
+}
+
+func newLiveStore(mu *sync.RWMutex, items *map[string]map[string][]byte, trackedBytes bool) *LiveStore {
 	return &LiveStore{
 		mu:              mu,
 		items:           items,
+		channelBytes:    make(map[string]int),
+		trackedBytes:    trackedBytes,
 		deleteAfter:     make(map[string]map[string]time.Time),
 		deleteGrace:     liveSegmentDeleteGrace,
 		maxChannelBytes: maxLiveChannelBytes,
@@ -74,6 +94,7 @@ func (s *LiveStore) storeMap() map[string]map[string][]byte {
 func (s *LiveStore) ResetChannel(channel string) {
 	channel = normalizeLiveChannel(channel)
 	s.mu.Lock()
+	s.releaseChannelBytesLocked(channel)
 	s.storeMap()[channel] = make(map[string][]byte)
 	delete(s.deleteAfter, channel)
 	s.mu.Unlock()
@@ -82,6 +103,7 @@ func (s *LiveStore) ResetChannel(channel string) {
 func (s *LiveStore) ClearChannel(channel string) {
 	channel = normalizeLiveChannel(channel)
 	s.mu.Lock()
+	s.releaseChannelBytesLocked(channel)
 	if items := *s.items; items != nil {
 		delete(items, channel)
 	}
@@ -104,23 +126,18 @@ func (s *LiveStore) StoreObject(channel, name string, data []byte) bool {
 		items[channel] = make(map[string][]byte)
 	}
 	previousSize := len(items[channel][name])
-	channelBytes := -previousSize
-	totalBytes := -previousSize
-	for storedChannel, objects := range items {
-		for _, object := range objects {
-			totalBytes += len(object)
-			if storedChannel == channel {
-				channelBytes += len(object)
-			}
-		}
-	}
-	if s.maxChannelBytes > 0 && channelBytes+len(data) > s.maxChannelBytes {
+	channelBytes, totalBytes := s.capacityAfterStoreLocked(channel, previousSize, len(data))
+	if s.maxChannelBytes > 0 && channelBytes > s.maxChannelBytes {
 		return false
 	}
-	if s.maxTotalBytes > 0 && totalBytes+len(data) > s.maxTotalBytes {
+	if s.maxTotalBytes > 0 && totalBytes > s.maxTotalBytes {
 		return false
 	}
 	items[channel][name] = cloneBytes(data)
+	if s.trackedBytes {
+		s.channelBytes[channel] = channelBytes
+		s.totalBytes = totalBytes
+	}
 	if pending := s.deleteAfter[channel]; pending != nil {
 		delete(pending, name)
 		if len(pending) == 0 {
@@ -183,7 +200,7 @@ func (s *LiveStore) DeleteObject(channel, name string) {
 		}
 		return
 	}
-	delete(channelStore, name)
+	s.deleteObjectLocked(channel, name)
 }
 
 func (s *LiveStore) purgeDeletedLocked(channel string, now time.Time) {
@@ -197,12 +214,58 @@ func (s *LiveStore) purgeDeletedLocked(channel string, now time.Time) {
 			continue
 		}
 		if channelStore != nil {
-			delete(channelStore, name)
+			s.deleteObjectLocked(channel, name)
 		}
 		delete(pending, name)
 	}
 	if len(pending) == 0 {
 		delete(s.deleteAfter, channel)
+	}
+}
+
+func (s *LiveStore) capacityAfterStoreLocked(channel string, previousSize, nextSize int) (int, int) {
+	if s.trackedBytes {
+		return s.channelBytes[channel] - previousSize + nextSize, s.totalBytes - previousSize + nextSize
+	}
+
+	channelBytes := -previousSize
+	totalBytes := -previousSize
+	for storedChannel, objects := range s.storeMap() {
+		for _, object := range objects {
+			totalBytes += len(object)
+			if storedChannel == channel {
+				channelBytes += len(object)
+			}
+		}
+	}
+	return channelBytes + nextSize, totalBytes + nextSize
+}
+
+func (s *LiveStore) releaseChannelBytesLocked(channel string) {
+	if !s.trackedBytes {
+		return
+	}
+	s.totalBytes -= s.channelBytes[channel]
+	delete(s.channelBytes, channel)
+}
+
+func (s *LiveStore) deleteObjectLocked(channel, name string) {
+	items := *s.items
+	if items == nil || items[channel] == nil {
+		return
+	}
+	data, ok := items[channel][name]
+	if !ok {
+		return
+	}
+	delete(items[channel], name)
+	if !s.trackedBytes {
+		return
+	}
+	s.channelBytes[channel] -= len(data)
+	s.totalBytes -= len(data)
+	if s.channelBytes[channel] == 0 {
+		delete(s.channelBytes, channel)
 	}
 }
 

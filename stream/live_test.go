@@ -13,9 +13,7 @@ import (
 const testLiveGeneration = "test-generation"
 
 func TestLiveStoreEnforcesCapacity(t *testing.T) {
-	var mu sync.RWMutex
-	var items map[string]map[string][]byte
-	store := NewLiveStore(&mu, &items)
+	store := NewIsolatedLiveStore()
 	store.maxChannelBytes = 5
 	store.maxTotalBytes = 8
 
@@ -30,6 +28,70 @@ func TestLiveStoreEnforcesCapacity(t *testing.T) {
 	}
 	if store.StoreObject("three", "a.ts", []byte("1")) {
 		t.Fatal("expected global capacity rejection")
+	}
+}
+
+func TestIsolatedLiveStoreUpdatesCapacityAccounting(t *testing.T) {
+	store := NewIsolatedLiveStore()
+	store.maxChannelBytes = 5
+	store.maxTotalBytes = 8
+
+	if !store.StoreObject("existing", "segment.ts", []byte("12345")) {
+		t.Fatal("expected initial object to fit")
+	}
+	if !store.StoreObject("existing", "segment.ts", []byte("12")) {
+		t.Fatal("expected smaller replacement to fit")
+	}
+	if !store.StoreObject("existing", "playlist.m3u8", []byte("345")) {
+		t.Fatal("expected replacement bytes to be released from channel capacity")
+	}
+	if !store.StoreObject("other", "segment.ts", []byte("678")) {
+		t.Fatal("expected replacement bytes to be released from total capacity")
+	}
+
+	store.ClearChannel("existing")
+	if !store.StoreObject("third", "segment.ts", []byte("12345")) {
+		t.Fatal("expected clearing a channel to release its capacity")
+	}
+
+	store.ResetChannel("third")
+	if !store.StoreObject("third", "segment.ts", []byte("12345")) {
+		t.Fatal("expected resetting a channel to release its capacity")
+	}
+}
+
+func TestLegacyLiveStoreObservesCallerOwnedBackingMap(t *testing.T) {
+	var mu sync.RWMutex
+	items := map[string]map[string][]byte{
+		"external": {"segment.ts": []byte("12345")},
+	}
+	store := NewLiveStore(&mu, &items)
+	store.maxTotalBytes = 5
+
+	if store.StoreObject("other", "segment.ts", []byte("1")) {
+		t.Fatal("expected caller-owned object to count toward capacity")
+	}
+}
+
+func TestIsolatedLiveStoreReleasesExpiredSegmentCapacity(t *testing.T) {
+	store := NewIsolatedLiveStore()
+	store.deleteGrace = 10 * time.Second
+	store.maxChannelBytes = 5
+	store.maxTotalBytes = 5
+	now := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+
+	if !store.StoreObject("channel", "old.ts", []byte("12345")) {
+		t.Fatal("expected initial segment to fit")
+	}
+	store.DeleteObject("channel", "old.ts")
+	if store.StoreObject("channel", "new.ts", []byte("12345")) {
+		t.Fatal("expected segment in deletion grace period to retain capacity")
+	}
+
+	now = now.Add(store.deleteGrace)
+	if !store.StoreObject("channel", "new.ts", []byte("12345")) {
+		t.Fatal("expected expired segment capacity to be released")
 	}
 }
 
@@ -159,9 +221,7 @@ func TestLiveWriteHandlerRetainsRecentlyDeletedSegment(t *testing.T) {
 }
 
 func TestLiveStoreExpiresDeletedSegment(t *testing.T) {
-	var mu sync.RWMutex
-	var items map[string]map[string][]byte
-	store := NewLiveStore(&mu, &items)
+	store := NewIsolatedLiveStore()
 	store.deleteGrace = 10 * time.Second
 	now := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
@@ -194,9 +254,7 @@ func TestLiveHandlerPreventsCachingMissingSegments(t *testing.T) {
 }
 
 func TestLiveHandlerWaitsForActiveSegment(t *testing.T) {
-	var storeMu sync.RWMutex
-	var items map[string]map[string][]byte
-	store := NewLiveStore(&storeMu, &items)
+	store := NewIsolatedLiveStore()
 
 	var registryMu sync.Mutex
 	managers := map[string]*manager{
