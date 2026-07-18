@@ -54,7 +54,7 @@ jobs:
         run: git diff --exit-code -- html/assets/app.css html/vendor/hls.min.js html/vendor/hls.LICENSE
 
       - name: Run browser-side tests
-        run: node --test scripts/player_test.mjs scripts/auth_test.mjs scripts/vod_download_test.mjs
+        run: node --test scripts/player_test.mjs scripts/auth_test.mjs scripts/vod_download_test.mjs scripts/manager_polling_test.mjs
 
   build:
     needs: validate

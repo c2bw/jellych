@@ -1,5 +1,6 @@
 import { channelNameOf } from './utils.js';
 import { apiFetch, getControlSecret } from './auth.js';
+import { createPollingLoop } from './polling.js';
 
 export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn, managerMsgEl, player, stats, playerTitleEl }){
   const MIN_SEGMENTS_TO_PLAY = 4;
@@ -547,14 +548,11 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
     }catch(err){ listEl.textContent = 'Could not load channels.json - ' + err.message; }
   }
 
-  // poll active stream state every 5s to keep UI in sync
-  let pollId = null;
-  function startPolling(){
-    if(pollId) return;
-    pollId = setInterval(async ()=>{
-      await Promise.all([refreshStreams(), refreshStatus(), refreshPlayCounts()]);
-    }, 5000);
-  }
+  // Wait five seconds after each completed refresh before polling again.
+  const startPolling = createPollingLoop(
+    ()=>Promise.all([refreshStreams(), refreshStatus(), refreshPlayCounts()]),
+    { delayMs: 5000, onError: (error)=>console.error('poll error', error) },
+  );
 
   addBtn.addEventListener('click', addChannel);
   async function addChannel(){
