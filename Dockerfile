@@ -3,6 +3,7 @@ FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
 
 # Build a statically-linked binary and take advantage of layer caching
 ENV CGO_ENABLED=0
@@ -17,7 +18,7 @@ RUN go mod download
 
 # Copy the rest of the source and build
 COPY . .
-RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags "-s -w" -o /jellych .
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags "-s -w -X main.version=${VERSION#v}" -o /jellych .
 
 FROM alpine:3.24
 RUN apk add --no-cache tzdata ca-certificates ffmpeg

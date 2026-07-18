@@ -22,7 +22,8 @@ import (
 	"github.com/c2bw/jellych/twitch/client"
 )
 
-const version = "0.0.14"
+// version is overridden at build time for release artifacts.
+var version = "dev"
 
 //go:embed html
 var webAssets embed.FS
