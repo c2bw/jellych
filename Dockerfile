@@ -16,7 +16,7 @@ RUN go mod download
 COPY . .
 RUN go build -ldflags "-s -w" -o /jellych .
 
-FROM alpine:latest
+FROM alpine:3.24
 RUN apk add --no-cache tzdata ca-certificates ffmpeg
 
 # Create an unprivileged user to run the service
@@ -24,9 +24,6 @@ RUN addgroup -S -g 1000 app && adduser -S -D -H -u 1000 -G app app
 
 # Copy only the built binary from the builder stage
 COPY --from=builder /jellych /usr/local/bin/jellych
-
-# Copy application assets
-COPY --chown=app:app html/ /etc/jellych/html/
 
 # /data/config stores the persistent jellych.db SQLite database.
 RUN mkdir -p /etc/jellych /data/config /data/vods && chown -R app:app /etc/jellych /data
