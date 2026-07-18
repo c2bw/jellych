@@ -1,8 +1,11 @@
 # Build in a stock Go builder container
-FROM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
 
 # Build a statically-linked binary and take advantage of layer caching
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+ENV CGO_ENABLED=0
 
 RUN apk add --no-cache git
 
@@ -14,7 +17,7 @@ RUN go mod download
 
 # Copy the rest of the source and build
 COPY . .
-RUN go build -ldflags "-s -w" -o /jellych .
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags "-s -w" -o /jellych .
 
 FROM alpine:3.24
 RUN apk add --no-cache tzdata ca-certificates ffmpeg
