@@ -76,6 +76,7 @@ type VODDownloader struct {
 	active         map[string]*vodDownload
 	removing       map[string]struct{}
 	presets        map[string]vodPresetCacheEntry
+	metadataProbes map[vodMetadataProbeKey]*vodMetadataProbeCall
 	stopping       bool
 	commandContext func(context.Context, string, ...string) *exec.Cmd
 	resolveURL     func(context.Context, string) (string, error)
@@ -86,6 +87,18 @@ type vodPresetCacheEntry struct {
 	modTime  time.Time
 	metadata vodDownloadMetadata
 	retryAt  time.Time
+}
+
+type vodMetadataProbeKey struct {
+	id      string
+	path    string
+	size    int64
+	modTime int64
+}
+
+type vodMetadataProbeCall struct {
+	done     chan struct{}
+	metadata vodDownloadMetadata
 }
 
 type vodDownloadMetadata struct {

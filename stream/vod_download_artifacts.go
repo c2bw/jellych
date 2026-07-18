@@ -256,44 +256,63 @@ func (d *VODDownloader) completedFile(id string) (bool, int64, vodDownloadMetada
 		if !info.Mode().IsRegular() || info.Size() == 0 {
 			return false, 0, vodDownloadMetadata{}, nil
 		}
-		d.Lock()
-		cached, ok := d.presets[id]
-		d.Unlock()
-		if ok && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
-			if cached.metadata.Preset != "" || time.Now().Before(cached.retryAt) {
-				return true, info.Size(), cached.metadata, nil
-			}
-		}
-		preset, probeErr := probeVODDownloadMetadata(outputPath)
-		if probeErr != nil {
-			// Cache an unknown result briefly to avoid a process/log storm while
-			// keeping failures retryable and never guessing the codec.
-			slog.Warn("failed to read vod download preset", "id", id, "error", probeErr)
-			d.Lock()
-			if d.presets == nil {
-				d.presets = make(map[string]vodPresetCacheEntry)
-			}
-			d.presets[id] = vodPresetCacheEntry{
-				size: info.Size(), modTime: info.ModTime(), retryAt: time.Now().Add(vodMetadataProbeRetryDelay),
-			}
-			d.Unlock()
-			return true, info.Size(), vodDownloadMetadata{}, nil
-		}
-		if preset.DurationSeconds > 0 {
-			preset.TotalBitrate = int64(float64(info.Size()) * 8 / preset.DurationSeconds)
-		}
-		d.Lock()
-		if d.presets == nil {
-			d.presets = make(map[string]vodPresetCacheEntry)
-		}
-		d.presets[id] = vodPresetCacheEntry{size: info.Size(), modTime: info.ModTime(), metadata: preset}
-		d.Unlock()
-		return true, info.Size(), preset, nil
+		metadata := d.completedFileMetadata(id, outputPath, info.Size(), info.ModTime())
+		return true, info.Size(), metadata, nil
 	}
 	if errors.Is(err, os.ErrNotExist) {
 		return false, 0, vodDownloadMetadata{}, nil
 	}
 	return false, 0, vodDownloadMetadata{}, fmt.Errorf("failed to check vod output file: %w", err)
+}
+
+func (d *VODDownloader) completedFileMetadata(id, outputPath string, size int64, modTime time.Time) vodDownloadMetadata {
+	key := vodMetadataProbeKey{id: id, path: outputPath, size: size, modTime: modTime.UnixNano()}
+	now := time.Now()
+
+	d.Lock()
+	if cached, ok := d.presets[id]; ok && cached.size == size && cached.modTime.Equal(modTime) {
+		if cached.metadata.Preset != "" || now.Before(cached.retryAt) {
+			d.Unlock()
+			return cached.metadata
+		}
+	}
+	if call := d.metadataProbes[key]; call != nil {
+		done := call.done
+		d.Unlock()
+		<-done
+		return call.metadata
+	}
+	if d.metadataProbes == nil {
+		d.metadataProbes = make(map[vodMetadataProbeKey]*vodMetadataProbeCall)
+	}
+	call := &vodMetadataProbeCall{done: make(chan struct{})}
+	d.metadataProbes[key] = call
+	d.Unlock()
+
+	metadata, probeErr := probeVODDownloadMetadata(outputPath)
+	entry := vodPresetCacheEntry{size: size, modTime: modTime, metadata: metadata}
+	if probeErr != nil {
+		// Cache an unknown result briefly to avoid a process/log storm while
+		// keeping failures retryable and never guessing the codec.
+		slog.Warn("failed to read vod download preset", "id", id, "error", probeErr)
+		metadata = vodDownloadMetadata{}
+		entry.metadata = metadata
+		entry.retryAt = time.Now().Add(vodMetadataProbeRetryDelay)
+	} else if metadata.DurationSeconds > 0 {
+		metadata.TotalBitrate = int64(float64(size) * 8 / metadata.DurationSeconds)
+		entry.metadata = metadata
+	}
+
+	d.Lock()
+	if d.presets == nil {
+		d.presets = make(map[string]vodPresetCacheEntry)
+	}
+	d.presets[id] = entry
+	call.metadata = metadata
+	delete(d.metadataProbes, key)
+	close(call.done)
+	d.Unlock()
+	return metadata
 }
 
 func finalizeVODConversion(tempPath, outputPath, backupPath string) error {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -659,6 +660,71 @@ func TestCompletedVODDownloadPresetIsReadOnceAndCached(t *testing.T) {
 	}
 	if probeCalls != 1 {
 		t.Fatalf("expected one metadata probe, got %d", probeCalls)
+	}
+}
+
+func TestConcurrentCompletedVODMetadataRequestsShareProbe(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "123456789.mkv")
+	if err := os.WriteFile(path, []byte("downloaded"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	downloader := &VODDownloader{dir: dir, retention: defaultVODDownloadRetention}
+	originalProbe := probeVODDownloadMetadata
+	var probeMu sync.Mutex
+	probeCalls := 0
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	probeVODDownloadMetadata = func(gotPath string) (vodDownloadMetadata, error) {
+		probeMu.Lock()
+		probeCalls++
+		if probeCalls == 1 {
+			close(probeStarted)
+		}
+		probeMu.Unlock()
+		if gotPath != path {
+			return vodDownloadMetadata{}, fmt.Errorf("unexpected probe path %q", gotPath)
+		}
+		<-releaseProbe
+		return vodDownloadMetadata{Preset: VODDownloadPresetHEVC}, nil
+	}
+	t.Cleanup(func() { probeVODDownloadMetadata = originalProbe })
+
+	const requests = 12
+	start := make(chan struct{})
+	results := make(chan VODDownloadProgress, requests)
+	errs := make(chan error, requests)
+	for range requests {
+		go func() {
+			<-start
+			progress, err := downloader.Progress("123456789")
+			results <- progress
+			errs <- err
+		}()
+	}
+	close(start)
+	select {
+	case <-probeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for metadata probe")
+	}
+
+	// Keep the owner blocked long enough for the other requests to join the
+	// in-flight call. Without deduplication they would all enter the probe.
+	time.Sleep(50 * time.Millisecond)
+	close(releaseProbe)
+	for range requests {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		if progress := <-results; progress.Preset != "hevc" {
+			t.Fatalf("expected shared HEVC metadata, got %#v", progress)
+		}
+	}
+	probeMu.Lock()
+	defer probeMu.Unlock()
+	if probeCalls != 1 {
+		t.Fatalf("expected one shared metadata probe, got %d", probeCalls)
 	}
 }
 
