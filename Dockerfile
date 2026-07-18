@@ -31,4 +31,7 @@ RUN mkdir -p /etc/jellych /data/config /data/vods && chown -R app:app /etc/jelly
 USER app
 WORKDIR /etc/jellych
 
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD ["wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+
 ENTRYPOINT ["/usr/local/bin/jellych"]

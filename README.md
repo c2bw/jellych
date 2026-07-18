@@ -23,7 +23,9 @@ Optional environment variables:
 
 Optional flags:
 
-- `-addr` (default `:8080`) HTTP listen address
+- `-addr` (default `:8080`) HTTP listen address. The Docker image health check
+  probes `http://127.0.0.1:8080/health`, so container deployments must keep
+  the internal listen port at `8080` or override/disable the image health check.
 - `-config` (default `/data/config`) directory containing the persistent `jellych.db` SQLite configuration database
 - `-vods` folder where manually downloaded VODs are saved
 

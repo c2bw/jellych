@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -54,6 +55,30 @@ func TestSecurityHeaders(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("X-Content-Type-Options = %q; want nosniff", got)
+	}
+}
+
+func TestHealth(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+
+	newHandler(fstest.MapFS{}, testHandlers()).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type = %q; want text/plain", got)
+	}
+	if got := rec.Body.String(); got != "ok" {
+		t.Fatalf("body = %q; want ok", got)
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/health", nil)
+	postRec := httptest.NewRecorder()
+	newHandler(fstest.MapFS{}, testHandlers()).ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status = %d; want %d", postRec.Code, http.StatusMethodNotAllowed)
 	}
 }
 

@@ -36,8 +36,28 @@ func StartWithAssets(addr string, assets fs.FS, handlers Handlers) (*http.Server
 		return nil, err
 	}
 
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           newHandler(htmlFS, handlers),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+
+	go func() {
+		slog.Info("HTTP server listening", "addr", ln.Addr().String())
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			slog.Error("http listen", "error", err)
+		}
+	}()
+	return srv, nil
+}
+
+func newHandler(htmlFS fs.FS, handlers Handlers) http.Handler {
 	// Combine API handler with static HTML and stream routes.
 	mux := http.NewServeMux()
+	mux.HandleFunc("/health", handleHealth)
 	mux.Handle("/api/", handlers.API)
 	mux.Handle("/vod/", handlers.API)
 	mux.HandleFunc("/watch", func(w http.ResponseWriter, r *http.Request) {
@@ -63,22 +83,18 @@ func StartWithAssets(addr string, assets fs.FS, handlers Handlers) (*http.Server
 		http.NotFound(w, r)
 	})
 
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           securityHeaders(mux),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       2 * time.Minute,
-	}
+	return securityHeaders(mux)
+}
 
-	go func() {
-		slog.Info("HTTP server listening", "addr", ln.Addr().String())
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			slog.Error("http listen", "error", err)
-		}
-	}()
-	return srv, nil
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
 }
 
 func securityHeaders(next http.Handler) http.Handler {
