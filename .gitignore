@@ -11,6 +11,11 @@ jellych.exe
 # Frontend dependencies
 node_modules/
 
+# Local environment configuration
+.env
+.env.*
+!.env.example
+
 # IDE/editor
 .vscode/
 .DS_Store

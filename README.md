@@ -59,14 +59,14 @@ volumes:
   config_volume:
 ```
 
-### Configure Jellyfin
+## Configure Jellyfin
 
 - Dashboard > Live TV > Add Tuner Device > M3U Tuner -> Then enter the URL to your server's `/api/twitch.m3u` endpoint, e.g. `http://localhost:8080/api/twitch.m3u`
 - Dashboard > Scheduled Tasks > Refresh Guide -> Every 15 minutes
 - *OPTIONAL: create a library for the VODs folder*
 - Install Jellyfin plugin: https://github.com/c2bw/jellyfin-plugin-jellych
 
-#### Jellyfin VODs library setup
+### Jellyfin VODs library setup
 
 The VODs library is optional, but it allows to watch Twitch VODs in Jellyfin. To set it up, create a new library in Jellyfin and point it to the folder where VODs are saved (the `-vods` folder). After that, configure the library:
 
