@@ -680,9 +680,9 @@ func (a *API) handleStreamReady(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGetM3U returns a generated M3U playlist containing all configured
-// channels with metadata indicating online/offline status. The playlist
-// entries point to the HLS playlists served under /live/<channel>/index.m3u8.
+// handleGetM3U returns a generated M3U playlist containing configured channels
+// that are currently online. Entries point to the HLS playlists served under
+// /live/<channel>/index.m3u8.
 func (a *API) handleGetM3U(w http.ResponseWriter, r *http.Request) {
 	playlist := a.state.BuildM3U(a.state.GetChannels(), a.state.GetChannelStatus(), a.state.GetChannelLogos())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

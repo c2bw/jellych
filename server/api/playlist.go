@@ -21,7 +21,8 @@ func (s *APIState) playlistBaseURL() string {
 	return s.playlistURL
 }
 
-// BuildM3U builds a live-channel M3U playlist from configured channels and statuses.
+// BuildM3U builds a live-channel M3U playlist containing configured channels
+// that are currently online.
 func (s *APIState) BuildM3U(channels []string, statuses []Status, logos map[string]string) string {
 	statusByName := make(map[string]Status, len(statuses))
 	for _, s := range statuses {
