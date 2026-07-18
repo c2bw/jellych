@@ -274,12 +274,13 @@ func (a *API) handleAddVOD(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vod = PrepareVOD(vod)
-	if err := a.state.AddVODContext(r.Context(), vod); err != nil {
+	saved, err := a.state.addVODContext(r.Context(), vod)
+	if err != nil {
 		writeMappedError(w, err, addVODErrors, http.StatusBadRequest, "failed to add vod: %v")
 		return
 	}
 
-	writeJSON(w, vod)
+	writeJSON(w, saved)
 }
 
 func (a *API) handleRemoveVOD(w http.ResponseWriter, r *http.Request) {

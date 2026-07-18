@@ -123,14 +123,20 @@ func (m *Manager) AddVOD(vod api.VOD) error {
 }
 
 func (m *Manager) AddVODContext(ctx context.Context, vod api.VOD) error {
+	_, err := m.AddVODRecordContext(ctx, vod)
+	return err
+}
+
+// AddVODRecordContext persists a VOD and returns the exact stored record.
+func (m *Manager) AddVODRecordContext(ctx context.Context, vod api.VOD) (api.VOD, error) {
 	var err error
 	vod, err = m.enrichVOD(ctx, vod)
 	if err != nil {
-		return err
+		return api.VOD{}, err
 	}
 	vod = api.PrepareVOD(vod)
 	if err := api.ValidateVOD(vod); err != nil {
-		return err
+		return api.VOD{}, err
 	}
 
 	m.mutationMu.Lock()
@@ -140,20 +146,20 @@ func (m *Manager) AddVODContext(ctx context.Context, vod api.VOD) error {
 	for _, existing := range m.vods {
 		if existing.ID == vod.ID {
 			m.mu.RUnlock()
-			return api.ErrVODAlreadyExists
+			return api.VOD{}, api.ErrVODAlreadyExists
 		}
 	}
 	m.mu.RUnlock()
 
 	if err := m.insertVODContext(ctx, vod); err != nil {
-		return err
+		return api.VOD{}, err
 	}
 
 	m.mu.Lock()
 	delete(m.vodBlacklist, vod.ID)
 	m.vods = append(m.vods, vod)
 	m.mu.Unlock()
-	return nil
+	return vod, nil
 }
 
 func (m *Manager) enrichVOD(ctx context.Context, vod api.VOD) (api.VOD, error) {

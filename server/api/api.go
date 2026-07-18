@@ -64,6 +64,10 @@ type vodStore interface {
 	RemoveVODContext(ctx context.Context, id string) error
 }
 
+type vodStoreWithResult interface {
+	AddVODRecordContext(ctx context.Context, vod VOD) (VOD, error)
+}
+
 // SetChannelStore configures the persistence backend for channel changes.
 func (s *APIState) SetChannelStore(store channelStore) {
 	s.chMu.Lock()
@@ -203,23 +207,37 @@ func (s *APIState) AddVOD(vod VOD) error {
 }
 
 func (s *APIState) AddVODContext(ctx context.Context, vod VOD) error {
+	_, err := s.addVODContext(ctx, vod)
+	return err
+}
+
+func (s *APIState) addVODContext(ctx context.Context, vod VOD) (VOD, error) {
 	vod = PrepareVOD(vod)
 	if store := s.configuredVODStore(); store != nil {
-		return store.AddVODContext(ctx, vod)
+		if resultStore, ok := store.(vodStoreWithResult); ok {
+			return resultStore.AddVODRecordContext(ctx, vod)
+		}
+		if err := store.AddVODContext(ctx, vod); err != nil {
+			return VOD{}, err
+		}
+		if saved, ok := store.FindVOD(vod.ID); ok {
+			return saved, nil
+		}
+		return vod, nil
 	}
 	if err := ValidateVOD(vod); err != nil {
-		return err
+		return VOD{}, err
 	}
 
 	s.vodMu.Lock()
 	defer s.vodMu.Unlock()
 	for _, existing := range s.vods {
 		if existing.ID == vod.ID {
-			return ErrVODAlreadyExists
+			return VOD{}, ErrVODAlreadyExists
 		}
 	}
 	s.vods = append(s.vods, vod)
-	return nil
+	return vod, nil
 }
 
 func (s *APIState) RemoveVOD(id string) error {

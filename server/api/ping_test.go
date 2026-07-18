@@ -28,10 +28,58 @@ type apiTestFixture struct {
 	api   *API
 }
 
+type enrichingVODStore struct {
+	vod VOD
+}
+
+func (s *enrichingVODStore) ListVODs() []VOD {
+	return []VOD{s.vod}
+}
+
+func (s *enrichingVODStore) FindVOD(id string) (VOD, bool) {
+	return VOD{}, false
+}
+
+func (s *enrichingVODStore) AddVODContext(ctx context.Context, vod VOD) error {
+	_, err := s.AddVODRecordContext(ctx, vod)
+	return err
+}
+
+func (s *enrichingVODStore) AddVODRecordContext(_ context.Context, vod VOD) (VOD, error) {
+	vod.Title = "Enriched title"
+	vod.Channel = "enriched-channel"
+	s.vod = vod
+	return vod, nil
+}
+
+func (s *enrichingVODStore) RemoveVODContext(context.Context, string) error {
+	return nil
+}
+
 func newAPITestFixture(t *testing.T) *apiTestFixture {
 	t.Helper()
 	state := &APIState{}
 	return &apiTestFixture{state: state, api: newAPI(state, Dependencies{})}
+}
+
+func TestAddVODReturnsPersistedRecord(t *testing.T) {
+	fixture := newAPITestFixture(t)
+	fixture.state.SetVODStore(&enrichingVODStore{})
+	req := httptest.NewRequest(http.MethodPost, "/api/vods", strings.NewReader(`{"id":"123456789"}`))
+	rec := httptest.NewRecorder()
+
+	fixture.api.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var got VOD
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode VOD response: %v", err)
+	}
+	if got.Title != "Enriched title" || got.Channel != "enriched-channel" {
+		t.Fatalf("response VOD = %+v; want persisted enriched fields", got)
+	}
 }
 
 func TestVODPlaylistProxiesCrossOriginMedia(t *testing.T) {
