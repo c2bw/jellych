@@ -23,49 +23,27 @@ func (f apiRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-func resetAPIStateForTest(t *testing.T) {
+type apiTestFixture struct {
+	state *APIState
+	api   *API
+}
+
+func newAPITestFixture(t *testing.T) *apiTestFixture {
 	t.Helper()
-	reset := func() {
-		SetChannelStore(nil)
-		SetVODStore(nil)
-		SetChannels(nil)
-		SetChannelLogos(nil)
-		SetChannelStatus(nil)
-		SetVODs(nil)
-		SetJellyfinWebhookSecret("")
-		SetControlAPISecret("")
-		SetPlaylistBaseURL("")
-		stream.SetVODDownloadDir("")
-		defaultAPI.streams = defaultStreamOperations()
-		defaultAPI.vodMediaHTTPClient = defaultVODMediaHTTPClient
-		defaultAPI.vodMediaRegistry.Lock()
-		defaultAPI.vodMediaRegistry.byToken = nil
-		defaultAPI.vodMediaRegistry.byURL = nil
-		defaultAPI.vodMediaRegistry.Unlock()
-
-		defaultAPI.playback.playMu.Lock()
-		defaultAPI.playback.playSessions = nil
-		defaultAPI.playback.jellyfinSessions = nil
-		defaultAPI.playback.playMu.Unlock()
-
-		defaultAPI.playback.idleMu.Lock()
-		defaultAPI.playback.idleTimers = nil
-		defaultAPI.playback.idleMu.Unlock()
-	}
-	reset()
-	t.Cleanup(reset)
+	state := &APIState{}
+	return &apiTestFixture{state: state, api: newAPI(state, Dependencies{})}
 }
 
 func TestVODPlaylistProxiesCrossOriginMedia(t *testing.T) {
-	resetAPIStateForTest(t)
-	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
-	defaultAPI.streams.ResolveVODPlaylist = func(context.Context, string) ([]byte, error) {
+	fixture := newAPITestFixture(t)
+	fixture.state.SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+	fixture.api.streams.ResolveVODPlaylist = func(context.Context, string) ([]byte, error) {
 		return []byte("#EXTM3U\n#EXTINF:4,\nhttps://d3fi1amfgojobc.cloudfront.net/path/0.ts\n"), nil
 	}
 
 	playlistReq := httptest.NewRequest(http.MethodGet, "/vod/123456789/index.m3u8", nil)
 	playlistRec := httptest.NewRecorder()
-	Handler().ServeHTTP(playlistRec, playlistReq)
+	fixture.api.Handler().ServeHTTP(playlistRec, playlistReq)
 	if playlistRec.Code != http.StatusOK {
 		t.Fatalf("expected playlist status %d, got %d: %s", http.StatusOK, playlistRec.Code, playlistRec.Body.String())
 	}
@@ -83,9 +61,9 @@ func TestVODPlaylistProxiesCrossOriginMedia(t *testing.T) {
 		t.Fatalf("expected local media proxy URL, got %q", playlistRec.Body.String())
 	}
 
-	originalClient := defaultAPI.vodMediaHTTPClient
-	t.Cleanup(func() { defaultAPI.vodMediaHTTPClient = originalClient })
-	defaultAPI.vodMediaHTTPClient = &http.Client{Transport: apiRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+	originalClient := fixture.api.vodMediaHTTPClient
+	t.Cleanup(func() { fixture.api.vodMediaHTTPClient = originalClient })
+	fixture.api.vodMediaHTTPClient = &http.Client{Transport: apiRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.String() != "https://d3fi1amfgojobc.cloudfront.net/path/0.ts" {
 			t.Fatalf("unexpected upstream URL %q", req.URL.String())
 		}
@@ -103,7 +81,7 @@ func TestVODPlaylistProxiesCrossOriginMedia(t *testing.T) {
 	mediaReq := httptest.NewRequest(http.MethodGet, mediaPath, nil)
 	mediaReq.Header.Set("Range", "bytes=0-3")
 	mediaRec := httptest.NewRecorder()
-	Handler().ServeHTTP(mediaRec, mediaReq)
+	fixture.api.Handler().ServeHTTP(mediaRec, mediaReq)
 	if mediaRec.Code != http.StatusPartialContent || mediaRec.Body.String() != "data" {
 		t.Fatalf("expected proxied partial media, got status=%d body=%q", mediaRec.Code, mediaRec.Body.String())
 	}
@@ -113,6 +91,7 @@ func TestVODPlaylistProxiesCrossOriginMedia(t *testing.T) {
 }
 
 func TestPingEndpoint(t *testing.T) {
+	fixture := newAPITestFixture(t)
 	tests := []string{"/api/ping", "/api/ping/"}
 
 	for _, path := range tests {
@@ -120,7 +99,7 @@ func TestPingEndpoint(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			rec := httptest.NewRecorder()
 
-			Handler().ServeHTTP(rec, req)
+			fixture.api.Handler().ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
@@ -136,10 +115,11 @@ func TestPingEndpoint(t *testing.T) {
 }
 
 func TestVODPresetsEndpointReturnsResolvedCommands(t *testing.T) {
+	fixture := newAPITestFixture(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/vod-presets", nil)
 	rec := httptest.NewRecorder()
 
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
@@ -157,12 +137,12 @@ func TestVODPresetsEndpointReturnsResolvedCommands(t *testing.T) {
 }
 
 func TestControlAPISecretProtectsMutations(t *testing.T) {
-	resetAPIStateForTest(t)
-	SetControlAPISecret("test-secret")
+	fixture := newAPITestFixture(t)
+	fixture.state.SetControlAPISecret("test-secret")
 
 	unauthorized := httptest.NewRequest(http.MethodPost, "/api/status", strings.NewReader("[]"))
 	unauthorizedRec := httptest.NewRecorder()
-	Handler().ServeHTTP(unauthorizedRec, unauthorized)
+	fixture.api.Handler().ServeHTTP(unauthorizedRec, unauthorized)
 	if unauthorizedRec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, unauthorizedRec.Code)
 	}
@@ -170,27 +150,27 @@ func TestControlAPISecretProtectsMutations(t *testing.T) {
 	authorized := httptest.NewRequest(http.MethodPost, "/api/status", strings.NewReader("[]"))
 	authorized.Header.Set("Authorization", "Bearer test-secret")
 	authorizedRec := httptest.NewRecorder()
-	Handler().ServeHTTP(authorizedRec, authorized)
+	fixture.api.Handler().ServeHTTP(authorizedRec, authorized)
 	if authorizedRec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, authorizedRec.Code)
 	}
 }
 
 func TestIsConfiguredChannel(t *testing.T) {
-	resetAPIStateForTest(t)
-	SetChannels([]string{"jankos"})
+	fixture := newAPITestFixture(t)
+	fixture.state.SetChannels([]string{"jankos"})
 
-	if !IsConfiguredChannel(" JANKOS ") {
+	if !fixture.state.IsConfiguredChannel(" JANKOS ") {
 		t.Fatal("expected configured channel lookup to normalize the name")
 	}
-	if IsConfiguredChannel("caedrel") {
+	if fixture.state.IsConfiguredChannel("caedrel") {
 		t.Fatal("did not expect an unknown channel to be configured")
 	}
 }
 
 func TestAuthorizeJellyfinWebhook(t *testing.T) {
-	resetAPIStateForTest(t)
-	SetJellyfinWebhookSecret("shared-secret")
+	fixture := newAPITestFixture(t)
+	fixture.state.SetJellyfinWebhookSecret("shared-secret")
 
 	tests := []struct {
 		name       string
@@ -211,7 +191,7 @@ func TestAuthorizeJellyfinWebhook(t *testing.T) {
 			}
 			rec := httptest.NewRecorder()
 
-			gotOK := defaultAPI.authorizeJellyfinWebhook(rec, req)
+			gotOK := fixture.api.authorizeJellyfinWebhook(rec, req)
 
 			if gotOK != tt.wantOK {
 				t.Fatalf("expected ok=%v, got %v", tt.wantOK, gotOK)
@@ -240,19 +220,19 @@ func TestJellyfinWebhookRejectsUnsupportedActions(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			resetAPIStateForTest(t)
-			SetChannels([]string{"jankos"})
-			SetJellyfinWebhookSecret("shared-secret")
+			fixture := newAPITestFixture(t)
+			fixture.state.SetChannels([]string{"jankos"})
+			fixture.state.SetJellyfinWebhookSecret("shared-secret")
 
 			req := httptest.NewRequest(http.MethodPost, "/api/jellyfin/webhook", strings.NewReader(test.body))
 			req.Header.Set("X-Jellych-Secret", "shared-secret")
 			rec := httptest.NewRecorder()
-			Handler().ServeHTTP(rec, req)
+			fixture.api.Handler().ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 			}
-			if counts := GetPlayingCounts(time.Now()); len(counts) != 0 {
+			if counts := fixture.api.playback.GetPlayingCounts(time.Now()); len(counts) != 0 {
 				t.Fatalf("unsupported action recorded playback sessions: %#v", counts)
 			}
 		})
@@ -276,17 +256,17 @@ func TestPlayingEndpointRejectsUnsupportedActions(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			resetAPIStateForTest(t)
-			SetChannels([]string{"jankos"})
+			fixture := newAPITestFixture(t)
+			fixture.state.SetChannels([]string{"jankos"})
 
 			req := httptest.NewRequest(http.MethodPost, "/api/playing/jankos", strings.NewReader(test.body))
 			rec := httptest.NewRecorder()
-			Handler().ServeHTTP(rec, req)
+			fixture.api.Handler().ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 			}
-			if counts := GetPlayingCounts(time.Now()); len(counts) != 0 {
+			if counts := fixture.api.playback.GetPlayingCounts(time.Now()); len(counts) != 0 {
 				t.Fatalf("unsupported action recorded playback sessions: %#v", counts)
 			}
 		})
@@ -294,11 +274,11 @@ func TestPlayingEndpointRejectsUnsupportedActions(t *testing.T) {
 }
 
 func TestStopChannelIsIdempotentWhenNotRunning(t *testing.T) {
-	resetAPIStateForTest(t)
+	fixture := newAPITestFixture(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/stop/notrunning", nil)
 	rec := httptest.NewRecorder()
 
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
@@ -321,11 +301,11 @@ func TestIsIdempotentStopError(t *testing.T) {
 }
 
 func TestTextEndpointsUsePlainTextContentType(t *testing.T) {
-	resetAPIStateForTest(t)
+	fixture := newAPITestFixture(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/stop/notrunning", nil)
 	rec := httptest.NewRecorder()
 
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if got := rec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
 		t.Fatalf("expected text/plain content type, got %q", got)
@@ -333,7 +313,7 @@ func TestTextEndpointsUsePlainTextContentType(t *testing.T) {
 }
 
 func TestBuildM3UIncludesLogoMetadata(t *testing.T) {
-	playlist := BuildM3U(
+	playlist := (&APIState{}).BuildM3U(
 		[]string{"jankos"},
 		[]Status{{Name: "jankos", Online: true, Viewers: 42}},
 		map[string]string{"jankos": "https://cdn.test/jankos.png"},
@@ -344,7 +324,7 @@ func TestBuildM3UIncludesLogoMetadata(t *testing.T) {
 }
 
 func TestBuildM3UEscapesLogoMetadata(t *testing.T) {
-	playlist := BuildM3U(
+	playlist := (&APIState{}).BuildM3U(
 		[]string{"jankos"},
 		[]Status{{Name: "jankos", Online: true}},
 		map[string]string{"jankos": `https://cdn.test/path\"logo".png`},
@@ -355,7 +335,7 @@ func TestBuildM3UEscapesLogoMetadata(t *testing.T) {
 }
 
 func TestBuildM3USkipsOfflineChannels(t *testing.T) {
-	playlist := BuildM3U(
+	playlist := (&APIState{}).BuildM3U(
 		[]string{"jankos", "caedrel"},
 		[]Status{
 			{Name: "jankos", Online: true, Viewers: 42},
@@ -375,10 +355,10 @@ func TestBuildM3USkipsOfflineChannels(t *testing.T) {
 }
 
 func TestBuildVODM3UIncludesVODEntries(t *testing.T) {
-	resetAPIStateForTest(t)
-	SetPlaylistBaseURL("https://jellych.test")
+	fixture := newAPITestFixture(t)
+	fixture.state.SetPlaylistBaseURL("https://jellych.test")
 
-	playlist := BuildVODM3U([]VOD{{
+	playlist := fixture.state.BuildVODM3U([]VOD{{
 		ID:      "123456789",
 		URL:     "https://www.twitch.tv/videos/123456789",
 		Title:   "Nice Game",
@@ -410,17 +390,15 @@ func TestPrepareVODDerivesURLFromID(t *testing.T) {
 }
 
 func TestDownloadVODRequiresConfiguredFolder(t *testing.T) {
-	resetAPIStateForTest(t)
-	SetVODs([]VOD{{
+	fixture := newAPITestFixture(t)
+	fixture.state.SetVODs([]VOD{{
 		ID:  "123456789",
 		URL: "https://www.twitch.tv/videos/123456789",
 	}})
-	stream.SetVODDownloadDir("")
-
 	req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/download", nil)
 	rec := httptest.NewRecorder()
 
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, rec.Code)
@@ -444,11 +422,11 @@ func TestDownloadVODAcceptsPresetsAndDefaultsToOriginal(t *testing.T) {
 		{name: "vp9", body: `{"preset":"vp9"}`, want: stream.VODDownloadPresetVP9},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			resetAPIStateForTest(t)
-			SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789", Duration: "2h3m4s"}})
+			fixture := newAPITestFixture(t)
+			fixture.state.SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789", Duration: "2h3m4s"}})
 			var got stream.VODDownloadPreset
 			var gotDuration time.Duration
-			defaultAPI.streams.StartVODDownload = func(_ context.Context, _, _, _, _ string, preset stream.VODDownloadPreset, duration time.Duration) error {
+			fixture.api.streams.StartVODDownload = func(_ context.Context, _, _, _, _ string, preset stream.VODDownloadPreset, duration time.Duration) error {
 				got = preset
 				gotDuration = duration
 				return nil
@@ -456,7 +434,7 @@ func TestDownloadVODAcceptsPresetsAndDefaultsToOriginal(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/download", strings.NewReader(tt.body))
 			rec := httptest.NewRecorder()
-			Handler().ServeHTTP(rec, req)
+			fixture.api.Handler().ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusAccepted {
 				t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, rec.Code, rec.Body.String())
@@ -474,17 +452,17 @@ func TestDownloadVODAcceptsPresetsAndDefaultsToOriginal(t *testing.T) {
 func TestDownloadVODRejectsInvalidPresetPayloads(t *testing.T) {
 	for _, body := range []string{`{"preset":"av1"}`, `{`, `null`, `{"preset":"h264","extra":true}`} {
 		t.Run(body, func(t *testing.T) {
-			resetAPIStateForTest(t)
-			SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+			fixture := newAPITestFixture(t)
+			fixture.state.SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
 			called := false
-			defaultAPI.streams.StartVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error {
+			fixture.api.streams.StartVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error {
 				called = true
 				return nil
 			}
 
 			req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/download", strings.NewReader(body))
 			rec := httptest.NewRecorder()
-			Handler().ServeHTTP(rec, req)
+			fixture.api.Handler().ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
@@ -497,17 +475,17 @@ func TestDownloadVODRejectsInvalidPresetPayloads(t *testing.T) {
 }
 
 func TestDownloadVODRejectsOversizedPayload(t *testing.T) {
-	resetAPIStateForTest(t)
-	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+	fixture := newAPITestFixture(t)
+	fixture.state.SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
 	called := false
-	defaultAPI.streams.StartVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error {
+	fixture.api.streams.StartVODDownload = func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error {
 		called = true
 		return nil
 	}
 	body := `{"preset":"original","padding":"` + strings.Repeat("x", maxJSONRequestBytes) + `"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/download", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
@@ -518,18 +496,18 @@ func TestDownloadVODRejectsOversizedPayload(t *testing.T) {
 }
 
 func TestConvertVODPassesValidatedPreset(t *testing.T) {
-	resetAPIStateForTest(t)
-	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+	fixture := newAPITestFixture(t)
+	fixture.state.SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
 	var gotID string
 	var gotPreset stream.VODDownloadPreset
-	defaultAPI.streams.ConvertVODDownload = func(_ context.Context, id string, preset stream.VODDownloadPreset) error {
+	fixture.api.streams.ConvertVODDownload = func(_ context.Context, id string, preset stream.VODDownloadPreset) error {
 		gotID = id
 		gotPreset = preset
 		return nil
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/convert", strings.NewReader(`{"preset":"hevc"}`))
 	rec := httptest.NewRecorder()
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusAccepted, rec.Code, rec.Body.String())
@@ -540,14 +518,14 @@ func TestConvertVODPassesValidatedPreset(t *testing.T) {
 }
 
 func TestConvertVODMapsOriginalTargetError(t *testing.T) {
-	resetAPIStateForTest(t)
-	SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
-	defaultAPI.streams.ConvertVODDownload = func(context.Context, string, stream.VODDownloadPreset) error {
+	fixture := newAPITestFixture(t)
+	fixture.state.SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
+	fixture.api.streams.ConvertVODDownload = func(context.Context, string, stream.VODDownloadPreset) error {
 		return stream.ErrVODConversionTargetOriginal
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/vods/123456789/convert", strings.NewReader(`{"preset":"original"}`))
 	rec := httptest.NewRecorder()
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
@@ -555,10 +533,10 @@ func TestConvertVODMapsOriginalTargetError(t *testing.T) {
 }
 
 func TestRemoveVODCascadesDownloadedArtifacts(t *testing.T) {
-	resetAPIStateForTest(t)
+	fixture := newAPITestFixture(t)
 	dir := t.TempDir()
-	stream.SetVODDownloadDir(dir)
-	SetVODs([]VOD{{
+	fixture.setVODDownloader(dir, 30*24*time.Hour)
+	fixture.state.SetVODs([]VOD{{
 		ID:  "123456789",
 		URL: "https://www.twitch.tv/videos/123456789",
 	}})
@@ -569,12 +547,12 @@ func TestRemoveVODCascadesDownloadedArtifacts(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/vods/123456789", nil)
 	rec := httptest.NewRecorder()
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
 	}
-	if _, ok := FindVOD("123456789"); ok {
+	if _, ok := fixture.state.FindVOD("123456789"); ok {
 		t.Fatal("expected vod metadata to be removed")
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -583,9 +561,9 @@ func TestRemoveVODCascadesDownloadedArtifacts(t *testing.T) {
 }
 
 func TestDeleteVODDownloadDoesNotRequireMetadata(t *testing.T) {
-	resetAPIStateForTest(t)
+	fixture := newAPITestFixture(t)
 	dir := t.TempDir()
-	stream.SetVODDownloadDir(dir)
+	fixture.setVODDownloader(dir, 30*24*time.Hour)
 	path := filepath.Join(dir, "123456789.mkv")
 	if err := os.WriteFile(path, []byte("orphaned"), 0644); err != nil {
 		t.Fatalf("failed to create orphaned vod file: %v", err)
@@ -593,7 +571,7 @@ func TestDeleteVODDownloadDoesNotRequireMetadata(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/vods/123456789/download", nil)
 	rec := httptest.NewRecorder()
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
@@ -604,19 +582,19 @@ func TestDeleteVODDownloadDoesNotRequireMetadata(t *testing.T) {
 }
 
 func TestGetVODPlaylistReturnsForbiddenForRestrictedManifest(t *testing.T) {
-	resetAPIStateForTest(t)
-	SetVODs([]VOD{{
+	fixture := newAPITestFixture(t)
+	fixture.state.SetVODs([]VOD{{
 		ID:  "123456789",
 		URL: "https://www.twitch.tv/videos/123456789",
 	}})
-	defaultAPI.streams.ResolveVODPlaylist = func(context.Context, string) ([]byte, error) {
+	fixture.api.streams.ResolveVODPlaylist = func(context.Context, string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: Twitch rejected the VOD manifest", stream.ErrVODManifestRestricted)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/vod/123456789/index.m3u8", nil)
 	rec := httptest.NewRecorder()
 
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rec.Code)
@@ -627,12 +605,10 @@ func TestGetVODPlaylistReturnsForbiddenForRestrictedManifest(t *testing.T) {
 }
 
 func TestVODListIncludesDownloadStatus(t *testing.T) {
-	resetAPIStateForTest(t)
+	fixture := newAPITestFixture(t)
 	dir := t.TempDir()
-	stream.SetVODDownloadDir(dir)
-	stream.SetVODDownloadRetention(30 * 24 * time.Hour)
-	t.Cleanup(func() { stream.SetVODDownloadRetention(30 * 24 * time.Hour) })
-	SetVODs([]VOD{{
+	fixture.setVODDownloader(dir, 30*24*time.Hour)
+	fixture.state.SetVODs([]VOD{{
 		ID:  "123456789",
 		URL: "https://www.twitch.tv/videos/123456789",
 	}})
@@ -648,7 +624,7 @@ func TestVODListIncludesDownloadStatus(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/vods", nil)
 	rec := httptest.NewRecorder()
 
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
@@ -679,9 +655,9 @@ func TestVODListIncludesDownloadStatus(t *testing.T) {
 }
 
 func TestVODListIncludesUnknownDownloadSize(t *testing.T) {
-	resetAPIStateForTest(t)
-	stream.SetVODDownloadDir(t.TempDir())
-	SetVODs([]VOD{{
+	fixture := newAPITestFixture(t)
+	fixture.setVODDownloader(t.TempDir(), 30*24*time.Hour)
+	fixture.state.SetVODs([]VOD{{
 		ID:  "123456789",
 		URL: "https://www.twitch.tv/videos/123456789",
 	}})
@@ -689,7 +665,7 @@ func TestVODListIncludesUnknownDownloadSize(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/vods", nil)
 	rec := httptest.NewRecorder()
 
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
@@ -709,10 +685,10 @@ func TestVODListIncludesUnknownDownloadSize(t *testing.T) {
 }
 
 func TestGetVODDownloadProgressEndpoint(t *testing.T) {
-	resetAPIStateForTest(t)
+	fixture := newAPITestFixture(t)
 	dir := t.TempDir()
-	stream.SetVODDownloadDir(dir)
-	SetVODs([]VOD{{
+	fixture.setVODDownloader(dir, 30*24*time.Hour)
+	fixture.state.SetVODs([]VOD{{
 		ID:  "123456789",
 		URL: "https://www.twitch.tv/videos/123456789",
 	}})
@@ -724,7 +700,7 @@ func TestGetVODDownloadProgressEndpoint(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/vods/123456789/download", nil)
 	rec := httptest.NewRecorder()
 
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
@@ -749,7 +725,7 @@ func TestGetVODDownloadProgressEndpoint(t *testing.T) {
 }
 
 func TestBuildVODM3UEscapesMetadataAttributes(t *testing.T) {
-	playlist := BuildVODM3U([]VOD{{
+	playlist := (&APIState{}).BuildVODM3U([]VOD{{
 		ID:    "123",
 		URL:   "https://www.twitch.tv/videos/123",
 		Title: `Title "With Quotes"`,
@@ -761,7 +737,7 @@ func TestBuildVODM3UEscapesMetadataAttributes(t *testing.T) {
 }
 
 func TestBuildVODM3UStripsLineBreaksFromMetadata(t *testing.T) {
-	playlist := BuildVODM3U([]VOD{{
+	playlist := (&APIState{}).BuildVODM3U([]VOD{{
 		ID:      "123",
 		URL:     "https://www.twitch.tv/videos/123",
 		Title:   "safe\nhttps://evil.example/stream.m3u8",
@@ -774,7 +750,7 @@ func TestBuildVODM3UStripsLineBreaksFromMetadata(t *testing.T) {
 }
 
 func TestJSONHandlersRejectUnknownFieldsAndTrailingValues(t *testing.T) {
-	resetAPIStateForTest(t)
+	fixture := newAPITestFixture(t)
 	for name, body := range map[string]string{
 		"unknown":  `[{"name":"test","unknown":true}]`,
 		"trailing": `[] []`,
@@ -782,7 +758,7 @@ func TestJSONHandlersRejectUnknownFieldsAndTrailingValues(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/api/status", strings.NewReader(body))
 			rec := httptest.NewRecorder()
-			Handler().ServeHTTP(rec, req)
+			fixture.api.Handler().ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
 			}
@@ -791,21 +767,21 @@ func TestJSONHandlersRejectUnknownFieldsAndTrailingValues(t *testing.T) {
 }
 
 func TestStartStreamRequiresConfiguredChannel(t *testing.T) {
-	resetAPIStateForTest(t)
+	fixture := newAPITestFixture(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/stream/notconfigured", nil)
 	rec := httptest.NewRecorder()
-	Handler().ServeHTTP(rec, req)
+	fixture.api.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
 	}
 }
 
 func TestExpiredJellyfinSessionIsPruned(t *testing.T) {
-	resetAPIStateForTest(t)
+	fixture := newAPITestFixture(t)
 	now := time.Now()
-	defaultAPI.playback.playSessions = map[string]map[string]time.Time{"test": {"session": now.Add(-jellyfinSessionMaxAge - time.Second)}}
-	defaultAPI.playback.jellyfinSessions = map[string]map[string]time.Time{"test": {"session": now.Add(-jellyfinSessionMaxAge - time.Second)}}
-	if counts := GetPlayingCounts(now); counts["test"] != 0 {
+	fixture.api.playback.playSessions = map[string]map[string]time.Time{"test": {"session": now.Add(-jellyfinSessionMaxAge - time.Second)}}
+	fixture.api.playback.jellyfinSessions = map[string]map[string]time.Time{"test": {"session": now.Add(-jellyfinSessionMaxAge - time.Second)}}
+	if counts := fixture.api.playback.GetPlayingCounts(now); counts["test"] != 0 {
 		t.Fatalf("expected expired Jellyfin session to be pruned, got %v", counts)
 	}
 }

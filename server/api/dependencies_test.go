@@ -16,19 +16,23 @@ func TestAPIInstancesIsolateRuntimeStateAndOperations(t *testing.T) {
 	stateTwo.SetChannels([]string{"one"})
 
 	var startsOne, startsTwo int
+	streamsOne := defaultStreamOperations()
+	streamsOne.Start = func(string) error {
+		startsOne++
+		return nil
+	}
+	streamsTwo := defaultStreamOperations()
+	streamsTwo.Start = func(string) error {
+		startsTwo++
+		return nil
+	}
 	apiOne := NewWithDependencies(stateOne, Dependencies{
-		Now: func() time.Time { return now },
-		Streams: StreamOperations{Start: func(string) error {
-			startsOne++
-			return nil
-		}},
+		Now:     func() time.Time { return now },
+		Streams: streamsOne,
 	})
 	apiTwo := NewWithDependencies(stateTwo, Dependencies{
-		Now: func() time.Time { return now },
-		Streams: StreamOperations{Start: func(string) error {
-			startsTwo++
-			return nil
-		}},
+		Now:     func() time.Time { return now },
+		Streams: streamsTwo,
 	})
 
 	start := httptest.NewRequest(http.MethodPost, "/api/stream/one", nil)
@@ -63,4 +67,57 @@ func TestAPIInstancesIsolateRuntimeStateAndOperations(t *testing.T) {
 	if _, ok := apiTwo.vodMediaRegistry.lookup("vod", token, now); ok {
 		t.Fatal("second API inherited first API's VOD media token")
 	}
+}
+
+func TestNewWithDependenciesRejectsPartialStreamOperations(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("expected partial stream operations to panic")
+		}
+	}()
+
+	NewWithDependencies(&APIState{}, Dependencies{
+		Streams: StreamOperations{Start: func(string) error { return nil }},
+	})
+}
+
+func completeTestStreamOperations(overrides StreamOperations) StreamOperations {
+	operations := defaultStreamOperations()
+	if overrides.Start != nil {
+		operations.Start = overrides.Start
+	}
+	if overrides.StopChannel != nil {
+		operations.StopChannel = overrides.StopChannel
+	}
+	if overrides.ActiveChannels != nil {
+		operations.ActiveChannels = overrides.ActiveChannels
+	}
+	if overrides.PlaylistSegmentCount != nil {
+		operations.PlaylistSegmentCount = overrides.PlaylistSegmentCount
+	}
+	if overrides.VODDownloadStatus != nil {
+		operations.VODDownloadStatus = overrides.VODDownloadStatus
+	}
+	if overrides.GetVODDownloadProgress != nil {
+		operations.GetVODDownloadProgress = overrides.GetVODDownloadProgress
+	}
+	if overrides.StartVODDownload != nil {
+		operations.StartVODDownload = overrides.StartVODDownload
+	}
+	if overrides.ConvertVODDownload != nil {
+		operations.ConvertVODDownload = overrides.ConvertVODDownload
+	}
+	if overrides.DeleteVODDownload != nil {
+		operations.DeleteVODDownload = overrides.DeleteVODDownload
+	}
+	if overrides.OpenVODDownload != nil {
+		operations.OpenVODDownload = overrides.OpenVODDownload
+	}
+	if overrides.RemoveVODWithArtifacts != nil {
+		operations.RemoveVODWithArtifacts = overrides.RemoveVODWithArtifacts
+	}
+	if overrides.ResolveVODPlaylist != nil {
+		operations.ResolveVODPlaylist = overrides.ResolveVODPlaylist
+	}
+	return operations
 }

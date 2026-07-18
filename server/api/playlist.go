@@ -8,11 +8,6 @@ import (
 )
 
 // SetPlaylistBaseURL configures the absolute server URL used in M3U entries.
-// The application requires this to be set at startup.
-func SetPlaylistBaseURL(raw string) {
-	defaultState.SetPlaylistBaseURL(raw)
-}
-
 func (s *APIState) SetPlaylistBaseURL(raw string) {
 	raw = strings.TrimSpace(raw)
 	s.playlistMu.Lock()
@@ -27,10 +22,6 @@ func (s *APIState) playlistBaseURL() string {
 }
 
 // BuildM3U builds a live-channel M3U playlist from configured channels and statuses.
-func BuildM3U(channels []string, statuses []Status, logos map[string]string) string {
-	return defaultState.BuildM3U(channels, statuses, logos)
-}
-
 func (s *APIState) BuildM3U(channels []string, statuses []Status, logos map[string]string) string {
 	statusByName := make(map[string]Status, len(statuses))
 	for _, s := range statuses {
@@ -73,10 +64,6 @@ func (s *APIState) playlistLocalVODURL(id string) string {
 }
 
 // BuildVODM3U builds a VOD M3U playlist from persisted VOD metadata.
-func BuildVODM3U(vods []VOD) string {
-	return defaultState.BuildVODM3U(vods)
-}
-
 func (s *APIState) BuildVODM3U(vods []VOD) string {
 	return s.buildVODM3U(vods, nil)
 }

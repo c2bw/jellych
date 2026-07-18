@@ -11,11 +11,6 @@ import (
 	"time"
 )
 
-// StartVODDownloadCleanup removes expired downloads immediately and once per hour.
-func StartVODDownloadCleanup(ctx context.Context) {
-	vodDownloadState.StartCleanup(ctx)
-}
-
 // StartCleanup removes expired downloads immediately and once per hour.
 func (d *VODDownloader) StartCleanup(ctx context.Context) {
 	d.runCleanup(time.Now())
@@ -42,10 +37,6 @@ func (d *VODDownloader) runCleanup(now time.Time) {
 	if deleted > 0 {
 		slog.Info("cleaned up expired vod downloads", "deleted", deleted)
 	}
-}
-
-func cleanupExpiredVODDownloads(now time.Time) (int, error) {
-	return vodDownloadState.cleanupExpired(now)
 }
 
 func (d *VODDownloader) cleanupExpired(now time.Time) (int, error) {
@@ -219,10 +210,6 @@ func (d *VODDownloader) removeInterruptedPartial(dir, path string) (bool, error)
 		return false, err
 	}
 	return true, nil
-}
-
-func removeExpiredVODDownload(dir, id, path string) (bool, error) {
-	return vodDownloadState.removeExpired(dir, id, path)
 }
 
 func (d *VODDownloader) removeExpired(dir, id, path string) (bool, error) {

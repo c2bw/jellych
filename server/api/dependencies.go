@@ -10,8 +10,8 @@ import (
 )
 
 // StreamOperations contains the stateful stream operations used by the API.
-// Supplying an instance lets callers isolate API servers in tests or run more
-// than one API server with independent stream backends.
+// Callers must either leave the value empty or supply every operation so one
+// API instance cannot accidentally span multiple stream backends.
 type StreamOperations struct {
 	Start                  func(string) error
 	StopChannel            func(string) error
@@ -28,7 +28,7 @@ type StreamOperations struct {
 }
 
 // Dependencies configures runtime services owned by an API instance. Zero
-// fields use the package's production implementations.
+// fields use independently owned defaults.
 type Dependencies struct {
 	Streams            StreamOperations
 	VODMediaHTTPClient *http.Client
@@ -36,59 +36,52 @@ type Dependencies struct {
 }
 
 func defaultStreamOperations() StreamOperations {
+	services := stream.NewServices("")
+	return NewStreamOperations(services.Streams, services.Downloads)
+}
+
+// NewStreamOperations adapts explicitly owned stream services for an API.
+func NewStreamOperations(registry *stream.StreamRegistry, downloads *stream.VODDownloader) StreamOperations {
 	return StreamOperations{
-		Start:                  stream.Start,
-		StopChannel:            stream.StopChannel,
-		ActiveChannels:         stream.ActiveChannels,
-		PlaylistSegmentCount:   stream.PlaylistSegmentCount,
-		VODDownloadStatus:      stream.VODDownloadStatus,
-		GetVODDownloadProgress: stream.GetVODDownloadProgress,
-		StartVODDownload:       stream.StartVODDownloadWithPresetAndDuration,
-		ConvertVODDownload:     stream.ConvertVODDownload,
-		DeleteVODDownload:      stream.DeleteVODDownload,
-		OpenVODDownload:        stream.OpenVODDownload,
-		RemoveVODWithArtifacts: stream.RemoveVODWithArtifacts,
+		Start:                  registry.Start,
+		StopChannel:            registry.StopChannel,
+		ActiveChannels:         registry.ActiveChannels,
+		PlaylistSegmentCount:   registry.PlaylistSegmentCount,
+		VODDownloadStatus:      downloads.Status,
+		GetVODDownloadProgress: downloads.Progress,
+		StartVODDownload:       downloads.StartWithPresetAndDuration,
+		ConvertVODDownload:     downloads.Convert,
+		DeleteVODDownload:      downloads.Delete,
+		OpenVODDownload:        downloads.Open,
+		RemoveVODWithArtifacts: downloads.RemoveWithArtifacts,
 		ResolveVODPlaylist:     stream.ResolveVODPlaylist,
 	}
 }
 
 func fillStreamOperationDefaults(operations StreamOperations) StreamOperations {
-	defaults := defaultStreamOperations()
-	if operations.Start == nil {
-		operations.Start = defaults.Start
+	if operations.empty() {
+		return defaultStreamOperations()
 	}
-	if operations.StopChannel == nil {
-		operations.StopChannel = defaults.StopChannel
-	}
-	if operations.ActiveChannels == nil {
-		operations.ActiveChannels = defaults.ActiveChannels
-	}
-	if operations.PlaylistSegmentCount == nil {
-		operations.PlaylistSegmentCount = defaults.PlaylistSegmentCount
-	}
-	if operations.VODDownloadStatus == nil {
-		operations.VODDownloadStatus = defaults.VODDownloadStatus
-	}
-	if operations.GetVODDownloadProgress == nil {
-		operations.GetVODDownloadProgress = defaults.GetVODDownloadProgress
-	}
-	if operations.StartVODDownload == nil {
-		operations.StartVODDownload = defaults.StartVODDownload
-	}
-	if operations.ConvertVODDownload == nil {
-		operations.ConvertVODDownload = defaults.ConvertVODDownload
-	}
-	if operations.DeleteVODDownload == nil {
-		operations.DeleteVODDownload = defaults.DeleteVODDownload
-	}
-	if operations.OpenVODDownload == nil {
-		operations.OpenVODDownload = defaults.OpenVODDownload
-	}
-	if operations.RemoveVODWithArtifacts == nil {
-		operations.RemoveVODWithArtifacts = defaults.RemoveVODWithArtifacts
-	}
-	if operations.ResolveVODPlaylist == nil {
-		operations.ResolveVODPlaylist = defaults.ResolveVODPlaylist
+	if !operations.complete() {
+		panic("api: StreamOperations must be either empty or complete")
 	}
 	return operations
+}
+
+func (operations StreamOperations) empty() bool {
+	return operations.Start == nil && operations.StopChannel == nil && operations.ActiveChannels == nil &&
+		operations.PlaylistSegmentCount == nil && operations.VODDownloadStatus == nil &&
+		operations.GetVODDownloadProgress == nil && operations.StartVODDownload == nil &&
+		operations.ConvertVODDownload == nil && operations.DeleteVODDownload == nil &&
+		operations.OpenVODDownload == nil && operations.RemoveVODWithArtifacts == nil &&
+		operations.ResolveVODPlaylist == nil
+}
+
+func (operations StreamOperations) complete() bool {
+	return operations.Start != nil && operations.StopChannel != nil && operations.ActiveChannels != nil &&
+		operations.PlaylistSegmentCount != nil && operations.VODDownloadStatus != nil &&
+		operations.GetVODDownloadProgress != nil && operations.StartVODDownload != nil &&
+		operations.ConvertVODDownload != nil && operations.DeleteVODDownload != nil &&
+		operations.OpenVODDownload != nil && operations.RemoveVODWithArtifacts != nil &&
+		operations.ResolveVODPlaylist != nil
 }

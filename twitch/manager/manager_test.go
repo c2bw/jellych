@@ -39,8 +39,14 @@ func TestNormalizeChannelConfigLowercasesAndTrims(t *testing.T) {
 	}
 }
 
+func TestStartWithStateRequiresExplicitState(t *testing.T) {
+	if _, err := StartWithState(t.TempDir(), nil); err == nil {
+		t.Fatal("expected missing API state to be rejected")
+	}
+}
+
 func TestCanceledMutationContextPreventsPersistence(t *testing.T) {
-	m, err := Start(t.TempDir())
+	m, err := startTestManager(t.TempDir())
 	if err != nil {
 		t.Fatalf("start manager: %v", err)
 	}
@@ -147,7 +153,7 @@ func TestStartReturnsConfigDirectoryErrors(t *testing.T) {
 		t.Fatalf("failed to create base file: %v", err)
 	}
 
-	_, err := Start(baseFile)
+	_, err := startTestManager(baseFile)
 	if err == nil {
 		t.Fatal("expected Start to return config directory error")
 	}
@@ -160,7 +166,7 @@ func TestStartCreatesEmptySQLiteDatabaseAndIgnoresLegacyJSON(t *testing.T) {
 	if err := os.WriteFile(legacyPath, legacy, 0644); err != nil {
 		t.Fatalf("failed to write legacy channels file: %v", err)
 	}
-	m, err := Start(tmp)
+	m, err := startTestManager(tmp)
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
@@ -182,7 +188,7 @@ func TestStartCreatesEmptySQLiteDatabaseAndIgnoresLegacyJSON(t *testing.T) {
 
 func TestConfigurationPersistsInSQLiteAcrossRestart(t *testing.T) {
 	tmp := t.TempDir()
-	m, err := Start(tmp)
+	m, err := startTestManager(tmp)
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
@@ -196,7 +202,7 @@ func TestConfigurationPersistsInSQLiteAcrossRestart(t *testing.T) {
 	if err := m.Close(); err != nil {
 		t.Fatalf("failed to close database: %v", err)
 	}
-	m, err = Start(tmp)
+	m, err = startTestManager(tmp)
 	if err != nil {
 		t.Fatalf("expected restart to succeed, got %v", err)
 	}
@@ -219,7 +225,7 @@ func TestStartRejectsNewerSchemaVersion(t *testing.T) {
 		t.Fatalf("failed to close database: %v", err)
 	}
 
-	_, err := Start(tmp)
+	_, err := startTestManager(tmp)
 	if err == nil || !strings.Contains(err.Error(), "newer than supported") {
 		t.Fatalf("expected unsupported schema error, got %v", err)
 	}
@@ -243,7 +249,7 @@ func TestStartMigratesVersionOneVODDuration(t *testing.T) {
 		t.Fatalf("failed to close database: %v", err)
 	}
 
-	m, err := Start(tmp)
+	m, err := startTestManager(tmp)
 	if err != nil {
 		t.Fatalf("expected migration to succeed, got %v", err)
 	}
@@ -263,7 +269,7 @@ func TestStartMigratesVersionOneVODDuration(t *testing.T) {
 
 func TestRefreshSavedVODsUpdatesDurationAndPrunesUnavailableVODs(t *testing.T) {
 	tmp := t.TempDir()
-	m, err := Start(tmp)
+	m, err := startTestManager(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +311,7 @@ func TestRefreshSavedVODsUpdatesDurationAndPrunesUnavailableVODs(t *testing.T) {
 
 func TestRefreshSavedVODsDoesNotPruneAfterMetadataFailure(t *testing.T) {
 	tmp := t.TempDir()
-	m, err := Start(tmp)
+	m, err := startTestManager(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +341,7 @@ func TestFailedSchemaMigrationRollsBack(t *testing.T) {
 		t.Fatalf("failed to close database: %v", err)
 	}
 
-	if _, err := Start(tmp); err == nil {
+	if _, err := startTestManager(tmp); err == nil {
 		t.Fatal("expected schema migration to fail")
 	}
 	db = openRawDatabase(t, tmp)
@@ -351,7 +357,7 @@ func TestFailedSchemaMigrationRollsBack(t *testing.T) {
 
 func TestAddVODDoesNotChangeMemoryWhenDatabaseWriteFails(t *testing.T) {
 	tmp := t.TempDir()
-	m, err := Start(tmp)
+	m, err := startTestManager(tmp)
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
@@ -369,7 +375,7 @@ func TestAddVODDoesNotChangeMemoryWhenDatabaseWriteFails(t *testing.T) {
 }
 
 func TestRemoveVODDoesNotChangeMemoryWhenDatabaseWriteFails(t *testing.T) {
-	m, err := Start(t.TempDir())
+	m, err := startTestManager(t.TempDir())
 	if err != nil {
 		t.Fatalf("start manager: %v", err)
 	}
@@ -391,7 +397,7 @@ func TestRemoveVODDoesNotChangeMemoryWhenDatabaseWriteFails(t *testing.T) {
 
 func TestAddChannelDoesNotDeadlock(t *testing.T) {
 	tmp := t.TempDir()
-	m, err := Start(tmp)
+	m, err := startTestManager(tmp)
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
@@ -414,7 +420,7 @@ func TestAddChannelDoesNotDeadlock(t *testing.T) {
 }
 
 func TestManagerReadsRemainAvailableWhileSQLiteWriteWaits(t *testing.T) {
-	m, err := Start(t.TempDir())
+	m, err := startTestManager(t.TempDir())
 	if err != nil {
 		t.Fatalf("start manager: %v", err)
 	}
@@ -469,7 +475,7 @@ func TestManagerReadsRemainAvailableWhileSQLiteWriteWaits(t *testing.T) {
 }
 
 func TestConcurrentVODMutationsRemainSerialized(t *testing.T) {
-	m, err := Start(t.TempDir())
+	m, err := startTestManager(t.TempDir())
 	if err != nil {
 		t.Fatalf("start manager: %v", err)
 	}
@@ -509,16 +515,12 @@ func TestConcurrentVODMutationsRemainSerialized(t *testing.T) {
 
 func TestAddImportedVODsDeduplicatesAndSyncsAPI(t *testing.T) {
 	tmp := t.TempDir()
-	m, err := Start(tmp)
+	state := &api.APIState{}
+	m, err := StartWithState(tmp, state)
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
-	api.SetVODStore(m)
-	t.Cleanup(func() {
-		api.SetVODStore(nil)
-		api.SetVODs(nil)
-	})
 
 	added, err := m.addImportedVODs([]api.VOD{
 		{ID: "123", URL: "https://www.twitch.tv/videos/123", Title: "First"},
@@ -532,7 +534,7 @@ func TestAddImportedVODsDeduplicatesAndSyncsAPI(t *testing.T) {
 		t.Fatalf("expected 2 imported VODs, got %d", added)
 	}
 
-	vods := api.GetVODs()
+	vods := state.GetVODs()
 	if len(vods) != 2 {
 		t.Fatalf("expected API VOD list to contain 2 items, got %d", len(vods))
 	}
@@ -550,16 +552,12 @@ func TestAddImportedVODsDeduplicatesAndSyncsAPI(t *testing.T) {
 
 func TestRemoveVODBlacklistsAndSkipsFutureImports(t *testing.T) {
 	tmp := t.TempDir()
-	m, err := Start(tmp)
+	state := &api.APIState{}
+	m, err := StartWithState(tmp, state)
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
-	api.SetVODStore(m)
-	t.Cleanup(func() {
-		api.SetVODStore(nil)
-		api.SetVODs(nil)
-	})
 
 	added, err := m.addImportedVODs([]api.VOD{
 		{ID: "123", URL: "https://www.twitch.tv/videos/123", Title: "First"},
@@ -591,7 +589,7 @@ func TestRemoveVODBlacklistsAndSkipsFutureImports(t *testing.T) {
 		t.Fatalf("expected only non-blacklisted VOD to be imported, got %d", added)
 	}
 
-	vods := api.GetVODs()
+	vods := state.GetVODs()
 	if len(vods) != 1 || vods[0].ID != "456" {
 		t.Fatalf("expected API VOD list to contain only VOD 456, got %#v", vods)
 	}
@@ -599,18 +597,14 @@ func TestRemoveVODBlacklistsAndSkipsFutureImports(t *testing.T) {
 
 func TestAPIVODStoreUsesManagerAsSourceOfTruth(t *testing.T) {
 	tmp := t.TempDir()
-	m, err := Start(tmp)
+	state := &api.APIState{}
+	m, err := StartWithState(tmp, state)
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
-	api.SetVODStore(m)
-	t.Cleanup(func() {
-		api.SetVODStore(nil)
-		api.SetVODs(nil)
-	})
 
-	if err := api.AddVOD(api.VOD{ID: "123", URL: "https://www.twitch.tv/videos/123", Title: "Manual"}); err != nil {
+	if err := state.AddVOD(api.VOD{ID: "123", URL: "https://www.twitch.tv/videos/123", Title: "Manual"}); err != nil {
 		t.Fatalf("expected manual API add to succeed, got %v", err)
 	}
 	added, err := m.addImportedVODs([]api.VOD{
@@ -623,7 +617,7 @@ func TestAPIVODStoreUsesManagerAsSourceOfTruth(t *testing.T) {
 		t.Fatalf("expected one imported VOD, got %d", added)
 	}
 
-	vods := api.GetVODs()
+	vods := state.GetVODs()
 	if len(vods) != 2 {
 		t.Fatalf("expected API VOD list to contain manual and imported VODs, got %#v", vods)
 	}
@@ -638,7 +632,7 @@ func TestAPIVODStoreUsesManagerAsSourceOfTruth(t *testing.T) {
 
 func TestAddVODRemovesIDFromBlacklist(t *testing.T) {
 	tmp := t.TempDir()
-	m, err := Start(tmp)
+	m, err := startTestManager(tmp)
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}

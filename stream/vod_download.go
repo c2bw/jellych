@@ -98,11 +98,9 @@ type vodDownloadMetadata struct {
 	TotalBitrate    int64
 }
 
-var vodDownloadState = &VODDownloader{retention: defaultVODDownloadRetention}
-
-// SetVODDownloadDir configures the folder used by manual VOD downloads.
-func SetVODDownloadDir(dir string) {
-	vodDownloadState.SetDir(dir)
+// NewVODDownloader returns an independently owned VOD download service.
+func NewVODDownloader() *VODDownloader {
+	return &VODDownloader{retention: defaultVODDownloadRetention}
 }
 
 // SetDir configures the folder used by manual VOD downloads.
@@ -111,11 +109,6 @@ func (d *VODDownloader) SetDir(dir string) {
 	defer d.Unlock()
 	d.dir = strings.TrimSpace(dir)
 	d.presets = nil
-}
-
-// SetVODDownloadRetention configures how long completed VOD downloads are kept.
-func SetVODDownloadRetention(retention time.Duration) {
-	vodDownloadState.SetRetention(retention)
 }
 
 // SetRetention configures how long completed VOD downloads are kept.

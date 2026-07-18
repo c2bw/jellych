@@ -13,22 +13,6 @@ import (
 	"time"
 )
 
-// StartVODDownload resolves a Twitch VOD and downloads it without transcoding.
-
-func StartVODDownload(ctx context.Context, id, vodURL, title, channel string) error {
-	return StartVODDownloadWithPreset(ctx, id, vodURL, title, channel, VODDownloadPresetOriginal)
-}
-
-// StartVODDownloadWithPreset resolves a Twitch VOD and downloads it using preset.
-func StartVODDownloadWithPreset(ctx context.Context, id, vodURL, title, channel string, preset VODDownloadPreset) error {
-	return StartVODDownloadWithPresetAndDuration(ctx, id, vodURL, title, channel, preset, 0)
-}
-
-// StartVODDownloadWithPresetAndDuration resolves a Twitch VOD and downloads it using preset.
-func StartVODDownloadWithPresetAndDuration(ctx context.Context, id, vodURL, title, channel string, preset VODDownloadPreset, totalDuration time.Duration) error {
-	return vodDownloadState.StartWithPresetAndDuration(ctx, id, vodURL, title, channel, preset, totalDuration)
-}
-
 // Start resolves a Twitch VOD and downloads it without transcoding.
 func (d *VODDownloader) Start(ctx context.Context, id, vodURL, title, channel string) error {
 	return d.StartWithPreset(ctx, id, vodURL, title, channel, VODDownloadPresetOriginal)
@@ -171,12 +155,6 @@ func (d *VODDownloader) StartWithPresetAndDuration(ctx context.Context, id, vodU
 	return nil
 }
 
-// ConvertVODDownload converts an original downloaded VOD to a compressed preset.
-
-func ConvertVODDownload(ctx context.Context, id string, preset VODDownloadPreset) error {
-	return vodDownloadState.Convert(ctx, id, preset)
-}
-
 // Convert converts an original downloaded VOD to a compressed preset.
 func (d *VODDownloader) Convert(ctx context.Context, id string, preset VODDownloadPreset) error {
 	id = strings.TrimSpace(id)
@@ -307,11 +285,6 @@ func (d *VODDownloader) Convert(ctx context.Context, id string, preset VODDownlo
 	return nil
 }
 
-// StopVODDownloads attempts to gracefully stop any active VOD downloads.
-func StopVODDownloads() error {
-	return vodDownloadState.Stop()
-}
-
 // Stop attempts to gracefully stop any active VOD downloads.
 func (d *VODDownloader) Stop() error {
 	d.Lock()
@@ -331,10 +304,6 @@ func (d *VODDownloader) Stop() error {
 		}
 	}
 	return errors.Join(stopErrs...)
-}
-
-func clearVODDownload(id string, download *vodDownload) {
-	vodDownloadState.clear(id, download)
 }
 
 func (d *VODDownloader) clear(id string, download *vodDownload) {

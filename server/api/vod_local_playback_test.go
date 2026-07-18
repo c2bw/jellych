@@ -18,7 +18,7 @@ func localPlaybackTestAPI(t *testing.T, operations StreamOperations) *API {
 	t.Helper()
 	state := &APIState{}
 	state.SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
-	return NewWithDependencies(state, Dependencies{Streams: operations})
+	return NewWithDependencies(state, Dependencies{Streams: completeTestStreamOperations(operations)})
 }
 
 func TestDownloadedVODPlaybackServesLocalMKV(t *testing.T) {
@@ -182,9 +182,9 @@ func TestVODM3UAdvertisesDownloadedVODAsMKV(t *testing.T) {
 	state := &APIState{}
 	state.SetPlaylistBaseURL("https://jellych.test")
 	state.SetVODs([]VOD{{ID: "123456789", URL: "https://www.twitch.tv/videos/123456789"}})
-	api := NewWithDependencies(state, Dependencies{Streams: StreamOperations{
+	api := NewWithDependencies(state, Dependencies{Streams: completeTestStreamOperations(StreamOperations{
 		VODDownloadStatus: func(string) (bool, time.Time, error) { return true, time.Time{}, nil },
-	}})
+	})})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/vods.m3u", nil)
 	rec := httptest.NewRecorder()

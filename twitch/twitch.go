@@ -11,23 +11,22 @@ import (
 	"github.com/c2bw/jellych/twitch/manager"
 )
 
-func Start(c *client.TwitchClient, configPath, liveBaseURL string) (func(), error) {
-	return StartContext(context.Background(), c, configPath, liveBaseURL)
-}
-
 // StartContext starts Twitch synchronization under the application context.
-func StartContext(parent context.Context, c *client.TwitchClient, configPath, liveBaseURL string) (func(), error) {
+func StartContext(parent context.Context, c *client.TwitchClient, configPath string, state *api.APIState, downloads *stream.VODDownloader) (func(), error) {
 	if parent == nil {
 		parent = context.Background()
 	}
-	stream.SetLiveBaseURL(liveBaseURL)
-	m, err := manager.Start(configPath)
+	if state == nil {
+		return nil, errors.New("api state is required")
+	}
+	if downloads == nil {
+		return nil, errors.New("vod downloader is required")
+	}
+	m, err := manager.StartWithState(configPath, state)
 	if err != nil {
 		return nil, err
 	}
 	m.SetTwitchClient(c)
-	api.SetChannelStore(m)
-	api.SetVODStore(m)
 	ctx, cancel := context.WithCancel(parent)
 	var wg sync.WaitGroup
 	var stopOnce sync.Once
@@ -38,7 +37,9 @@ func StartContext(parent context.Context, c *client.TwitchClient, configPath, li
 	}()
 	go func() {
 		defer wg.Done()
-		m.SyncVODs(ctx, c, pruneVODIfNoDownload)
+		m.SyncVODs(ctx, c, func(id string, removeMetadata func() error) (bool, error) {
+			return pruneVODIfNoDownload(downloads, id, removeMetadata)
+		})
 	}()
 	return func() {
 		stopOnce.Do(func() {
@@ -49,8 +50,8 @@ func StartContext(parent context.Context, c *client.TwitchClient, configPath, li
 	}, nil
 }
 
-func pruneVODIfNoDownload(id string, removeMetadata func() error) (bool, error) {
-	err := stream.RemoveVODMetadataIfNoDownload(id, removeMetadata)
+func pruneVODIfNoDownload(downloads *stream.VODDownloader, id string, removeMetadata func() error) (bool, error) {
+	err := downloads.RemoveMetadataIfNoDownload(id, removeMetadata)
 	if errors.Is(err, stream.ErrVODDownloadProtected) || errors.Is(err, stream.ErrVODRemovalInProgress) {
 		return false, nil
 	}

@@ -16,18 +16,6 @@ import (
 	"time"
 )
 
-var liveURLMu sync.RWMutex
-var liveBaseURL string
-
-var liveStoreMu sync.RWMutex
-var liveStore map[string]map[string][]byte
-var defaultLiveStore = NewLiveStore(&liveStoreMu, &liveStore)
-var defaultLiveService = &LiveService{
-	store:    defaultLiveStore,
-	registry: defaultStreamRegistry,
-	start:    func(channel string) error { return startLiveChannel(channel) },
-}
-
 const (
 	liveWritePrefix           = "/_live-write/"
 	liveReadPrefix            = "/live/"
@@ -39,33 +27,12 @@ const (
 	liveSegmentDeleteGrace    = 30 * time.Second
 )
 
-var liveWriteToken = newLiveWriteToken()
-
 var (
 	livePlaylistWaitTimeout = 15 * time.Second
 	livePlaylistWaitPoll    = 200 * time.Millisecond
 	liveSegmentWaitTimeout  = 2 * time.Second
 	liveSegmentWaitPoll     = 50 * time.Millisecond
 )
-
-// SetLiveBaseURL configures the local HTTP base URL used by ffmpeg.
-func SetLiveBaseURL(raw string) {
-	raw = strings.TrimSpace(raw)
-	raw = strings.TrimRight(raw, "/")
-	liveURLMu.Lock()
-	liveBaseURL = raw
-	liveURLMu.Unlock()
-}
-
-func getLiveBaseURL() string {
-	liveURLMu.RLock()
-	defer liveURLMu.RUnlock()
-	return liveBaseURL
-}
-
-func getLiveWriteToken() string {
-	return liveWriteToken
-}
 
 func newLiveWriteToken() string {
 	var b [32]byte
@@ -104,20 +71,12 @@ func (s *LiveStore) storeMap() map[string]map[string][]byte {
 	return *s.items
 }
 
-func resetLiveChannel(channel string) {
-	defaultLiveStore.ResetChannel(channel)
-}
-
 func (s *LiveStore) ResetChannel(channel string) {
 	channel = normalizeLiveChannel(channel)
 	s.mu.Lock()
 	s.storeMap()[channel] = make(map[string][]byte)
 	delete(s.deleteAfter, channel)
 	s.mu.Unlock()
-}
-
-func clearLiveChannel(channel string) {
-	defaultLiveStore.ClearChannel(channel)
 }
 
 func (s *LiveStore) ClearChannel(channel string) {
@@ -128,10 +87,6 @@ func (s *LiveStore) ClearChannel(channel string) {
 	}
 	delete(s.deleteAfter, channel)
 	s.mu.Unlock()
-}
-
-func storeLiveObject(channel, name string, data []byte) bool {
-	return defaultLiveStore.StoreObject(channel, name, data)
 }
 
 func (s *LiveStore) StoreObject(channel, name string, data []byte) bool {
@@ -173,10 +128,6 @@ func (s *LiveStore) StoreObject(channel, name string, data []byte) bool {
 		}
 	}
 	return true
-}
-
-func getLiveObject(channel, name string) []byte {
-	return defaultLiveStore.GetObject(channel, name)
 }
 
 func (s *LiveStore) GetObject(channel, name string) []byte {
@@ -260,28 +211,11 @@ type LiveService struct {
 	registry     *StreamRegistry
 	start        func(string) error
 	canAutoStart func(string) bool
-}
-
-// LiveHandler serves in-memory HLS playlists and segments.
-func LiveHandler() http.Handler {
-	return defaultLiveService.LiveHandler()
-}
-
-// NewLiveHandler returns a live handler that only auto-starts channels
-// accepted by canAutoStart. A nil callback disables playlist-driven startup.
-func NewLiveHandler(canAutoStart func(string) bool) http.Handler {
-	service := *defaultLiveService
-	service.canAutoStart = canAutoStart
-	return service.LiveHandler()
+	writeToken   string
 }
 
 func (s *LiveService) LiveHandler() http.Handler {
 	return http.HandlerFunc(s.handleLive)
-}
-
-// LiveWriteHandler accepts internal ffmpeg HLS writes.
-func LiveWriteHandler() http.Handler {
-	return defaultLiveService.LiveWriteHandler()
 }
 
 func (s *LiveService) LiveWriteHandler() http.Handler {
@@ -383,7 +317,7 @@ func (s *LiveService) waitForObject(ctx context.Context, channel, objectName str
 }
 
 func (s *LiveService) handleLiveWrite(w http.ResponseWriter, r *http.Request) {
-	if !authorizeLiveWrite(r) {
+	if !s.authorizeLiveWrite(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -442,9 +376,12 @@ func (s *LiveService) handleLiveWrite(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func authorizeLiveWrite(r *http.Request) bool {
+func (s *LiveService) authorizeLiveWrite(r *http.Request) bool {
+	return authorizeLiveWriteToken(r, s.writeToken)
+}
+
+func authorizeLiveWriteToken(r *http.Request, expected string) bool {
 	provided := strings.TrimSpace(r.Header.Get(liveWriteTokenHeader))
-	expected := getLiveWriteToken()
 	if provided == "" || expected == "" {
 		return false
 	}

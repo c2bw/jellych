@@ -25,6 +25,7 @@ var fetchVODsByIDsContext = twitchapi.VideosByIDsContext
 
 type Manager struct {
 	db           *sql.DB
+	apiState     *api.APIState
 	channels     []channel.Info
 	vods         []api.VOD
 	vodBlacklist map[string]struct{}
@@ -36,16 +37,23 @@ type Manager struct {
 	mutationMu sync.Mutex
 }
 
-func Start(configPath string) (*Manager, error) {
+// StartWithState loads persisted configuration into state and uses the
+// manager as that state's persistence backend.
+func StartWithState(configPath string, state *api.APIState) (*Manager, error) {
+	if state == nil {
+		return nil, errors.New("api state is required")
+	}
 	db, err := openDatabase(configPath)
 	if err != nil {
 		return nil, err
 	}
-	m := &Manager{db: db, channels: []channel.Info{}}
+	m := &Manager{db: db, apiState: state, channels: []channel.Info{}}
 	if err := m.loadConfig(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+	state.SetChannelStore(m)
+	state.SetVODStore(m)
 	return m, nil
 }
 
@@ -306,7 +314,7 @@ func (m *Manager) UpdateStatus(ctx context.Context, c *client.TwitchClient) {
 			m.mu.Lock()
 			m.statuses = nil
 			m.mu.Unlock()
-			api.SetChannelStatus(nil)
+			m.apiState.SetChannelStatus(nil)
 			select {
 			case <-ctx.Done():
 				return
@@ -325,7 +333,7 @@ func (m *Manager) UpdateStatus(ctx context.Context, c *client.TwitchClient) {
 			m.mu.Lock()
 			m.statuses = status
 			m.mu.Unlock()
-			api.SetChannelStatus(toAPIStatuses(status))
+			m.apiState.SetChannelStatus(toAPIStatuses(status))
 		}
 
 		select {

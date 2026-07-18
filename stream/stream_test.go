@@ -13,7 +13,7 @@ import (
 )
 
 func TestBuildFFmpegHLSArgsUsesRelativeSegmentURLs(t *testing.T) {
-	args := buildFFmpegHLSArgs("https://example.test/upstream.m3u8", "http://127.0.0.1/_live-write/testchannel/index.m3u8", testLiveGeneration)
+	args := buildFFmpegHLSArgsWithToken("https://example.test/upstream.m3u8", "http://127.0.0.1/_live-write/testchannel/index.m3u8", testLiveGeneration, "test-token")
 
 	if slices.Contains(args, "-hls_base_url") {
 		t.Fatal("did not expect -hls_base_url; segment URLs must remain relative to the playlist")
@@ -25,7 +25,7 @@ func TestBuildFFmpegHLSArgsUsesRelativeSegmentURLs(t *testing.T) {
 }
 
 func TestBuildFFmpegHLSArgsKeepsTrailingSegments(t *testing.T) {
-	args := buildFFmpegHLSArgs("https://example.test/upstream.m3u8", "http://127.0.0.1/_live-write/testchannel/index.m3u8", testLiveGeneration)
+	args := buildFFmpegHLSArgsWithToken("https://example.test/upstream.m3u8", "http://127.0.0.1/_live-write/testchannel/index.m3u8", testLiveGeneration, "test-token")
 
 	thresholdIndex := slices.Index(args, "-hls_delete_threshold")
 	if thresholdIndex == -1 || thresholdIndex+1 >= len(args) {
@@ -37,14 +37,14 @@ func TestBuildFFmpegHLSArgsKeepsTrailingSegments(t *testing.T) {
 }
 
 func TestBuildFFmpegHLSArgsUsesUniqueUncachedSegments(t *testing.T) {
-	args := buildFFmpegHLSArgs("https://example.test/upstream.m3u8", "http://127.0.0.1/_live-write/testchannel/index.m3u8", testLiveGeneration)
+	args := buildFFmpegHLSArgsWithToken("https://example.test/upstream.m3u8", "http://127.0.0.1/_live-write/testchannel/index.m3u8", testLiveGeneration, "test-token")
 
 	assertArgValue(t, args, "-hls_start_number_source", "epoch")
 	assertArgValue(t, args, "-hls_allow_cache", "0")
 }
 
 func TestBuildFFmpegHLSArgsIncludesGenerationHeader(t *testing.T) {
-	args := buildFFmpegHLSArgs("https://example.test/upstream.m3u8", "http://127.0.0.1/_live-write/testchannel/index.m3u8", testLiveGeneration)
+	args := buildFFmpegHLSArgsWithToken("https://example.test/upstream.m3u8", "http://127.0.0.1/_live-write/testchannel/index.m3u8", testLiveGeneration, "test-token")
 
 	headerIndex := slices.Index(args, "-headers")
 	if headerIndex == -1 || headerIndex+1 >= len(args) {
@@ -67,7 +67,7 @@ func TestLiveWriteCommitDoesNotHoldRegistryLock(t *testing.T) {
 	}
 	var registryMu sync.Mutex
 	managers := map[string]*manager{"testchannel": m}
-	registry := NewStreamRegistry(&registryMu, &managers)
+	registry := newStreamRegistry(&registryMu, &managers)
 	registry.clearChannel = func(string) {}
 
 	commitStarted := make(chan struct{})
@@ -191,11 +191,10 @@ func (c *fakeStreamCommand) finish() {
 }
 
 func TestStopChannelKeepsManagerReservedUntilProcessExits(t *testing.T) {
-	setTestLiveBaseURL(t)
-
 	var registryMu sync.Mutex
 	managers := make(map[string]*manager)
-	registry := NewStreamRegistry(&registryMu, &managers)
+	registry := newStreamRegistry(&registryMu, &managers)
+	registry.liveBaseURL = func() string { return "http://127.0.0.1:8080" }
 	cmd := newFakeStreamCommand()
 	registry.resolve = successfulTestResolver
 	registry.newCommand = func(string, string, string) streamCommand { return cmd }
@@ -241,11 +240,10 @@ func TestStopChannelKeepsManagerReservedUntilProcessExits(t *testing.T) {
 }
 
 func TestStopChannelWaitsForForcedKillToComplete(t *testing.T) {
-	setTestLiveBaseURL(t)
-
 	var registryMu sync.Mutex
 	managers := make(map[string]*manager)
-	registry := NewStreamRegistry(&registryMu, &managers)
+	registry := newStreamRegistry(&registryMu, &managers)
+	registry.liveBaseURL = func() string { return "http://127.0.0.1:8080" }
 	cmd := newFakeStreamCommand()
 	registry.resolve = successfulTestResolver
 	registry.newCommand = func(string, string, string) streamCommand { return cmd }
@@ -275,11 +273,10 @@ func TestStopChannelWaitsForForcedKillToComplete(t *testing.T) {
 }
 
 func TestStopChannelCancelsInProgressStartup(t *testing.T) {
-	setTestLiveBaseURL(t)
-
 	var registryMu sync.Mutex
 	managers := make(map[string]*manager)
-	registry := NewStreamRegistry(&registryMu, &managers)
+	registry := newStreamRegistry(&registryMu, &managers)
+	registry.liveBaseURL = func() string { return "http://127.0.0.1:8080" }
 	resolving := make(chan struct{})
 	registry.resolve = func(ctx context.Context, _ string) (string, string, error) {
 		close(resolving)
@@ -311,11 +308,4 @@ func TestStopChannelCancelsInProgressStartup(t *testing.T) {
 
 func successfulTestResolver(context.Context, string) (string, string, error) {
 	return "https://example.test/live.m3u8", "source", nil
-}
-
-func setTestLiveBaseURL(t *testing.T) {
-	t.Helper()
-	original := getLiveBaseURL()
-	SetLiveBaseURL("http://127.0.0.1:8080")
-	t.Cleanup(func() { SetLiveBaseURL(original) })
 }

@@ -68,18 +68,6 @@ func metadataValue(tags map[string]string, name string) string {
 	return ""
 }
 
-// VODDownloadExists reports whether a finished VOD download exists on disk.
-func VODDownloadExists(id string) (bool, error) {
-	exists, _, err := vodDownloadState.Status(id)
-	return exists, err
-}
-
-// VODDownloadStatus reports whether a completed download exists and when it
-// becomes eligible for retention cleanup.
-func VODDownloadStatus(id string) (bool, time.Time, error) {
-	return vodDownloadState.Status(id)
-}
-
 // Status reports whether a completed download exists and when it becomes
 // eligible for retention cleanup.
 func (d *VODDownloader) Status(id string) (bool, time.Time, error) {
@@ -115,12 +103,6 @@ func (d *VODDownloader) Status(id string) (bool, time.Time, error) {
 		return false, time.Time{}, nil
 	}
 	return false, time.Time{}, fmt.Errorf("failed to check vod output file: %w", err)
-}
-
-// GetVODDownloadProgress returns the current progress for an active download,
-// or the completed file status when no download is running.
-func GetVODDownloadProgress(id string) (VODDownloadProgress, error) {
-	return vodDownloadState.Progress(id)
 }
 
 // Progress returns the current progress for an active download, or completed
@@ -171,10 +153,6 @@ func (d *VODDownloader) readProgress(id string, download *vodDownload, r io.Read
 	if err := scanner.Err(); err != nil {
 		slog.Debug("ffmpeg-vod progress stream ended with error", "id", id, "error", err)
 	}
-}
-
-func updateVODDownloadProgress(id string, download *vodDownload, key, value string) {
-	vodDownloadState.updateProgress(id, download, key, value)
 }
 
 func (d *VODDownloader) updateProgress(id string, download *vodDownload, key, value string) {

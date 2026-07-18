@@ -17,11 +17,6 @@ import (
 	twitch "github.com/c2bw/twitch-url-extractor"
 )
 
-var mu sync.Mutex
-var mgrs map[string]*manager
-var startLiveChannel = Start
-var defaultStreamRegistry = NewStreamRegistry(&mu, &mgrs)
-
 // ErrStopTimeout indicates a stream process did not exit before the shutdown timeout.
 var ErrStopTimeout = errors.New("stop timeout")
 var ErrAlreadyStarted = errors.New("stream already started")
@@ -37,12 +32,6 @@ func ValidateChannelName(name string) error {
 		return fmt.Errorf("invalid channel name")
 	}
 	return nil
-}
-
-// ActiveChannels returns a slice of channel names that currently have
-// active stream managers.
-func ActiveChannels() []string {
-	return defaultStreamRegistry.ActiveChannels()
 }
 
 // ActiveChannels returns a slice of channel names that currently have active
@@ -62,11 +51,6 @@ func (r *StreamRegistry) ActiveChannels() []string {
 }
 
 // IsChannelActive reports whether a channel currently has an active stream manager.
-func IsChannelActive(channel string) bool {
-	return defaultStreamRegistry.IsChannelActive(channel)
-}
-
-// IsChannelActive reports whether a channel currently has an active stream manager.
 func (r *StreamRegistry) IsChannelActive(channel string) bool {
 	if err := ValidateChannelName(channel); err != nil {
 		return false
@@ -83,12 +67,12 @@ func (r *StreamRegistry) IsChannelActive(channel string) bool {
 
 // PlaylistSegmentCount returns the current number of media segment entries
 // in the channel's index.m3u8 playlist.
-func PlaylistSegmentCount(channel string) (int, error) {
+func (r *StreamRegistry) PlaylistSegmentCount(channel string) (int, error) {
 	if err := ValidateChannelName(channel); err != nil {
 		return 0, err
 	}
 
-	playlist := getLiveObject(channel, "index.m3u8")
+	playlist := r.getObject(channel, "index.m3u8")
 	if playlist == nil {
 		return 0, nil
 	}
@@ -181,20 +165,30 @@ type StreamRegistry struct {
 	managers        *map[string]*manager
 	resolve         func(context.Context, string) (string, string, error)
 	newCommand      func(string, string, string) streamCommand
+	liveBaseURL     func() string
+	getObject       func(string, string) []byte
 	resetChannel    func(string)
 	clearChannel    func(string)
 	stopTimeout     time.Duration
 	stopsInProgress int
 }
 
-func NewStreamRegistry(mu *sync.Mutex, managers *map[string]*manager) *StreamRegistry {
+func newStreamRegistry(mu *sync.Mutex, managers *map[string]*manager) *StreamRegistry {
+	var storeMu sync.RWMutex
+	items := make(map[string]map[string][]byte)
+	store := NewLiveStore(&storeMu, &items)
+	token := newLiveWriteToken()
 	return &StreamRegistry{
-		mu:           mu,
-		managers:     managers,
-		resolve:      resolveLiveStreamURL,
-		newCommand:   newFFmpegCommand,
-		resetChannel: resetLiveChannel,
-		clearChannel: clearLiveChannel,
+		mu:       mu,
+		managers: managers,
+		resolve:  resolveLiveStreamURL,
+		newCommand: func(inputURL, playlistURL, generation string) streamCommand {
+			return newFFmpegCommandWithToken(inputURL, playlistURL, generation, token)
+		},
+		liveBaseURL:  func() string { return "" },
+		getObject:    store.GetObject,
+		resetChannel: store.ResetChannel,
+		clearChannel: store.ClearChannel,
 		stopTimeout:  defaultStreamStopTimeout,
 	}
 }
@@ -208,17 +202,11 @@ func (r *StreamRegistry) managerMap() map[string]*manager {
 
 // Start begins streaming for the given channel. It returns an error if
 // streaming is already started or if commands fail to start.
-func Start(channel string) error {
-	return defaultStreamRegistry.Start(channel)
-}
-
-// Start begins streaming for the given channel. It returns an error if
-// streaming is already started or if commands fail to start.
 func (r *StreamRegistry) Start(channel string) error {
 	if err := ValidateChannelName(channel); err != nil {
 		return err
 	}
-	configuredLiveBaseURL := getLiveBaseURL()
+	configuredLiveBaseURL := r.liveBaseURL()
 	if configuredLiveBaseURL == "" {
 		return errors.New("live base url not configured")
 	}
@@ -293,9 +281,9 @@ func (r *StreamRegistry) Start(channel string) error {
 	return nil
 }
 
-func newFFmpegCommand(inputURL, playlistURL, generation string) streamCommand {
+func newFFmpegCommandWithToken(inputURL, playlistURL, generation, token string) streamCommand {
 	return &execStreamCommand{
-		cmd: exec.Command("ffmpeg", buildFFmpegHLSArgs(inputURL, playlistURL, generation)...),
+		cmd: exec.Command("ffmpeg", buildFFmpegHLSArgsWithToken(inputURL, playlistURL, generation, token)...),
 	}
 }
 
@@ -317,12 +305,6 @@ func resolveLiveStreamURL(ctx context.Context, channel string) (string, string, 
 func (r *StreamRegistry) abortStart(channel string, m *manager, err error) error {
 	r.finishManager(channel, m)
 	return err
-}
-
-// Stop attempts to gracefully stop any running stream. It's safe to call
-// multiple times; it returns nil if no stream was running.
-func Stop() error {
-	return defaultStreamRegistry.Stop()
 }
 
 // Stop attempts to gracefully stop any running stream. It's safe to call
@@ -359,11 +341,6 @@ func (r *StreamRegistry) Stop() error {
 	r.stopsInProgress--
 	r.mu.Unlock()
 	return errors.Join(stopErrs...)
-}
-
-// StopChannel stops the stream for a specific channel. Returns nil if there was no active stream.
-func StopChannel(channel string) error {
-	return defaultStreamRegistry.StopChannel(channel)
 }
 
 // StopChannel stops the stream for a specific channel. Returns nil if there was no active stream.
@@ -519,13 +496,13 @@ func (r *StreamRegistry) isCurrentLiveWriterLocked(channel, generation string) b
 	return true
 }
 
-func buildFFmpegHLSArgs(inputURL, playlistURL, generation string) []string {
+func buildFFmpegHLSArgsWithToken(inputURL, playlistURL, generation, token string) []string {
 	args := []string{
 		"-i", inputURL,
 		"-c", "copy",
 		"-f", "hls",
 		"-method", "PUT",
-		"-headers", liveWriteTokenHeader + ": " + getLiveWriteToken() + "\r\n" +
+		"-headers", liveWriteTokenHeader + ": " + token + "\r\n" +
 			liveWriteGenerationHeader + ": " + generation + "\r\n",
 		"-hls_time", "1",
 		"-hls_list_size", "30",

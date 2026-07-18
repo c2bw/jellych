@@ -44,8 +44,6 @@ type APIState struct {
 	playlistMu    sync.RWMutex
 }
 
-var defaultState = &APIState{}
-
 var ErrChannelAlreadyExists = errors.New("channel already exists")
 var ErrChannelNotFound = errors.New("channel not found")
 var ErrVODAlreadyExists = errors.New("vod already exists")
@@ -67,10 +65,6 @@ type vodStore interface {
 }
 
 // SetChannelStore configures the persistence backend for channel changes.
-func SetChannelStore(s channelStore) {
-	defaultState.SetChannelStore(s)
-}
-
 func (s *APIState) SetChannelStore(store channelStore) {
 	s.chMu.Lock()
 	defer s.chMu.Unlock()
@@ -78,10 +72,6 @@ func (s *APIState) SetChannelStore(store channelStore) {
 }
 
 // SetVODStore configures the persistence backend for VOD changes.
-func SetVODStore(s vodStore) {
-	defaultState.SetVODStore(s)
-}
-
 func (s *APIState) SetVODStore(store vodStore) {
 	s.vodMu.Lock()
 	defer s.vodMu.Unlock()
@@ -96,10 +86,6 @@ func (s *APIState) configuredVODStore() vodStore {
 
 // SetJellyfinWebhookSecret configures the shared secret required by
 // POST /api/jellyfin/webhook via the X-Jellych-Secret header.
-func SetJellyfinWebhookSecret(secret string) {
-	defaultState.SetJellyfinWebhookSecret(secret)
-}
-
 func (s *APIState) SetJellyfinWebhookSecret(secret string) {
 	s.webhookMu.Lock()
 	defer s.webhookMu.Unlock()
@@ -113,10 +99,6 @@ func (s *APIState) jellyfinWebhookSecret() string {
 }
 
 // SetControlAPISecret configures optional authentication for mutating API routes.
-func SetControlAPISecret(secret string) {
-	defaultState.SetControlAPISecret(secret)
-}
-
 func (s *APIState) SetControlAPISecret(secret string) {
 	s.controlMu.Lock()
 	s.controlSecret = strings.TrimSpace(secret)
@@ -130,10 +112,6 @@ func (s *APIState) controlAPISecret() string {
 }
 
 // SetChannels replaces the in-memory channel list.
-func SetChannels(c []string) {
-	defaultState.SetChannels(c)
-}
-
 func (s *APIState) SetChannels(c []string) {
 	s.chMu.Lock()
 	defer s.chMu.Unlock()
@@ -141,10 +119,6 @@ func (s *APIState) SetChannels(c []string) {
 }
 
 // SetChannelLogos replaces the in-memory channel logo mapping.
-func SetChannelLogos(logos map[string]string) {
-	defaultState.SetChannelLogos(logos)
-}
-
 func (s *APIState) SetChannelLogos(logos map[string]string) {
 	s.chMu.Lock()
 	defer s.chMu.Unlock()
@@ -159,10 +133,6 @@ func (s *APIState) SetChannelLogos(logos map[string]string) {
 }
 
 // GetChannelLogos returns a copy of the in-memory channel logo mapping.
-func GetChannelLogos() map[string]string {
-	return defaultState.GetChannelLogos()
-}
-
 func (s *APIState) GetChannelLogos() map[string]string {
 	s.chMu.RLock()
 	defer s.chMu.RUnlock()
@@ -183,10 +153,6 @@ type Status struct {
 }
 
 // SetChannelStatus replaces the in-memory channel status list.
-func SetChannelStatus(s []Status) {
-	defaultState.SetChannelStatus(s)
-}
-
 func (s *APIState) SetChannelStatus(statuses []Status) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
@@ -194,10 +160,6 @@ func (s *APIState) SetChannelStatus(statuses []Status) {
 }
 
 // GetChannelStatus returns a copy of the in-memory channel status list.
-func GetChannelStatus() []Status {
-	return defaultState.GetChannelStatus()
-}
-
 func (s *APIState) GetChannelStatus() []Status {
 	s.statusMu.RLock()
 	defer s.statusMu.RUnlock()
@@ -205,10 +167,6 @@ func (s *APIState) GetChannelStatus() []Status {
 }
 
 // GetChannels returns a copy of the in-memory channel list.
-func GetChannels() []string {
-	return defaultState.GetChannels()
-}
-
 func (s *APIState) GetChannels() []string {
 	s.chMu.RLock()
 	defer s.chMu.RUnlock()
@@ -217,10 +175,6 @@ func (s *APIState) GetChannels() []string {
 
 // IsConfiguredChannel reports whether name is present in the configured
 // channel list used to build live playlists.
-func IsConfiguredChannel(name string) bool {
-	return defaultState.IsConfiguredChannel(name)
-}
-
 func (s *APIState) IsConfiguredChannel(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
 	s.chMu.RLock()
@@ -228,18 +182,10 @@ func (s *APIState) IsConfiguredChannel(name string) bool {
 	return slices.Contains(s.channelNames, name)
 }
 
-func SetVODs(items []VOD) {
-	defaultState.SetVODs(items)
-}
-
 func (s *APIState) SetVODs(items []VOD) {
 	s.vodMu.Lock()
 	defer s.vodMu.Unlock()
 	s.vods = cloneVODs(items)
-}
-
-func GetVODs() []VOD {
-	return defaultState.GetVODs()
 }
 
 func (s *APIState) GetVODs() []VOD {
@@ -252,16 +198,8 @@ func (s *APIState) GetVODs() []VOD {
 	return cloneVODs(s.vods)
 }
 
-func AddVOD(vod VOD) error {
-	return AddVODContext(context.Background(), vod)
-}
-
 func (s *APIState) AddVOD(vod VOD) error {
 	return s.AddVODContext(context.Background(), vod)
-}
-
-func AddVODContext(ctx context.Context, vod VOD) error {
-	return defaultState.AddVODContext(ctx, vod)
 }
 
 func (s *APIState) AddVODContext(ctx context.Context, vod VOD) error {
@@ -284,16 +222,8 @@ func (s *APIState) AddVODContext(ctx context.Context, vod VOD) error {
 	return nil
 }
 
-func RemoveVOD(id string) error {
-	return RemoveVODContext(context.Background(), id)
-}
-
 func (s *APIState) RemoveVOD(id string) error {
 	return s.RemoveVODContext(context.Background(), id)
-}
-
-func RemoveVODContext(ctx context.Context, id string) error {
-	return defaultState.RemoveVODContext(ctx, id)
 }
 
 func (s *APIState) RemoveVODContext(ctx context.Context, id string) error {
@@ -313,10 +243,6 @@ func (s *APIState) RemoveVODContext(ctx context.Context, id string) error {
 	return ErrVODNotFound
 }
 
-func FindVOD(id string) (VOD, bool) {
-	return defaultState.FindVOD(id)
-}
-
 func (s *APIState) FindVOD(id string) (VOD, bool) {
 	id = strings.TrimSpace(id)
 	if store := s.configuredVODStore(); store != nil {
@@ -334,16 +260,8 @@ func (s *APIState) FindVOD(id string) (VOD, bool) {
 }
 
 // AddChannel adds a channel to the in-memory list if it doesn't already exist.
-func AddChannel(name string) error {
-	return AddChannelContext(context.Background(), name)
-}
-
 func (s *APIState) AddChannel(name string) error {
 	return s.AddChannelContext(context.Background(), name)
-}
-
-func AddChannelContext(ctx context.Context, name string) error {
-	return defaultState.AddChannelContext(ctx, name)
 }
 
 func (s *APIState) AddChannelContext(ctx context.Context, name string) error {
@@ -454,16 +372,8 @@ func VODIDFromURL(raw string) string {
 }
 
 // RemoveChannel removes a channel by name from the in-memory list.
-func RemoveChannel(name string) error {
-	return RemoveChannelContext(context.Background(), name)
-}
-
 func (s *APIState) RemoveChannel(name string) error {
 	return s.RemoveChannelContext(context.Background(), name)
-}
-
-func RemoveChannelContext(ctx context.Context, name string) error {
-	return defaultState.RemoveChannelContext(ctx, name)
 }
 
 func (s *APIState) RemoveChannelContext(ctx context.Context, name string) error {

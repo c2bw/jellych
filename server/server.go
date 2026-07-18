@@ -1,23 +1,31 @@
 package server
 
 import (
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"time"
-
-	"github.com/c2bw/jellych/server/api"
-	"github.com/c2bw/jellych/stream"
 )
 
-func Start(addr string) (*http.Server, error) {
-	return StartWithAssets(addr, os.DirFS("."))
+// Handlers contains the application-owned dynamic HTTP surfaces.
+type Handlers struct {
+	API       http.Handler
+	Live      http.Handler
+	LiveWrite http.Handler
+}
+
+func Start(addr string, handlers Handlers) (*http.Server, error) {
+	return StartWithAssets(addr, os.DirFS("."), handlers)
 }
 
 // StartWithAssets starts the HTTP server with assets rooted above the html directory.
-func StartWithAssets(addr string, assets fs.FS) (*http.Server, error) {
+func StartWithAssets(addr string, assets fs.FS, handlers Handlers) (*http.Server, error) {
+	if handlers.API == nil || handlers.Live == nil || handlers.LiveWrite == nil {
+		return nil, fmt.Errorf("api, live, and live-write handlers are required")
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -30,9 +38,8 @@ func StartWithAssets(addr string, assets fs.FS) (*http.Server, error) {
 
 	// Combine API handler with static HTML and stream routes.
 	mux := http.NewServeMux()
-	apiHandler := api.Handler()
-	mux.Handle("/api/", apiHandler)
-	mux.Handle("/vod/", apiHandler)
+	mux.Handle("/api/", handlers.API)
+	mux.Handle("/vod/", handlers.API)
 	mux.HandleFunc("/watch", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFileFS(w, r, htmlFS, "watch.html")
 	})
@@ -46,8 +53,8 @@ func StartWithAssets(addr string, assets fs.FS) (*http.Server, error) {
 		http.ServeFileFS(w, r, htmlFS, "vods.html")
 	})
 	mux.Handle("/html/", http.StripPrefix("/html/", http.FileServerFS(htmlFS)))
-	mux.Handle("/live/", stream.NewLiveHandler(api.IsConfiguredChannel))
-	mux.Handle("/_live-write/", stream.LiveWriteHandler())
+	mux.Handle("/live/", handlers.Live)
+	mux.Handle("/_live-write/", handlers.LiveWrite)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			http.ServeFileFS(w, r, htmlFS, "watch.html")

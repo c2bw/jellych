@@ -15,15 +15,15 @@ import (
 
 func TestStartVODDownloadSkipsExistingFile(t *testing.T) {
 	dir := t.TempDir()
-	SetVODDownloadDir(dir)
-	t.Cleanup(func() { SetVODDownloadDir("") })
+	downloader := NewVODDownloader()
+	downloader.SetDir(dir)
 
 	path := filepath.Join(dir, "123456789.mkv")
 	if err := os.WriteFile(path, []byte("already here"), 0644); err != nil {
 		t.Fatalf("failed to create existing vod file: %v", err)
 	}
 
-	err := StartVODDownload(context.Background(), "123456789", "https://www.twitch.tv/videos/123456789", "Test VOD", "testchannel")
+	err := downloader.Start(context.Background(), "123456789", "https://www.twitch.tv/videos/123456789", "Test VOD", "testchannel")
 	if !errors.Is(err, ErrVODDownloadAlreadyExists) {
 		t.Fatalf("expected ErrVODDownloadAlreadyExists, got %v", err)
 	}
@@ -31,10 +31,10 @@ func TestStartVODDownloadSkipsExistingFile(t *testing.T) {
 
 func TestVODDownloadExists(t *testing.T) {
 	dir := t.TempDir()
-	SetVODDownloadDir(dir)
-	t.Cleanup(func() { SetVODDownloadDir("") })
+	downloader := NewVODDownloader()
+	downloader.SetDir(dir)
 
-	exists, err := VODDownloadExists("123456789")
+	exists, _, err := downloader.Status("123456789")
 	if err != nil {
 		t.Fatalf("expected missing download check to succeed, got %v", err)
 	}
@@ -46,7 +46,7 @@ func TestVODDownloadExists(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0644); err != nil {
 		t.Fatalf("failed to create empty interrupted file: %v", err)
 	}
-	exists, err = VODDownloadExists("123456789")
+	exists, _, err = downloader.Status("123456789")
 	if err != nil {
 		t.Fatalf("expected empty download check to succeed, got %v", err)
 	}
@@ -57,7 +57,7 @@ func TestVODDownloadExists(t *testing.T) {
 		t.Fatalf("failed to create downloaded vod file: %v", err)
 	}
 
-	exists, err = VODDownloadExists("123456789")
+	exists, _, err = downloader.Status("123456789")
 	if err != nil {
 		t.Fatalf("expected existing download check to succeed, got %v", err)
 	}
@@ -157,15 +157,15 @@ func TestActiveConversionDoesNotExposeOriginalVOD(t *testing.T) {
 
 func TestDeleteVODDownloadRemovesExistingFile(t *testing.T) {
 	dir := t.TempDir()
-	SetVODDownloadDir(dir)
-	t.Cleanup(func() { SetVODDownloadDir("") })
+	downloader := NewVODDownloader()
+	downloader.SetDir(dir)
 
 	path := filepath.Join(dir, "123456789.mkv")
 	if err := os.WriteFile(path, []byte("downloaded"), 0644); err != nil {
 		t.Fatalf("failed to create downloaded vod file: %v", err)
 	}
 
-	if err := DeleteVODDownload("123456789"); err != nil {
+	if err := downloader.Delete("123456789"); err != nil {
 		t.Fatalf("expected delete to succeed, got %v", err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -175,10 +175,10 @@ func TestDeleteVODDownloadRemovesExistingFile(t *testing.T) {
 
 func TestDeleteVODDownloadReturnsNotFound(t *testing.T) {
 	dir := t.TempDir()
-	SetVODDownloadDir(dir)
-	t.Cleanup(func() { SetVODDownloadDir("") })
+	downloader := NewVODDownloader()
+	downloader.SetDir(dir)
 
-	err := DeleteVODDownload("123456789")
+	err := downloader.Delete("123456789")
 	if !errors.Is(err, ErrVODDownloadNotFound) {
 		t.Fatalf("expected ErrVODDownloadNotFound, got %v", err)
 	}
@@ -499,12 +499,9 @@ func TestRemoveMetadataIfNoDownloadBlocksConcurrentStart(t *testing.T) {
 
 func TestCleanupExpiredVODDownloads(t *testing.T) {
 	dir := t.TempDir()
-	SetVODDownloadDir(dir)
-	SetVODDownloadRetention(30 * 24 * time.Hour)
-	t.Cleanup(func() {
-		SetVODDownloadDir("")
-		SetVODDownloadRetention(defaultVODDownloadRetention)
-	})
+	downloader := NewVODDownloader()
+	downloader.SetDir(dir)
+	downloader.SetRetention(30 * 24 * time.Hour)
 
 	now := time.Date(2026, time.June, 14, 12, 0, 0, 0, time.UTC)
 	writeVODDownloadTestFile(t, dir, "expired.mkv", now.Add(-31*24*time.Hour))
@@ -515,7 +512,7 @@ func TestCleanupExpiredVODDownloads(t *testing.T) {
 		t.Fatalf("failed to create test directory: %v", err)
 	}
 
-	deleted, err := cleanupExpiredVODDownloads(now)
+	deleted, err := downloader.cleanupExpired(now)
 	if err != nil {
 		t.Fatalf("expected cleanup to succeed, got %v", err)
 	}
@@ -530,22 +527,16 @@ func TestCleanupExpiredVODDownloads(t *testing.T) {
 
 func TestCleanupExpiredVODDownloadsSkipsActiveDownload(t *testing.T) {
 	dir := t.TempDir()
-	SetVODDownloadDir(dir)
-	SetVODDownloadRetention(24 * time.Hour)
-	t.Cleanup(func() {
-		SetVODDownloadDir("")
-		SetVODDownloadRetention(defaultVODDownloadRetention)
-	})
+	downloader := NewVODDownloader()
+	downloader.SetDir(dir)
+	downloader.SetRetention(24 * time.Hour)
 
 	now := time.Date(2026, time.June, 14, 12, 0, 0, 0, time.UTC)
 	writeVODDownloadTestFile(t, dir, "active.mkv", now.Add(-48*time.Hour))
 	download := &vodDownload{}
-	vodDownloadState.Lock()
-	vodDownloadState.active = map[string]*vodDownload{"active": download}
-	vodDownloadState.Unlock()
-	t.Cleanup(func() { clearVODDownload("active", download) })
+	downloader.active = map[string]*vodDownload{"active": download}
 
-	deleted, err := cleanupExpiredVODDownloads(now)
+	deleted, err := downloader.cleanupExpired(now)
 	if err != nil {
 		t.Fatalf("expected cleanup to succeed, got %v", err)
 	}
@@ -557,19 +548,16 @@ func TestCleanupExpiredVODDownloadsSkipsActiveDownload(t *testing.T) {
 
 func TestRemoveExpiredVODDownloadRechecksActiveState(t *testing.T) {
 	dir := t.TempDir()
-	SetVODDownloadDir(dir)
-	t.Cleanup(func() { SetVODDownloadDir("") })
+	downloader := NewVODDownloader()
+	downloader.SetDir(dir)
 
 	path := filepath.Join(dir, "active.mkv")
 	writeVODDownloadTestFile(t, dir, "active.mkv", time.Now().Add(-48*time.Hour))
 
 	download := &vodDownload{}
-	vodDownloadState.Lock()
-	vodDownloadState.active = map[string]*vodDownload{"active": download}
-	vodDownloadState.Unlock()
-	t.Cleanup(func() { clearVODDownload("active", download) })
+	downloader.active = map[string]*vodDownload{"active": download}
 
-	removed, err := removeExpiredVODDownload(dir, "active", path)
+	removed, err := downloader.removeExpired(dir, "active", path)
 	if err != nil {
 		t.Fatalf("expected active download recheck to succeed, got %v", err)
 	}
@@ -580,14 +568,11 @@ func TestRemoveExpiredVODDownloadRechecksActiveState(t *testing.T) {
 }
 
 func TestCleanupExpiredVODDownloadsToleratesMissingDirectory(t *testing.T) {
-	SetVODDownloadDir(filepath.Join(t.TempDir(), "missing"))
-	SetVODDownloadRetention(24 * time.Hour)
-	t.Cleanup(func() {
-		SetVODDownloadDir("")
-		SetVODDownloadRetention(defaultVODDownloadRetention)
-	})
+	downloader := NewVODDownloader()
+	downloader.SetDir(filepath.Join(t.TempDir(), "missing"))
+	downloader.SetRetention(24 * time.Hour)
 
-	deleted, err := cleanupExpiredVODDownloads(time.Now())
+	deleted, err := downloader.cleanupExpired(time.Now())
 	if err != nil {
 		t.Fatalf("expected missing directory to be ignored, got %v", err)
 	}
@@ -601,14 +586,11 @@ func TestCleanupExpiredVODDownloadsReportsReadError(t *testing.T) {
 	if err := os.WriteFile(file, []byte("test"), 0644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
-	SetVODDownloadDir(file)
-	SetVODDownloadRetention(24 * time.Hour)
-	t.Cleanup(func() {
-		SetVODDownloadDir("")
-		SetVODDownloadRetention(defaultVODDownloadRetention)
-	})
+	downloader := NewVODDownloader()
+	downloader.SetDir(file)
+	downloader.SetRetention(24 * time.Hour)
 
-	if _, err := cleanupExpiredVODDownloads(time.Now()); err == nil {
+	if _, err := downloader.cleanupExpired(time.Now()); err == nil {
 		t.Fatal("expected cleanup to report directory read error")
 	}
 }
@@ -942,18 +924,16 @@ func TestParseVODDownloadPreset(t *testing.T) {
 }
 
 func TestUpdateVODDownloadProgressCalculatesByteRate(t *testing.T) {
+	downloader := NewVODDownloader()
 	download := newVODDownload()
-	vodDownloadState.Lock()
-	vodDownloadState.active = map[string]*vodDownload{"active": download}
-	vodDownloadState.Unlock()
-	t.Cleanup(func() { clearVODDownload("active", download) })
+	downloader.active = map[string]*vodDownload{"active": download}
 
 	download.lastTotalSize = 1000
 	download.lastTotalSizeUpdate = time.Now().Add(-time.Second)
-	updateVODDownloadProgress("active", download, "total_size", "12345")
-	updateVODDownloadProgress("active", download, "speed", "1.5x")
+	downloader.updateProgress("active", download, "total_size", "12345")
+	downloader.updateProgress("active", download, "speed", "1.5x")
 
-	got, err := GetVODDownloadProgress("active")
+	got, err := downloader.Progress("active")
 	if err != nil {
 		t.Fatalf("expected progress lookup to succeed, got %v", err)
 	}
@@ -974,17 +954,15 @@ func TestUpdateVODDownloadProgressCalculatesByteRate(t *testing.T) {
 func TestUpdateVODDownloadProgressCalculatesETA(t *testing.T) {
 	for _, operation := range []string{"download", "convert"} {
 		t.Run(operation, func(t *testing.T) {
+			downloader := NewVODDownloader()
 			download := newVODDownload()
 			download.progress.Operation = operation
 			download.totalDuration = 100 * time.Second
-			vodDownloadState.Lock()
-			vodDownloadState.active = map[string]*vodDownload{"active": download}
-			vodDownloadState.Unlock()
-			t.Cleanup(func() { clearVODDownload("active", download) })
+			downloader.active = map[string]*vodDownload{"active": download}
 
-			updateVODDownloadProgress("active", download, "out_time_us", "25000000")
-			updateVODDownloadProgress("active", download, "speed", "0.5x")
-			got, err := GetVODDownloadProgress("active")
+			downloader.updateProgress("active", download, "out_time_us", "25000000")
+			downloader.updateProgress("active", download, "speed", "0.5x")
+			got, err := downloader.Progress("active")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -996,18 +974,16 @@ func TestUpdateVODDownloadProgressCalculatesETA(t *testing.T) {
 }
 
 func TestUpdateVODDownloadProgressEstimatesConversionSizeImmediately(t *testing.T) {
+	downloader := NewVODDownloader()
 	download := newVODDownload()
 	download.progress.Operation = "convert"
 	download.totalDuration = 100 * time.Second
-	vodDownloadState.Lock()
-	vodDownloadState.active = map[string]*vodDownload{"active": download}
-	vodDownloadState.Unlock()
-	t.Cleanup(func() { clearVODDownload("active", download) })
+	downloader.active = map[string]*vodDownload{"active": download}
 
-	updateVODDownloadProgress("active", download, "total_size", "2500")
-	updateVODDownloadProgress("active", download, "out_time_us", "10000000")
+	downloader.updateProgress("active", download, "total_size", "2500")
+	downloader.updateProgress("active", download, "out_time_us", "10000000")
 
-	got, err := GetVODDownloadProgress("active")
+	got, err := downloader.Progress("active")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1017,18 +993,16 @@ func TestUpdateVODDownloadProgressEstimatesConversionSizeImmediately(t *testing.
 }
 
 func TestUpdateVODDownloadProgressDoesNotEstimateDownloadSize(t *testing.T) {
+	downloader := NewVODDownloader()
 	download := newVODDownload()
 	download.progress.Operation = "download"
 	download.totalDuration = 100 * time.Second
-	vodDownloadState.Lock()
-	vodDownloadState.active = map[string]*vodDownload{"active": download}
-	vodDownloadState.Unlock()
-	t.Cleanup(func() { clearVODDownload("active", download) })
+	downloader.active = map[string]*vodDownload{"active": download}
 
-	updateVODDownloadProgress("active", download, "total_size", "2500")
-	updateVODDownloadProgress("active", download, "out_time_us", "10000000")
+	downloader.updateProgress("active", download, "total_size", "2500")
+	downloader.updateProgress("active", download, "out_time_us", "10000000")
 
-	got, err := GetVODDownloadProgress("active")
+	got, err := downloader.Progress("active")
 	if err != nil {
 		t.Fatal(err)
 	}

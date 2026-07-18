@@ -31,11 +31,6 @@ func newPlaybackTracker(now func() time.Time) *PlaybackTracker {
 }
 
 // RecordPlaying updates the last-seen timestamp for a playback session.
-func RecordPlaying(channel, sessionID string, now time.Time) bool {
-	return defaultAPI.playback.RecordPlaying(channel, sessionID, now)
-}
-
-// RecordPlaying updates the last-seen timestamp for a playback session.
 func (p *PlaybackTracker) RecordPlaying(channel, sessionID string, now time.Time) bool {
 	p.playMu.Lock()
 	defer p.playMu.Unlock()
@@ -57,11 +52,6 @@ func (p *PlaybackTracker) RecordPlaying(channel, sessionID string, now time.Time
 }
 
 // StopPlaying removes a playback session immediately.
-func StopPlaying(channel, sessionID string) {
-	defaultAPI.playback.StopPlaying(channel, sessionID)
-}
-
-// StopPlaying removes a playback session immediately.
 func (p *PlaybackTracker) StopPlaying(channel, sessionID string) {
 	p.playMu.Lock()
 	defer p.playMu.Unlock()
@@ -80,11 +70,6 @@ func (p *PlaybackTracker) StopPlaying(channel, sessionID string) {
 			}
 		}
 	}
-}
-
-// GetPlayingCounts returns active playback counts per channel after pruning.
-func GetPlayingCounts(now time.Time) map[string]int {
-	return defaultAPI.playback.GetPlayingCounts(now)
 }
 
 // GetPlayingCounts returns active playback counts per channel after pruning.
@@ -156,10 +141,6 @@ func (p *PlaybackTracker) isJellyfinSessionLocked(channel, sessionID string, now
 
 // MarkJellyfinSession records that a session was started via a Jellyfin webhook
 // and should not be auto-pruned until an explicit stop is received.
-func MarkJellyfinSession(channel, sessionID string) bool {
-	return defaultAPI.playback.MarkJellyfinSession(channel, sessionID)
-}
-
 // MarkJellyfinSession records a persistent Jellyfin playback session.
 func (p *PlaybackTracker) MarkJellyfinSession(channel, sessionID string) bool {
 	p.playMu.Lock()
@@ -180,11 +161,6 @@ func (p *PlaybackTracker) MarkJellyfinSession(channel, sessionID string) bool {
 	}
 	p.jellyfinSessions[channel][sessionID] = now
 	return true
-}
-
-// StartIdleMonitor reconciles playback sessions until ctx is canceled.
-func StartIdleMonitor(ctx context.Context) {
-	defaultAPI.StartIdleMonitor(ctx)
 }
 
 // StartIdleMonitor reconciles this API instance's playback sessions until ctx

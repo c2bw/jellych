@@ -5,8 +5,6 @@ import (
 	"time"
 )
 
-var defaultAPI = newAPI(defaultState, Dependencies{})
-
 // API owns the HTTP route surface for the API package.
 type API struct {
 	state              *APIState
@@ -17,9 +15,9 @@ type API struct {
 	now                func() time.Time
 }
 
-// New returns an API instance with the package's configured dependencies.
+// New returns an isolated API instance with default dependencies.
 func New() *API {
-	return newAPI(defaultState, Dependencies{})
+	return newAPI(&APIState{}, Dependencies{})
 }
 
 // NewWithState returns an isolated API instance backed by state.
@@ -53,11 +51,6 @@ func newAPI(state *APIState, dependencies Dependencies) *API {
 		vodMediaHTTPClient: mediaClient,
 		now:                now,
 	}
-}
-
-// Handler returns an http.Handler that exposes API endpoints for controlling streaming.
-func Handler() http.Handler {
-	return defaultAPI.Handler()
 }
 
 // Handler returns an http.Handler that exposes API endpoints for controlling streaming.

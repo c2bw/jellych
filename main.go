@@ -52,14 +52,13 @@ func main() {
 		slog.Error("invalid server url", "error", err)
 		os.Exit(1)
 	}
-	api.SetPlaylistBaseURL(serverURL)
-	stream.SetVODDownloadDir(*vodsPath)
+	apiState := &api.APIState{}
+	apiState.SetPlaylistBaseURL(serverURL)
 	vodRetention, err := parseVODRetentionDays(os.Getenv("VOD_RETENTION_DAYS"))
 	if err != nil {
 		slog.Error("invalid VOD retention", "error", err)
 		os.Exit(1)
 	}
-	stream.SetVODDownloadRetention(vodRetention)
 	slog.Info("VOD retention", "days", int(vodRetention/(24*time.Hour)))
 
 	webhookSecret, err := getRequiredEnv("JELLYFIN_WEBHOOK_SECRET")
@@ -67,8 +66,8 @@ func main() {
 		slog.Error("missing Jellyfin webhook secret", "error", err)
 		os.Exit(1)
 	}
-	api.SetJellyfinWebhookSecret(webhookSecret)
-	api.SetControlAPISecret(os.Getenv("JELLYCH_API_SECRET"))
+	apiState.SetJellyfinWebhookSecret(webhookSecret)
+	apiState.SetControlAPISecret(os.Getenv("JELLYCH_API_SECRET"))
 
 	clientID, err := getRequiredEnv("TWITCH_CLIENT_ID")
 	if err != nil {
@@ -85,6 +84,9 @@ func main() {
 		slog.Error("failed to resolve local live url", "error", err)
 		os.Exit(1)
 	}
+	streamServices := stream.NewServices(liveBaseURL)
+	streamServices.Downloads.SetDir(*vodsPath)
+	streamServices.Downloads.SetRetention(vodRetention)
 	slog.Info("Startup paths", "config", *configPath, "liveURL", liveBaseURL)
 	// Create the Twitch client
 	twitchClient, err := client.NewClientContext(ctx, clientID, clientSecret)
@@ -93,14 +95,21 @@ func main() {
 		os.Exit(1)
 	}
 	// Initialize the Twitch manager before exposing the HTTP listener.
-	stopStatus, err := twitch.StartContext(ctx, twitchClient, *configPath, liveBaseURL)
+	stopStatus, err := twitch.StartContext(ctx, twitchClient, *configPath, apiState, streamServices.Downloads)
 	if err != nil {
 		slog.Error("failed to start Twitch manager", "error", err)
 		twitchClient.Close()
 		os.Exit(1)
 	}
 	// Start the HTTP server only after all application dependencies are ready.
-	srv, err := server.StartWithAssets(*addr, webAssets)
+	appAPI := api.NewWithDependencies(apiState, api.Dependencies{
+		Streams: api.NewStreamOperations(streamServices.Streams, streamServices.Downloads),
+	})
+	srv, err := server.StartWithAssets(*addr, webAssets, server.Handlers{
+		API:       appAPI.Handler(),
+		Live:      streamServices.LiveHandler(apiState.IsConfiguredChannel),
+		LiveWrite: streamServices.LiveWriteHandler(),
+	})
 	if err != nil {
 		slog.Error("failed to start HTTP server", "error", err)
 		stopStatus()
@@ -108,8 +117,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	api.StartIdleMonitor(ctx)
-	stream.StartVODDownloadCleanup(ctx)
+	appAPI.StartIdleMonitor(ctx)
+	streamServices.Downloads.StartCleanup(ctx)
 	<-ctx.Done()
 	// shutdown HTTP server
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -120,10 +129,10 @@ func main() {
 	}
 	twitchClient.Close()
 	// stop stream processes
-	if err := stream.StopVODDownloads(); err != nil {
+	if err := streamServices.Downloads.Stop(); err != nil {
 		slog.Warn("failed to stop VOD downloads cleanly", "error", err)
 	}
-	if err := stream.Stop(); err != nil {
+	if err := streamServices.Streams.Stop(); err != nil {
 		slog.Warn("failed to stop live streams cleanly", "error", err)
 	}
 }

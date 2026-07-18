@@ -7,11 +7,11 @@ import (
 )
 
 func TestPruningWorksWhenDownloadsDisabled(t *testing.T) {
-	stream.SetVODDownloadDir("")
-	t.Cleanup(func() { stream.SetVODDownloadDir("") })
+	downloads := stream.NewVODDownloader()
+	downloads.SetDir("")
 
 	removed := false
-	pruned, err := pruneVODIfNoDownload("123456789", func() error {
+	pruned, err := pruneVODIfNoDownload(downloads, "123456789", func() error {
 		removed = true
 		return nil
 	})

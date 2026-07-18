@@ -10,19 +10,6 @@ import (
 	"time"
 )
 
-// DeleteVODDownload removes a previously downloaded VOD file from disk.
-
-func DeleteVODDownload(id string) error {
-	return vodDownloadState.Delete(id)
-}
-
-// OpenVODDownload opens a completed VOD download for playback. Active or
-// incomplete downloads are reported as not found so callers never expose a
-// file that is still being written or converted.
-func OpenVODDownload(id string) (*os.File, error) {
-	return vodDownloadState.Open(id)
-}
-
 // Open opens a completed VOD download for playback.
 func (d *VODDownloader) Open(id string) (*os.File, error) {
 	id = strings.TrimSpace(id)
@@ -102,12 +89,6 @@ func (d *VODDownloader) Delete(id string) error {
 	return nil
 }
 
-// RemoveVODWithArtifacts serializes removal for id, stops any active
-// download, deletes partial and completed artifacts, then removes metadata.
-func RemoveVODWithArtifacts(id string, removeMetadata func() error) error {
-	return vodDownloadState.RemoveWithArtifacts(id, removeMetadata)
-}
-
 func (d *VODDownloader) RemoveWithArtifacts(id string, removeMetadata func() error) error {
 	id = strings.TrimSpace(id)
 	if !vodDownloadIDRE.MatchString(id) {
@@ -150,12 +131,6 @@ func (d *VODDownloader) RemoveWithArtifacts(id string, removeMetadata func() err
 		}
 	}
 	return removeMetadata()
-}
-
-// RemoveVODMetadataIfNoDownload atomically prevents download startup, verifies
-// that no active or completed download exists, and removes only VOD metadata.
-func RemoveVODMetadataIfNoDownload(id string, removeMetadata func() error) error {
-	return vodDownloadState.RemoveMetadataIfNoDownload(id, removeMetadata)
 }
 
 func (d *VODDownloader) RemoveMetadataIfNoDownload(id string, removeMetadata func() error) error {

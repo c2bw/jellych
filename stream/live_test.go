@@ -34,13 +34,12 @@ func TestLiveStoreEnforcesCapacity(t *testing.T) {
 }
 
 func TestLiveHandlerIsReadOnly(t *testing.T) {
-	resetLiveChannel("testchannel")
-	t.Cleanup(func() { clearLiveChannel("testchannel") })
+	fixture := newLiveTestFixture()
 
 	req := httptest.NewRequest(http.MethodPut, "/live/testchannel/index.m3u8", strings.NewReader("#EXTM3U\n"))
 	rec := httptest.NewRecorder()
 
-	LiveHandler().ServeHTTP(rec, req)
+	fixture.service.LiveHandler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rec.Code)
@@ -51,10 +50,11 @@ func TestLiveHandlerIsReadOnly(t *testing.T) {
 }
 
 func TestLiveWriteHandlerRequiresToken(t *testing.T) {
+	fixture := newLiveTestFixture()
 	req := httptest.NewRequest(http.MethodPut, "/_live-write/testchannel/index.m3u8", strings.NewReader("#EXTM3U\n"))
 	rec := httptest.NewRecorder()
 
-	LiveWriteHandler().ServeHTTP(rec, req)
+	fixture.service.LiveWriteHandler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, rec.Code)
@@ -62,17 +62,17 @@ func TestLiveWriteHandlerRequiresToken(t *testing.T) {
 }
 
 func TestLiveWriteHandlerStoresReadableObject(t *testing.T) {
-	resetLiveChannel("testchannel")
-	t.Cleanup(func() { clearLiveChannel("testchannel") })
-	installDefaultLiveWriter(t, "testchannel")
+	fixture := newLiveTestFixture()
+	fixture.store.ResetChannel("testchannel")
+	fixture.installWriter("testchannel", testLiveGeneration)
 
 	body := "#EXTM3U\n#EXTINF:2,\nsegment0.ts\n"
 	writeReq := httptest.NewRequest(http.MethodPut, "/_live-write/testchannel/index.m3u8", strings.NewReader(body))
-	writeReq.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	writeReq.Header.Set(liveWriteTokenHeader, fixture.writeToken)
 	writeReq.Header.Set(liveWriteGenerationHeader, testLiveGeneration)
 	writeRec := httptest.NewRecorder()
 
-	LiveWriteHandler().ServeHTTP(writeRec, writeReq)
+	fixture.service.LiveWriteHandler().ServeHTTP(writeRec, writeReq)
 
 	if writeRec.Code != http.StatusNoContent {
 		t.Fatalf("expected status %d, got %d", http.StatusNoContent, writeRec.Code)
@@ -81,7 +81,7 @@ func TestLiveWriteHandlerStoresReadableObject(t *testing.T) {
 	readReq := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
 	readRec := httptest.NewRecorder()
 
-	LiveHandler().ServeHTTP(readRec, readReq)
+	fixture.service.LiveHandler().ServeHTTP(readRec, readReq)
 
 	if readRec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, readRec.Code)
@@ -92,76 +92,63 @@ func TestLiveWriteHandlerStoresReadableObject(t *testing.T) {
 }
 
 func TestLiveWriteHandlerRejectsStaleGeneration(t *testing.T) {
-	var storeMu sync.RWMutex
-	var items map[string]map[string][]byte
-	store := NewLiveStore(&storeMu, &items)
-
-	var registryMu sync.Mutex
-	managers := map[string]*manager{
-		"testchannel": {
-			state:      streamRunning,
-			generation: "current-generation",
-		},
-	}
-	service := &LiveService{
-		store:    store,
-		registry: NewStreamRegistry(&registryMu, &managers),
-	}
+	fixture := newLiveTestFixture()
+	fixture.installWriter("testchannel", "current-generation")
 
 	staleReq := httptest.NewRequest(http.MethodPut, "/_live-write/testchannel/index.m3u8", strings.NewReader("stale"))
-	staleReq.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	staleReq.Header.Set(liveWriteTokenHeader, fixture.writeToken)
 	staleReq.Header.Set(liveWriteGenerationHeader, "old-generation")
 	staleRec := httptest.NewRecorder()
-	service.LiveWriteHandler().ServeHTTP(staleRec, staleReq)
+	fixture.service.LiveWriteHandler().ServeHTTP(staleRec, staleReq)
 
 	if staleRec.Code != http.StatusConflict {
 		t.Fatalf("expected stale writer status %d, got %d", http.StatusConflict, staleRec.Code)
 	}
-	if got := store.GetObject("testchannel", "index.m3u8"); got != nil {
+	if got := fixture.store.GetObject("testchannel", "index.m3u8"); got != nil {
 		t.Fatalf("stale writer unexpectedly stored data %q", got)
 	}
 
 	currentReq := httptest.NewRequest(http.MethodPut, "/_live-write/testchannel/index.m3u8", strings.NewReader("current"))
-	currentReq.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	currentReq.Header.Set(liveWriteTokenHeader, fixture.writeToken)
 	currentReq.Header.Set(liveWriteGenerationHeader, "current-generation")
 	currentRec := httptest.NewRecorder()
-	service.LiveWriteHandler().ServeHTTP(currentRec, currentReq)
+	fixture.service.LiveWriteHandler().ServeHTTP(currentRec, currentReq)
 
 	if currentRec.Code != http.StatusNoContent {
 		t.Fatalf("expected current writer status %d, got %d", http.StatusNoContent, currentRec.Code)
 	}
-	if got := store.GetObject("testchannel", "index.m3u8"); string(got) != "current" {
+	if got := fixture.store.GetObject("testchannel", "index.m3u8"); string(got) != "current" {
 		t.Fatalf("expected current writer data, got %q", got)
 	}
 
-	registryMu.Lock()
-	managers["testchannel"].state = streamStopping
-	registryMu.Unlock()
+	fixture.registry.mu.Lock()
+	fixture.managers["testchannel"].state = streamStopping
+	fixture.registry.mu.Unlock()
 	lateReq := httptest.NewRequest(http.MethodPut, "/_live-write/testchannel/index.m3u8", strings.NewReader("late"))
-	lateReq.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	lateReq.Header.Set(liveWriteTokenHeader, fixture.writeToken)
 	lateReq.Header.Set(liveWriteGenerationHeader, "current-generation")
 	lateRec := httptest.NewRecorder()
-	service.LiveWriteHandler().ServeHTTP(lateRec, lateReq)
+	fixture.service.LiveWriteHandler().ServeHTTP(lateRec, lateReq)
 
 	if lateRec.Code != http.StatusConflict {
 		t.Fatalf("expected stopping writer status %d, got %d", http.StatusConflict, lateRec.Code)
 	}
-	if got := store.GetObject("testchannel", "index.m3u8"); string(got) != "current" {
+	if got := fixture.store.GetObject("testchannel", "index.m3u8"); string(got) != "current" {
 		t.Fatalf("late writer replaced current data with %q", got)
 	}
 }
 
 func TestLiveWriteHandlerRetainsRecentlyDeletedSegment(t *testing.T) {
-	resetLiveChannel("testchannel")
-	t.Cleanup(func() { clearLiveChannel("testchannel") })
-	installDefaultLiveWriter(t, "testchannel")
+	fixture := newLiveTestFixture()
+	fixture.store.ResetChannel("testchannel")
+	fixture.installWriter("testchannel", testLiveGeneration)
 
-	writeLiveObject(t, http.MethodPut, "/_live-write/testchannel/segment0.ts", "segment data")
-	writeLiveObject(t, http.MethodDelete, "/_live-write/testchannel/segment0.ts", "")
+	writeLiveObject(t, fixture, http.MethodPut, "/_live-write/testchannel/segment0.ts", "segment data")
+	writeLiveObject(t, fixture, http.MethodDelete, "/_live-write/testchannel/segment0.ts", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/segment0.ts", nil)
 	rec := httptest.NewRecorder()
-	LiveHandler().ServeHTTP(rec, req)
+	fixture.service.LiveHandler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d during deletion grace period, got %d", http.StatusOK, rec.Code)
@@ -192,11 +179,11 @@ func TestLiveStoreExpiresDeletedSegment(t *testing.T) {
 }
 
 func TestLiveHandlerPreventsCachingMissingSegments(t *testing.T) {
-	clearLiveChannel("testchannel")
+	fixture := newLiveTestFixture()
 
 	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/missing.ts", nil)
 	rec := httptest.NewRecorder()
-	LiveHandler().ServeHTTP(rec, req)
+	fixture.service.LiveHandler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
@@ -217,7 +204,7 @@ func TestLiveHandlerWaitsForActiveSegment(t *testing.T) {
 	}
 	service := &LiveService{
 		store:    store,
-		registry: NewStreamRegistry(&registryMu, &managers),
+		registry: newStreamRegistry(&registryMu, &managers),
 		start:    func(string) error { return nil },
 	}
 
@@ -241,74 +228,34 @@ func TestLiveHandlerWaitsForActiveSegment(t *testing.T) {
 	}
 }
 
-func writeLiveObject(t *testing.T, method, path, body string) {
+func writeLiveObject(t *testing.T, fixture *liveTestFixture, method, path, body string) {
 	t.Helper()
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	req.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	req.Header.Set(liveWriteTokenHeader, fixture.writeToken)
 	req.Header.Set(liveWriteGenerationHeader, testLiveGeneration)
 	rec := httptest.NewRecorder()
-	LiveWriteHandler().ServeHTTP(rec, req)
+	fixture.service.LiveWriteHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected status %d for %s %s, got %d", http.StatusNoContent, method, path, rec.Code)
 	}
 }
 
-func installDefaultLiveWriter(t *testing.T, channel string) {
-	t.Helper()
-	mu.Lock()
-	if mgrs == nil {
-		mgrs = make(map[string]*manager)
-	}
-	previous, existed := mgrs[channel]
-	mgrs[channel] = &manager{
-		state:      streamRunning,
-		generation: testLiveGeneration,
-		done:       make(chan struct{}),
-	}
-	mu.Unlock()
-
-	t.Cleanup(func() {
-		mu.Lock()
-		if existed {
-			mgrs[channel] = previous
-		} else {
-			delete(mgrs, channel)
-		}
-		mu.Unlock()
-	})
-}
-
 func TestLiveHandlerAutoStartsConfiguredInactivePlaylistRequest(t *testing.T) {
-	clearLiveChannel("testchannel")
-	t.Cleanup(func() { clearLiveChannel("testchannel") })
-
-	origStart := startLiveChannel
+	fixture := newLiveTestFixture()
 	started := false
-	startLiveChannel = func(channel string) error {
+	fixture.service.start = func(channel string) error {
 		started = channel == "testchannel"
-		resetLiveChannel(channel)
-		storeLiveObject(channel, "index.m3u8", []byte("#EXTM3U\n"))
-		mu.Lock()
-		if mgrs == nil {
-			mgrs = make(map[string]*manager)
-		}
-		mgrs[channel] = &manager{state: streamRunning}
-		mu.Unlock()
+		fixture.store.ResetChannel(channel)
+		fixture.store.StoreObject(channel, "index.m3u8", []byte("#EXTM3U\n"))
+		fixture.installWriter(channel, testLiveGeneration)
 		return nil
 	}
-	t.Cleanup(func() {
-		startLiveChannel = origStart
-		mu.Lock()
-		delete(mgrs, "testchannel")
-		mu.Unlock()
-	})
+	fixture.service.canAutoStart = func(channel string) bool { return channel == "testchannel" }
 
 	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
 	rec := httptest.NewRecorder()
 
-	NewLiveHandler(func(channel string) bool {
-		return channel == "testchannel"
-	}).ServeHTTP(rec, req)
+	fixture.service.LiveHandler().ServeHTTP(rec, req)
 
 	if !started {
 		t.Fatal("expected playlist request to auto-start channel")
@@ -322,20 +269,14 @@ func TestLiveHandlerAutoStartsConfiguredInactivePlaylistRequest(t *testing.T) {
 }
 
 func TestLiveHandlerDoesNotAutoStartUnconfiguredChannel(t *testing.T) {
-	clearLiveChannel("unknownchannel")
-	t.Cleanup(func() { clearLiveChannel("unknownchannel") })
-
+	fixture := newLiveTestFixture()
 	started := false
-	service := &LiveService{
-		store:        defaultLiveStore,
-		registry:     defaultStreamRegistry,
-		start:        func(string) error { started = true; return nil },
-		canAutoStart: func(string) bool { return false },
-	}
+	fixture.service.start = func(string) error { started = true; return nil }
+	fixture.service.canAutoStart = func(string) bool { return false }
 
 	req := httptest.NewRequest(http.MethodGet, "/live/unknownchannel/index.m3u8", nil)
 	rec := httptest.NewRecorder()
-	service.LiveHandler().ServeHTTP(rec, req)
+	fixture.service.LiveHandler().ServeHTTP(rec, req)
 
 	if started {
 		t.Fatal("unconfigured channel request unexpectedly started a stream")
@@ -346,20 +287,14 @@ func TestLiveHandlerDoesNotAutoStartUnconfiguredChannel(t *testing.T) {
 }
 
 func TestLiveHandlerHeadDoesNotAutoStartConfiguredChannel(t *testing.T) {
-	clearLiveChannel("testchannel")
-	t.Cleanup(func() { clearLiveChannel("testchannel") })
-
+	fixture := newLiveTestFixture()
 	started := false
-	service := &LiveService{
-		store:        defaultLiveStore,
-		registry:     defaultStreamRegistry,
-		start:        func(string) error { started = true; return nil },
-		canAutoStart: func(string) bool { return true },
-	}
+	fixture.service.start = func(string) error { started = true; return nil }
+	fixture.service.canAutoStart = func(string) bool { return true }
 
 	req := httptest.NewRequest(http.MethodHead, "/live/testchannel/index.m3u8", nil)
 	rec := httptest.NewRecorder()
-	service.LiveHandler().ServeHTTP(rec, req)
+	fixture.service.LiveHandler().ServeHTTP(rec, req)
 
 	if started {
 		t.Fatal("HEAD request unexpectedly started a stream")
@@ -370,17 +305,17 @@ func TestLiveHandlerHeadDoesNotAutoStartConfiguredChannel(t *testing.T) {
 }
 
 func TestLiveWriteHandlerRejectsOversizedObject(t *testing.T) {
-	resetLiveChannel("testchannel")
-	t.Cleanup(func() { clearLiveChannel("testchannel") })
-	installDefaultLiveWriter(t, "testchannel")
+	fixture := newLiveTestFixture()
+	fixture.store.ResetChannel("testchannel")
+	fixture.installWriter("testchannel", testLiveGeneration)
 
 	tooLarge := bytes.Repeat([]byte("a"), maxLiveObjectBytes+1)
 	req := httptest.NewRequest(http.MethodPut, "/_live-write/testchannel/segment.ts", bytes.NewReader(tooLarge))
-	req.Header.Set(liveWriteTokenHeader, getLiveWriteToken())
+	req.Header.Set(liveWriteTokenHeader, fixture.writeToken)
 	req.Header.Set(liveWriteGenerationHeader, testLiveGeneration)
 	rec := httptest.NewRecorder()
 
-	LiveWriteHandler().ServeHTTP(rec, req)
+	fixture.service.LiveWriteHandler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rec.Code)
@@ -388,8 +323,8 @@ func TestLiveWriteHandlerRejectsOversizedObject(t *testing.T) {
 }
 
 func TestLiveHandlerReturnsServiceUnavailableForActiveChannelWhenPlaylistMissing(t *testing.T) {
-	resetLiveChannel("testchannel")
-	t.Cleanup(func() { clearLiveChannel("testchannel") })
+	fixture := newLiveTestFixture()
+	fixture.store.ResetChannel("testchannel")
 
 	origTimeout := livePlaylistWaitTimeout
 	origPoll := livePlaylistWaitPoll
@@ -400,22 +335,12 @@ func TestLiveHandlerReturnsServiceUnavailableForActiveChannelWhenPlaylistMissing
 		livePlaylistWaitPoll = origPoll
 	})
 
-	mu.Lock()
-	if mgrs == nil {
-		mgrs = make(map[string]*manager)
-	}
-	mgrs["testchannel"] = &manager{state: streamRunning}
-	mu.Unlock()
-	t.Cleanup(func() {
-		mu.Lock()
-		delete(mgrs, "testchannel")
-		mu.Unlock()
-	})
+	fixture.installWriter("testchannel", testLiveGeneration)
 
 	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
 	rec := httptest.NewRecorder()
 
-	LiveHandler().ServeHTTP(rec, req)
+	fixture.service.LiveHandler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, rec.Code)

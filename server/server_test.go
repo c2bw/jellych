@@ -16,7 +16,7 @@ func TestStartReturnsListenError(t *testing.T) {
 	}
 	defer ln.Close()
 
-	srv, err := Start(ln.Addr().String())
+	srv, err := Start(ln.Addr().String(), testHandlers())
 	if err == nil {
 		if srv != nil {
 			_ = srv.Close()
@@ -58,7 +58,7 @@ func TestSecurityHeaders(t *testing.T) {
 }
 
 func TestStartConfiguresHTTPTimeouts(t *testing.T) {
-	srv, err := Start("127.0.0.1:0")
+	srv, err := Start("127.0.0.1:0", testHandlers())
 	if err != nil {
 		t.Fatalf("expected Start to succeed, got %v", err)
 	}
@@ -76,4 +76,9 @@ func TestStartConfiguresHTTPTimeouts(t *testing.T) {
 	if srv.IdleTimeout != 2*time.Minute {
 		t.Fatalf("expected IdleTimeout to be 2m, got %v", srv.IdleTimeout)
 	}
+}
+
+func testHandlers() Handlers {
+	notFound := http.NotFoundHandler()
+	return Handlers{API: notFound, Live: notFound, LiveWrite: notFound}
 }

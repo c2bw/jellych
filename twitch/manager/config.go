@@ -125,8 +125,8 @@ func (m *Manager) loadConfig() error {
 			logos[c.Name] = c.IconURL
 		}
 	}
-	api.SetChannels(names)
-	api.SetChannelLogos(logos)
+	m.apiState.SetChannels(names)
+	m.apiState.SetChannelLogos(logos)
 	slog.Info("loaded configuration", "channels", len(channels), "vods", len(vods), "blacklist", len(blacklist))
 	return nil
 }
