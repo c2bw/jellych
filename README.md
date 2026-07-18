@@ -20,7 +20,6 @@ Optional environment variables:
 
 - `LOG_LEVEL` logging level (default `INFO`)
 - `VOD_RETENTION_DAYS` number of days to keep downloaded VOD files (default `30`, must be a positive integer)
-- `JELLYCH_API_SECRET` protects mutating control API routes when set. Clients may send it as `Authorization: Bearer <secret>` or `X-Jellych-API-Secret`. A trusted reverse proxy can inject this header after authenticating browser users.
 
 Optional flags:
 
@@ -46,12 +45,12 @@ services:
       - TWITCH_CLIENT_ID=your_client_id
       - TWITCH_CLIENT_SECRET=your_client_secret
       - SERVER_URL=http://localhost:8080
-      - JELLYFIN_WEBHOOK_SECRET=your_webhook_secret
+      - JELLYFIN_WEBHOOK_SECRET=replace_me
     ports:
       - "8080:8080"
     volumes:
-      - vods_volume:/data/vods
       - config_volume:/data/config
+      - vods_volume:/data/vods
 
 volumes:
   vods_volume:
