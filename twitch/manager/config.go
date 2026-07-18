@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -246,25 +247,25 @@ func normalizeVODConfig(vods []api.VOD) ([]api.VOD, bool, error) {
 	return normalized, changed, nil
 }
 
-func nextPosition(tx *sql.Tx, table string) (int, error) {
+func nextPositionContext(ctx context.Context, tx *sql.Tx, table string) (int, error) {
 	var position int
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(position), -1) + 1 FROM ` + table).Scan(&position); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position), -1) + 1 FROM `+table).Scan(&position); err != nil {
 		return 0, err
 	}
 	return position, nil
 }
 
-func (m *Manager) insertChannel(name, iconURL string) error {
-	tx, err := m.db.Begin()
+func (m *Manager) insertChannelContext(ctx context.Context, name, iconURL string) error {
+	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin channel update: %w", err)
 	}
 	defer tx.Rollback()
-	position, err := nextPosition(tx, "channels")
+	position, err := nextPositionContext(ctx, tx, "channels")
 	if err != nil {
 		return fmt.Errorf("failed to determine channel position: %w", err)
 	}
-	if _, err := tx.Exec(`INSERT INTO channels (name, icon_url, position) VALUES (?, ?, ?)`, name, iconURL, position); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO channels (name, icon_url, position) VALUES (?, ?, ?)`, name, iconURL, position); err != nil {
 		return fmt.Errorf("failed to save channel: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -273,8 +274,8 @@ func (m *Manager) insertChannel(name, iconURL string) error {
 	return nil
 }
 
-func (m *Manager) deleteChannel(name string) error {
-	result, err := m.db.Exec(`DELETE FROM channels WHERE name = ?`, name)
+func (m *Manager) deleteChannelContext(ctx context.Context, name string) error {
+	result, err := m.db.ExecContext(ctx, `DELETE FROM channels WHERE name = ?`, name)
 	if err != nil {
 		return fmt.Errorf("failed to remove channel: %w", err)
 	}
@@ -287,20 +288,20 @@ func (m *Manager) deleteChannel(name string) error {
 	return nil
 }
 
-func (m *Manager) insertVOD(vod api.VOD) error {
-	tx, err := m.db.Begin()
+func (m *Manager) insertVODContext(ctx context.Context, vod api.VOD) error {
+	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin vod update: %w", err)
 	}
 	defer tx.Rollback()
-	position, err := nextPosition(tx, "vods")
+	position, err := nextPositionContext(ctx, tx, "vods")
 	if err != nil {
 		return fmt.Errorf("failed to determine vod position: %w", err)
 	}
-	if _, err := tx.Exec(`DELETE FROM vod_blacklist WHERE id = ?`, vod.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM vod_blacklist WHERE id = ?`, vod.ID); err != nil {
 		return fmt.Errorf("failed to update vod blacklist: %w", err)
 	}
-	if err := insertVODRow(tx, vod, position); err != nil {
+	if err := insertVODRowContext(ctx, tx, vod, position); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -309,21 +310,21 @@ func (m *Manager) insertVOD(vod api.VOD) error {
 	return nil
 }
 
-func (m *Manager) insertVODs(vods []api.VOD) error {
+func (m *Manager) insertVODsContext(ctx context.Context, vods []api.VOD) error {
 	if len(vods) == 0 {
 		return nil
 	}
-	tx, err := m.db.Begin()
+	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin vod import: %w", err)
 	}
 	defer tx.Rollback()
-	position, err := nextPosition(tx, "vods")
+	position, err := nextPositionContext(ctx, tx, "vods")
 	if err != nil {
 		return fmt.Errorf("failed to determine vod position: %w", err)
 	}
 	for _, vod := range vods {
-		if err := insertVODRow(tx, vod, position); err != nil {
+		if err := insertVODRowContext(ctx, tx, vod, position); err != nil {
 			return err
 		}
 		position++
@@ -334,8 +335,8 @@ func (m *Manager) insertVODs(vods []api.VOD) error {
 	return nil
 }
 
-func insertVODRow(tx *sql.Tx, vod api.VOD, position int) error {
-	_, err := tx.Exec(`INSERT INTO vods (id, url, title, channel, logo, date, duration, position)
+func insertVODRowContext(ctx context.Context, tx *sql.Tx, vod api.VOD, position int) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO vods (id, url, title, channel, logo, date, duration, position)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, vod.ID, vod.URL, vod.Title, vod.Channel, vod.Logo, vod.Date, vod.Duration, position)
 	if err != nil {
 		return fmt.Errorf("failed to save vod %q: %w", vod.ID, err)
@@ -343,7 +344,7 @@ func insertVODRow(tx *sql.Tx, vod api.VOD, position int) error {
 	return nil
 }
 
-func (m *Manager) updateVODDurations(durations map[string]string) error {
+func (m *Manager) updateVODDurationsContext(ctx context.Context, durations map[string]string) error {
 	if len(durations) == 0 {
 		return nil
 	}
@@ -354,7 +355,7 @@ func (m *Manager) updateVODDurations(durations map[string]string) error {
 	current := append([]api.VOD(nil), m.vods...)
 	m.mu.RUnlock()
 
-	tx, err := m.db.Begin()
+	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin VOD duration update: %w", err)
 	}
@@ -365,7 +366,7 @@ func (m *Manager) updateVODDurations(durations map[string]string) error {
 		if duration == "" || duration == current[i].Duration {
 			continue
 		}
-		if _, err := tx.Exec(`UPDATE vods SET duration = ? WHERE id = ?`, duration, current[i].ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE vods SET duration = ? WHERE id = ?`, duration, current[i].ID); err != nil {
 			return fmt.Errorf("failed to update VOD duration: %w", err)
 		}
 		updates[i] = duration
@@ -382,13 +383,13 @@ func (m *Manager) updateVODDurations(durations map[string]string) error {
 	return nil
 }
 
-func (m *Manager) deleteVOD(id string) error {
-	tx, err := m.db.Begin()
+func (m *Manager) deleteVODContext(ctx context.Context, id string) error {
+	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin vod removal: %w", err)
 	}
 	defer tx.Rollback()
-	result, err := tx.Exec(`DELETE FROM vods WHERE id = ?`, id)
+	result, err := tx.ExecContext(ctx, `DELETE FROM vods WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("failed to remove vod: %w", err)
 	}
@@ -398,7 +399,7 @@ func (m *Manager) deleteVOD(id string) error {
 		}
 		return api.ErrVODNotFound
 	}
-	if _, err := tx.Exec(`INSERT INTO vod_blacklist (id) VALUES (?) ON CONFLICT(id) DO NOTHING`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO vod_blacklist (id) VALUES (?) ON CONFLICT(id) DO NOTHING`, id); err != nil {
 		return fmt.Errorf("failed to update vod blacklist: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

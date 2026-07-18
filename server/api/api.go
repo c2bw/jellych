@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -54,15 +55,15 @@ var twitchVODURLRE = regexp.MustCompile(`(?i)^https?://(?:[\w-]+\.)?twitch\.tv/(
 var vodIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 type channelStore interface {
-	AddChannel(name string) (string, error)
-	RemoveChannel(name string) error
+	AddChannelContext(ctx context.Context, name string) (string, error)
+	RemoveChannelContext(ctx context.Context, name string) error
 }
 
 type vodStore interface {
 	ListVODs() []VOD
 	FindVOD(id string) (VOD, bool)
-	AddVOD(vod VOD) error
-	RemoveVOD(id string) error
+	AddVODContext(ctx context.Context, vod VOD) error
+	RemoveVODContext(ctx context.Context, id string) error
 }
 
 // SetChannelStore configures the persistence backend for channel changes.
@@ -252,13 +253,21 @@ func (s *APIState) GetVODs() []VOD {
 }
 
 func AddVOD(vod VOD) error {
-	return defaultState.AddVOD(vod)
+	return AddVODContext(context.Background(), vod)
 }
 
 func (s *APIState) AddVOD(vod VOD) error {
+	return s.AddVODContext(context.Background(), vod)
+}
+
+func AddVODContext(ctx context.Context, vod VOD) error {
+	return defaultState.AddVODContext(ctx, vod)
+}
+
+func (s *APIState) AddVODContext(ctx context.Context, vod VOD) error {
 	vod = PrepareVOD(vod)
 	if store := s.configuredVODStore(); store != nil {
-		return store.AddVOD(vod)
+		return store.AddVODContext(ctx, vod)
 	}
 	if err := ValidateVOD(vod); err != nil {
 		return err
@@ -276,13 +285,21 @@ func (s *APIState) AddVOD(vod VOD) error {
 }
 
 func RemoveVOD(id string) error {
-	return defaultState.RemoveVOD(id)
+	return RemoveVODContext(context.Background(), id)
 }
 
 func (s *APIState) RemoveVOD(id string) error {
+	return s.RemoveVODContext(context.Background(), id)
+}
+
+func RemoveVODContext(ctx context.Context, id string) error {
+	return defaultState.RemoveVODContext(ctx, id)
+}
+
+func (s *APIState) RemoveVODContext(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if store := s.configuredVODStore(); store != nil {
-		return store.RemoveVOD(id)
+		return store.RemoveVODContext(ctx, id)
 	}
 
 	s.vodMu.Lock()
@@ -318,10 +335,18 @@ func (s *APIState) FindVOD(id string) (VOD, bool) {
 
 // AddChannel adds a channel to the in-memory list if it doesn't already exist.
 func AddChannel(name string) error {
-	return defaultState.AddChannel(name)
+	return AddChannelContext(context.Background(), name)
 }
 
 func (s *APIState) AddChannel(name string) error {
+	return s.AddChannelContext(context.Background(), name)
+}
+
+func AddChannelContext(ctx context.Context, name string) error {
+	return defaultState.AddChannelContext(ctx, name)
+}
+
+func (s *APIState) AddChannelContext(ctx context.Context, name string) error {
 	s.chMu.Lock()
 	if slices.Contains(s.channelNames, name) {
 		s.chMu.Unlock()
@@ -341,7 +366,7 @@ func (s *APIState) AddChannel(name string) error {
 	iconURL := ""
 	if store != nil {
 		var err error
-		iconURL, err = store.AddChannel(name)
+		iconURL, err = store.AddChannelContext(ctx, name)
 		if err != nil {
 			s.chMu.Lock()
 			delete(s.channelOps, name)
@@ -430,10 +455,18 @@ func VODIDFromURL(raw string) string {
 
 // RemoveChannel removes a channel by name from the in-memory list.
 func RemoveChannel(name string) error {
-	return defaultState.RemoveChannel(name)
+	return RemoveChannelContext(context.Background(), name)
 }
 
 func (s *APIState) RemoveChannel(name string) error {
+	return s.RemoveChannelContext(context.Background(), name)
+}
+
+func RemoveChannelContext(ctx context.Context, name string) error {
+	return defaultState.RemoveChannelContext(ctx, name)
+}
+
+func (s *APIState) RemoveChannelContext(ctx context.Context, name string) error {
 	s.chMu.Lock()
 	idx := slices.Index(s.channelNames, name)
 	if idx < 0 {
@@ -452,7 +485,7 @@ func (s *APIState) RemoveChannel(name string) error {
 	s.chMu.Unlock()
 
 	if store != nil {
-		if err := store.RemoveChannel(name); err != nil {
+		if err := store.RemoveChannelContext(ctx, name); err != nil {
 			s.chMu.Lock()
 			delete(s.channelOps, name)
 			s.chMu.Unlock()

@@ -39,6 +39,32 @@ func TestNormalizeChannelConfigLowercasesAndTrims(t *testing.T) {
 	}
 }
 
+func TestCanceledMutationContextPreventsPersistence(t *testing.T) {
+	m, err := Start(t.TempDir())
+	if err != nil {
+		t.Fatalf("start manager: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := m.AddChannelContext(ctx, "jankos"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("AddChannelContext error = %v; want context.Canceled", err)
+	}
+	if channels := m.channelNames(); len(channels) != 0 {
+		t.Fatalf("canceled channel mutation changed state: %#v", channels)
+	}
+
+	vod := api.VOD{ID: "123", URL: "https://www.twitch.tv/videos/123"}
+	if err := m.AddVODContext(ctx, vod); !errors.Is(err, context.Canceled) {
+		t.Fatalf("AddVODContext error = %v; want context.Canceled", err)
+	}
+	if vods := m.ListVODs(); len(vods) != 0 {
+		t.Fatalf("canceled VOD mutation changed state: %#v", vods)
+	}
+}
+
 func TestNormalizeChannelConfigRejectsInvalidNames(t *testing.T) {
 	_, _, err := normalizeChannelConfig([]channel.Info{{Name: "../bad"}})
 	if err == nil {

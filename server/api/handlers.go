@@ -274,7 +274,7 @@ func (a *API) handleAddVOD(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vod = PrepareVOD(vod)
-	if err := a.state.AddVOD(vod); err != nil {
+	if err := a.state.AddVODContext(r.Context(), vod); err != nil {
 		writeMappedError(w, err, addVODErrors, http.StatusBadRequest, "failed to add vod: %v")
 		return
 	}
@@ -289,7 +289,7 @@ func (a *API) handleRemoveVOD(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.streams.RemoveVODWithArtifacts(id, func() error {
-		return a.state.RemoveVOD(id)
+		return a.state.RemoveVODContext(r.Context(), id)
 	}); err != nil {
 		writeMappedError(w, err, removeVODErrors, http.StatusInternalServerError, "failed to remove vod: %v")
 		return
@@ -431,7 +431,7 @@ func (a *API) handleAddChannel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := a.state.AddChannel(name); err != nil {
+	if err := a.state.AddChannelContext(r.Context(), name); err != nil {
 		writeMappedError(w, err, addChannelErrors, http.StatusInternalServerError, "failed to add channel: %v")
 		return
 	}
@@ -446,7 +446,7 @@ func (a *API) handleRemoveChannelByBody(w http.ResponseWriter, r *http.Request) 
 	if !decodeJSONBody(w, r, &payload) {
 		return
 	}
-	if err := a.removeChannelByName(w, payload.Name); err != nil {
+	if err := a.removeChannelByName(r.Context(), w, payload.Name); err != nil {
 		return
 	}
 
@@ -454,19 +454,19 @@ func (a *API) handleRemoveChannelByBody(w http.ResponseWriter, r *http.Request) 
 }
 
 func (a *API) handleRemoveChannelByPath(w http.ResponseWriter, r *http.Request) {
-	if err := a.removeChannelByName(w, r.PathValue("name")); err != nil {
+	if err := a.removeChannelByName(r.Context(), w, r.PathValue("name")); err != nil {
 		return
 	}
 
 	writeText(w, http.StatusOK, "removed")
 }
 
-func (a *API) removeChannelByName(w http.ResponseWriter, name string) error {
+func (a *API) removeChannelByName(ctx context.Context, w http.ResponseWriter, name string) error {
 	validName, ok := requireValidChannelName(w, name)
 	if !ok {
 		return fmt.Errorf("invalid name")
 	}
-	if err := a.state.RemoveChannel(validName); err != nil {
+	if err := a.state.RemoveChannelContext(ctx, validName); err != nil {
 		writeMappedError(w, err, removeChannelErrors, http.StatusInternalServerError, "failed to remove channel: %v")
 		return err
 	}

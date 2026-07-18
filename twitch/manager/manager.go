@@ -82,7 +82,11 @@ func (m *Manager) FindVOD(id string) (api.VOD, bool) {
 }
 
 func (m *Manager) AddChannel(name string) (string, error) {
-	iconURL := m.fetchChannelIconURL(name)
+	return m.AddChannelContext(context.Background(), name)
+}
+
+func (m *Manager) AddChannelContext(ctx context.Context, name string) (string, error) {
+	iconURL := m.fetchChannelIconURL(ctx, name)
 
 	m.mutationMu.Lock()
 	defer m.mutationMu.Unlock()
@@ -96,7 +100,7 @@ func (m *Manager) AddChannel(name string) (string, error) {
 	}
 	m.mu.RUnlock()
 
-	if err := m.insertChannel(name, iconURL); err != nil {
+	if err := m.insertChannelContext(ctx, name, iconURL); err != nil {
 		return "", err
 	}
 
@@ -107,8 +111,12 @@ func (m *Manager) AddChannel(name string) (string, error) {
 }
 
 func (m *Manager) AddVOD(vod api.VOD) error {
+	return m.AddVODContext(context.Background(), vod)
+}
+
+func (m *Manager) AddVODContext(ctx context.Context, vod api.VOD) error {
 	var err error
-	vod, err = m.enrichVOD(vod)
+	vod, err = m.enrichVOD(ctx, vod)
 	if err != nil {
 		return err
 	}
@@ -129,7 +137,7 @@ func (m *Manager) AddVOD(vod api.VOD) error {
 	}
 	m.mu.RUnlock()
 
-	if err := m.insertVOD(vod); err != nil {
+	if err := m.insertVODContext(ctx, vod); err != nil {
 		return err
 	}
 
@@ -140,7 +148,7 @@ func (m *Manager) AddVOD(vod api.VOD) error {
 	return nil
 }
 
-func (m *Manager) enrichVOD(vod api.VOD) (api.VOD, error) {
+func (m *Manager) enrichVOD(ctx context.Context, vod api.VOD) (api.VOD, error) {
 	vod = api.PrepareVOD(vod)
 	if vod.ID == "" {
 		return vod, nil
@@ -153,7 +161,7 @@ func (m *Manager) enrichVOD(vod api.VOD) (api.VOD, error) {
 		return vod, nil
 	}
 
-	videos, err := twitchapi.VideosByID(c.ClientID(), c.AccessToken(), vod.ID)
+	videos, err := twitchapi.VideosByIDContext(ctx, c.ClientID(), c.AccessToken(), vod.ID)
 	if err != nil {
 		return vod, fmt.Errorf("failed to fetch Twitch VOD metadata: %w", err)
 	}
@@ -175,6 +183,10 @@ func (m *Manager) enrichVOD(vod api.VOD) (api.VOD, error) {
 }
 
 func (m *Manager) addImportedVODs(items []api.VOD) (int, error) {
+	return m.addImportedVODsContext(context.Background(), items)
+}
+
+func (m *Manager) addImportedVODsContext(ctx context.Context, items []api.VOD) (int, error) {
 	if len(items) == 0 {
 		return 0, nil
 	}
@@ -215,7 +227,7 @@ func (m *Manager) addImportedVODs(items []api.VOD) (int, error) {
 	}
 
 	toInsert := append([]api.VOD(nil), next[len(current):]...)
-	if err := m.insertVODs(toInsert); err != nil {
+	if err := m.insertVODsContext(ctx, toInsert); err != nil {
 		return 0, err
 	}
 
@@ -227,6 +239,10 @@ func (m *Manager) addImportedVODs(items []api.VOD) (int, error) {
 }
 
 func (m *Manager) RemoveVOD(id string) error {
+	return m.RemoveVODContext(context.Background(), id)
+}
+
+func (m *Manager) RemoveVODContext(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	m.mutationMu.Lock()
 	defer m.mutationMu.Unlock()
@@ -235,7 +251,7 @@ func (m *Manager) RemoveVOD(id string) error {
 	for i, vod := range m.vods {
 		if vod.ID == id {
 			m.mu.RUnlock()
-			if err := m.deleteVOD(id); err != nil {
+			if err := m.deleteVODContext(ctx, id); err != nil {
 				return err
 			}
 			m.mu.Lock()
@@ -250,6 +266,10 @@ func (m *Manager) RemoveVOD(id string) error {
 }
 
 func (m *Manager) RemoveChannel(name string) error {
+	return m.RemoveChannelContext(context.Background(), name)
+}
+
+func (m *Manager) RemoveChannelContext(ctx context.Context, name string) error {
 	m.mutationMu.Lock()
 	defer m.mutationMu.Unlock()
 
@@ -257,7 +277,7 @@ func (m *Manager) RemoveChannel(name string) error {
 	for i, c := range m.channels {
 		if c.Name == name {
 			m.mu.RUnlock()
-			if err := m.deleteChannel(name); err != nil {
+			if err := m.deleteChannelContext(ctx, name); err != nil {
 				return err
 			}
 			m.mu.Lock()
@@ -357,7 +377,7 @@ func (m *Manager) refreshSavedVODs(ctx context.Context, c *client.TwitchClient, 
 			durations[video.ID] = duration
 		}
 	}
-	if err := m.updateVODDurations(durations); err != nil {
+	if err := m.updateVODDurationsContext(ctx, durations); err != nil {
 		slog.Warn("failed to update Twitch VOD durations", "error", err)
 	}
 	if !prune {
@@ -367,7 +387,7 @@ func (m *Manager) refreshSavedVODs(ctx context.Context, c *client.TwitchClient, 
 		if _, ok := available[vod.ID]; ok {
 			continue
 		}
-		removeMetadata := func() error { return m.RemoveVOD(vod.ID) }
+		removeMetadata := func() error { return m.RemoveVODContext(ctx, vod.ID) }
 		var err error
 		removed := false
 		if pruneVOD != nil {
@@ -427,7 +447,7 @@ func (m *Manager) importLatestVODsOnce(ctx context.Context, c *client.TwitchClie
 		}
 	}
 
-	added, err := m.addImportedVODs(imported)
+	added, err := m.addImportedVODsContext(ctx, imported)
 	if err != nil {
 		slog.Error("failed to save imported VODs", "error", err)
 		return
@@ -540,14 +560,14 @@ func normalizeTwitchThumbnail(raw string) string {
 	return raw
 }
 
-func (m *Manager) fetchChannelIconURL(name string) string {
+func (m *Manager) fetchChannelIconURL(ctx context.Context, name string) string {
 	m.mu.RLock()
 	c := m.twitchClient
 	m.mu.RUnlock()
 	if c == nil {
 		return ""
 	}
-	iconURL, err := channel.FetchIconURL(c, name)
+	iconURL, err := channel.FetchIconURLContext(ctx, c, name)
 	if err != nil {
 		slog.Warn("failed to fetch channel icon", "channel", name, "error", err)
 		return ""

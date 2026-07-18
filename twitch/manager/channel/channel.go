@@ -44,7 +44,11 @@ func FetchStatusContext(ctx context.Context, client *client.TwitchClient, channe
 }
 
 func FetchIconURL(client *client.TwitchClient, channelName string) (string, error) {
-	info, err := twitchapi.UserInfo(client.ClientID(), client.AccessToken(), []string{channelName})
+	return FetchIconURLContext(context.Background(), client, channelName)
+}
+
+func FetchIconURLContext(ctx context.Context, client *client.TwitchClient, channelName string) (string, error) {
+	info, err := twitchapi.UserInfoContext(ctx, client.ClientID(), client.AccessToken(), []string{channelName})
 	if err != nil {
 		return "", err
 	}
