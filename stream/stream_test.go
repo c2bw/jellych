@@ -55,6 +55,77 @@ func TestBuildFFmpegHLSArgsIncludesGenerationHeader(t *testing.T) {
 	}
 }
 
+func TestLiveWriteCommitDoesNotHoldRegistryLock(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m := &manager{
+		ctx:        ctx,
+		cancel:     cancel,
+		state:      streamRunning,
+		generation: testLiveGeneration,
+		startTime:  time.Now(),
+		done:       make(chan struct{}),
+	}
+	var registryMu sync.Mutex
+	managers := map[string]*manager{"testchannel": m}
+	registry := NewStreamRegistry(&registryMu, &managers)
+	registry.clearChannel = func(string) {}
+
+	commitStarted := make(chan struct{})
+	releaseCommit := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseCommit) }) }
+	defer release()
+	commitDone := make(chan bool, 1)
+	go func() {
+		commitDone <- registry.commitLiveWrite("testchannel", testLiveGeneration, func() {
+			close(commitStarted)
+			<-releaseCommit
+		})
+	}()
+
+	select {
+	case <-commitStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("live write commit did not start")
+	}
+
+	finishDone := make(chan struct{})
+	go func() {
+		registry.finishManager("testchannel", m)
+		close(finishDone)
+	}()
+
+	activeResult := make(chan bool, 1)
+	go func() { activeResult <- registry.IsChannelActive("testchannel") }()
+	select {
+	case active := <-activeResult:
+		if !active {
+			t.Fatal("stream became inactive before the in-flight commit completed")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("registry operation blocked behind live media commit")
+	}
+
+	select {
+	case <-finishDone:
+		t.Fatal("stream teardown completed before the in-flight commit")
+	default:
+	}
+
+	release()
+	if committed := <-commitDone; !committed {
+		t.Fatal("current live writer commit was rejected")
+	}
+	select {
+	case <-finishDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream teardown did not resume after the commit")
+	}
+	if registry.IsChannelActive("testchannel") {
+		t.Fatal("stream remained active after teardown")
+	}
+}
+
 func assertArgValue(t *testing.T, args []string, name, want string) {
 	t.Helper()
 	index := slices.Index(args, name)

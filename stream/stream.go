@@ -113,6 +113,7 @@ type manager struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	cmd            streamCommand
+	writeMu        sync.Mutex
 	state          streamState
 	generation     string
 	startTime      time.Time
@@ -441,13 +442,27 @@ func (r *StreamRegistry) finishManager(channel string, m *manager) {
 	m.finishOnce.Do(func() {
 		m.cancel()
 
+		// Reject new writes before waiting for this stream's in-flight commit.
+		// Keep the manager reserved while clearing its objects so a replacement
+		// stream cannot be started and then cleared by this generation.
 		r.mu.Lock()
 		managers := *r.managers
-		if managers != nil && managers[channel] == m {
-			r.clearChannel(channel)
-			delete(managers, channel)
+		current := managers != nil && managers[channel] == m
+		if current {
+			m.state = streamStopping
 		}
 		r.mu.Unlock()
+
+		m.writeMu.Lock()
+		if current {
+			r.clearChannel(channel)
+			r.mu.Lock()
+			if managers := *r.managers; managers != nil && managers[channel] == m {
+				delete(managers, channel)
+			}
+			r.mu.Unlock()
+		}
+		m.writeMu.Unlock()
 
 		close(m.done)
 		slog.Info("stream lifecycle finished", "channel", channel, "elapsed", time.Since(m.startTime))
@@ -455,11 +470,30 @@ func (r *StreamRegistry) finishManager(channel string, m *manager) {
 }
 
 func (r *StreamRegistry) commitLiveWrite(channel, generation string, commit func()) bool {
+	// Capture the manager under the registry lock, then use its write mutex to
+	// serialize commits with teardown. Revalidate after acquiring writeMu: the
+	// manager may have stopped while this write was waiting.
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !r.isCurrentLiveWriterLocked(channel, generation) {
+	managers := *r.managers
+	var m *manager
+	if managers != nil {
+		m = managers[channel]
+	}
+	r.mu.Unlock()
+	if m == nil {
 		return false
 	}
+
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+
+	r.mu.Lock()
+	current := r.isCurrentLiveWriterLocked(channel, generation) && (*r.managers)[channel] == m
+	r.mu.Unlock()
+	if !current {
+		return false
+	}
+
 	commit()
 	return true
 }
