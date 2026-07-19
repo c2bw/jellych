@@ -19,7 +19,7 @@ import (
 )
 
 const vodMediaTokenTTL = 12 * time.Hour
-const maxVODMediaTokens = 100_000
+const maxVODMediaTokens = 200_000
 const maxProxiedVODMediaBytes = 256 << 20
 const maxProxiedVODPlaylistBytes = 16 << 20
 
