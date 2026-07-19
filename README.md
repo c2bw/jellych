@@ -1,4 +1,9 @@
-# Jellych
+
+<p align="center">
+  <img src="html/assets/img/twitch_jellyfish_icon.svg" alt="Jellych logo" width="80">
+</p>
+
+<h1 align="center">Jellych</h1>
 
 A lightweight server that leverages [`ffmpeg`](https://github.com/ffmpeg/ffmpeg) to stream Twitch livestreams via `Web-UI` and `Jellyfin` (*requires [Jellyfin Plugin](https://github.com/c2bw/jellyfin-plugin-jellych)*).
 
