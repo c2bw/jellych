@@ -5,11 +5,15 @@
 
 <h1 align="center">Jellych</h1>
 
-A lightweight server that leverages [`ffmpeg`](https://github.com/ffmpeg/ffmpeg) to stream Twitch livestreams via `Web-UI` and `Jellyfin` (*requires [Jellyfin Plugin](https://github.com/c2bw/jellyfin-plugin-jellych)*).
-
-It can also download Twitch VODs which can then be watched in Jellyfin/Jellych.
+A lightweight server to stream Twitch livestreams via `Web-UI` and `Jellyfin` (***requires [Jellyfin Plugin](https://github.com/c2bw/jellyfin-plugin-jellych)***).
 
 <img src="docs/images/home.jpg" alt="Jellych web UI" height="450">
+
+## Features
+
+- **Stream** Twitch in **Jellyfin** and **Web-UI**
+- **Download** and convert Twitch VODs
+- **Chat anonymously** in Web-UI, or **log in** to send messages with your Twitch account
 
 ## Configuration
 
@@ -20,11 +24,6 @@ Required environment variables:
 - `TWITCH_CLIENT_SECRET` for Twitch API access, register an application on the [Twitch Developer Portal](https://dev.twitch.tv/console/apps)
 - `SERVER_URL` publicly accessible URL where the server is reachable, also used for Jellyfin webhook
 - `JELLYFIN_WEBHOOK_SECRET` shared secret expected on `X-Jellych-Secret`
-
-Add `${SERVER_URL}/api/chat/oauth/callback` as an OAuth Redirect URL for the
-same Twitch application. For example, a local deployment using
-`SERVER_URL=http://localhost:8080` must register
-`http://localhost:8080/api/chat/oauth/callback`.
 
 Optional environment variables:
 
@@ -39,7 +38,7 @@ Optional flags:
 - `-config` (default `/data/config`) directory containing the persistent `jellych.db` SQLite configuration database
 - `-vods` folder where manually downloaded VODs are saved
 
-The VOD page can download directly as Original, H.264, HEVC, or VP9. A completed Original download can later be converted once to any compressed preset from its codec selector. Conversion replaces the original only after the new MKV is complete, and converted entries show both original and converted file sizes.
+The VOD page can download directly as Original, H.264, HEVC, or VP9. A completed Original download can later be converted **once** to any compressed preset from its codec selector.
 
 The live page includes read-only anonymous Twitch chat. Select **Log in** in
 the chat panel to authorize the `chat:read` and `chat:edit` scopes and send
@@ -88,3 +87,14 @@ The VODs library is optional, but it allows to watch Twitch VODs in Jellyfin. To
 
 - Dashboard > Libraries > Manage Library -> remove all metadata downloaders; select only `screen grabber` for the remaining options
 - Select `Prefer embedded titles over filenames` to have the VOD title displayed in Jellyfin instead of the filename (requires rescan if the VODs were already downloaded)
+
+
+### Log in to Twitch
+
+In your [Twitch Developer Portal](https://dev.twitch.tv/console/apps):
+
+Add `${SERVER_URL}/api/chat/oauth/callback` as an OAuth Redirect URL for the same Twitch application.
+
+For example, a deployment using `SERVER_URL=https://example.com` must register `https://example.com/api/chat/oauth/callback`.
+
+Once the redirect URL is registered, you can log in to Twitch in the Web-UI by clicking **Log in** in the chat panel. The server will request the `chat:read` and `chat:edit` scopes to allow sending messages as your Twitch account.
