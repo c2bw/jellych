@@ -2,6 +2,7 @@ import { Player } from './player.js';
 import { initStats } from './stats.js';
 import { initManager } from './manager.js';
 import { initPlayerControls } from './player_controls.js';
+import { initTwitchChat } from './twitch_chat.js';
 
 const listEl = document.getElementById('channelsList');
 const video = document.getElementById('player');
@@ -15,10 +16,41 @@ const newNameEl = document.getElementById('newName');
 const removeBtn = document.getElementById('removeBtn');
 const managerMsgEl = document.getElementById('managerMsg');
 const playerStageEl = document.getElementById('playerStage');
+const watchLayoutEl = document.querySelector('.watch-layout');
+const chatToggleEl = document.getElementById('chatToggle');
+const chatToggleLabelEl = document.getElementById('chatToggleLabel');
+const chatPanelEl = document.getElementById('chatPanel');
+const chatMessagesEl = document.getElementById('chatMessages');
+const chatEmptyEl = document.getElementById('chatEmpty');
+const chatStatusEl = document.getElementById('chatStatus');
+const chatChannelEl = document.getElementById('chatChannel');
+const chatNewMessagesEl = document.getElementById('chatNewMessages');
 
 const player = new Player(video);
 const stats = initStats({ video, player, statsOverlay, statsState, statsGrid });
-const manager = initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn, managerMsgEl, player, stats, playerTitleEl });
+const chat = initTwitchChat({
+  toggleEl: chatToggleEl,
+  toggleLabelEl: chatToggleLabelEl,
+  panelEl: chatPanelEl,
+  messagesEl: chatMessagesEl,
+  emptyEl: chatEmptyEl,
+  statusEl: chatStatusEl,
+  channelEl: chatChannelEl,
+  newMessagesEl: chatNewMessagesEl,
+  layoutEl: watchLayoutEl,
+});
+const manager = initManager({
+  listEl,
+  removeSelect,
+  addBtn,
+  newNameEl,
+  removeBtn,
+  managerMsgEl,
+  player,
+  stats,
+  playerTitleEl,
+  onPlaybackChannelChange: (channel)=>chat.setChannel(channel),
+});
 initPlayerControls({ video, stage: playerStageEl });
 
 // Wire video events to stats update

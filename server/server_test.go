@@ -43,6 +43,7 @@ func TestSecurityHeaders(t *testing.T) {
 		"default-src 'self'",
 		"script-src 'self'",
 		"style-src 'self'",
+		"connect-src 'self' wss://irc-ws.chat.twitch.tv:443",
 		"media-src 'self' blob:",
 		"worker-src 'self' blob:",
 	} {

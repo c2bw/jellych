@@ -2,7 +2,18 @@ import { channelNameOf } from './utils.js';
 import { apiFetch, getControlSecret } from './auth.js';
 import { createPollingLoop } from './polling.js';
 
-export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn, managerMsgEl, player, stats, playerTitleEl }){
+export function initManager({
+  listEl,
+  removeSelect,
+  addBtn,
+  newNameEl,
+  removeBtn,
+  managerMsgEl,
+  player,
+  stats,
+  playerTitleEl,
+  onPlaybackChannelChange = ()=>{},
+}){
   const MIN_SEGMENTS_TO_PLAY = 4;
   const MAX_WAIT_MS = 45000;
   const POLL_MS = 250;
@@ -134,6 +145,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
     suppressPauseHandling = true;
     try{
       player.play(url);
+      onPlaybackChannelChange(channelName);
     } finally {
       setTimeout(()=>{ suppressPauseHandling = false; }, 0);
     }
@@ -156,6 +168,7 @@ export function initManager({ listEl, removeSelect, addBtn, newNameEl, removeBtn
       stats.stop();
       if(clearStats) stats.clear();
       playTargetChannel = null;
+      onPlaybackChannelChange(null);
       clearPlayerTitle();
       stopPlaybackTracking();
     } finally {

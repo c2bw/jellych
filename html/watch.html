@@ -18,16 +18,22 @@
           <span>Stream console</span>
         </span>
       </a>
-      <nav class="site-nav" aria-label="Primary navigation">
-        <a href="/watch" class="nav-link is-active" aria-current="page">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
-          Live
-        </a>
-        <a href="/vods" class="nav-link">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5zM9 9v6l6-3z" /></svg>
-          VODs
-        </a>
-      </nav>
+      <div class="header-actions">
+        <nav class="site-nav" aria-label="Primary navigation">
+          <a href="/watch" class="nav-link is-active" aria-current="page">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+            Live
+          </a>
+          <a href="/vods" class="nav-link">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5zM9 9v6l6-3z" /></svg>
+            VODs
+          </a>
+        </nav>
+        <button id="chatToggle" class="nav-link chat-toggle" type="button" aria-controls="chatPanel" aria-pressed="false" aria-expanded="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8l-5 4v-4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" /></svg>
+          <span id="chatToggleLabel">Show chat</span>
+        </button>
+      </div>
     </header>
 
     <main class="watch-layout">
@@ -74,46 +80,63 @@
         </section>
       </aside>
 
-      <section class="player-column" aria-label="Stream player">
-        <div id="playerStage" class="player-stage" tabindex="0">
-          <div id="playerTitle" class="player-title hidden">
-            <div class="truncate"></div>
-          </div>
-          <video id="player" playsinline preload="metadata"></video>
-          <div class="player-idle" aria-hidden="true">
-            <img src="/html/assets/img/twitch_jellyfish_icon.svg" alt="" />
-            <span>Select a live channel to begin</span>
-          </div>
-          <button id="playerCenterPlay" class="player-center-play hidden" type="button" aria-label="Play stream">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
-          </button>
-          <div id="playerControls" class="player-controls">
-            <div class="player-controls-left">
-              <button id="playerPlayToggle" class="player-control-button" type="button" aria-label="Play" disabled>
-                <svg class="player-icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
-                <svg class="player-icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h3v14H8zM14 5h3v14h-3z" /></svg>
-              </button>
-              <span class="player-live-badge"><i></i> Live</span>
+      <div class="viewer-shell">
+        <section class="player-column" aria-label="Stream player">
+          <div id="playerStage" class="player-stage" tabindex="0">
+            <div id="playerTitle" class="player-title hidden">
+              <div class="truncate"></div>
             </div>
-            <div class="player-controls-right">
-              <div class="player-volume">
-                <button id="playerMuteToggle" class="player-control-button" type="button" aria-label="Mute">
-                  <svg class="player-icon-volume" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9zm12.5.5a4 4 0 0 1 0 5M19.5 7a7 7 0 0 1 0 10" /></svg>
-                  <svg class="player-icon-muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9zm12 1 4 4m0-4-4 4" /></svg>
+            <video id="player" playsinline preload="metadata"></video>
+            <div class="player-idle" aria-hidden="true">
+              <img src="/html/assets/img/twitch_jellyfish_icon.svg" alt="" />
+              <span>Select a live channel to begin</span>
+            </div>
+            <button id="playerCenterPlay" class="player-center-play hidden" type="button" aria-label="Play stream">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+            </button>
+            <div id="playerControls" class="player-controls">
+              <div class="player-controls-left">
+                <button id="playerPlayToggle" class="player-control-button" type="button" aria-label="Play" disabled>
+                  <svg class="player-icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+                  <svg class="player-icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h3v14H8zM14 5h3v14h-3z" /></svg>
                 </button>
-                <input id="playerVolume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume" />
+                <span class="player-live-badge"><i></i> Live</span>
               </div>
-              <button id="playerPipToggle" class="player-control-button" type="button" aria-label="Picture in picture" title="Picture in picture">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM12 12h6v5h-6z" /></svg>
-              </button>
-              <button id="playerFullscreenToggle" class="player-control-button" type="button" aria-label="Enter fullscreen" title="Fullscreen">
-                <svg class="player-icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /></svg>
-                <svg class="player-icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5" /></svg>
-              </button>
+              <div class="player-controls-right">
+                <div class="player-volume">
+                  <button id="playerMuteToggle" class="player-control-button" type="button" aria-label="Mute">
+                    <svg class="player-icon-volume" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9zm12.5.5a4 4 0 0 1 0 5M19.5 7a7 7 0 0 1 0 10" /></svg>
+                    <svg class="player-icon-muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9zm12 1 4 4m0-4-4 4" /></svg>
+                  </button>
+                  <input id="playerVolume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume" />
+                </div>
+                <button id="playerPipToggle" class="player-control-button" type="button" aria-label="Picture in picture" title="Picture in picture">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM12 12h6v5h-6z" /></svg>
+                </button>
+                <button id="playerFullscreenToggle" class="player-control-button" type="button" aria-label="Enter fullscreen" title="Fullscreen">
+                  <svg class="player-icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /></svg>
+                  <svg class="player-icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5" /></svg>
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+
+        <aside id="chatPanel" class="surface-card chat-panel" aria-labelledby="chatChannel" tabindex="-1" hidden>
+          <header class="chat-header">
+            <div>
+              <span class="eyebrow">Twitch IRC</span>
+              <h2 id="chatChannel">Chat</h2>
+            </div>
+            <span id="chatStatus" class="chat-status" data-state="idle" aria-live="polite">Idle</span>
+          </header>
+          <div class="chat-feed">
+            <div id="chatMessages" class="chat-messages" role="log" aria-label="Twitch chat messages"></div>
+            <div id="chatEmpty" class="chat-empty">Select a live channel to view chat</div>
+            <button id="chatNewMessages" class="chat-new-messages hidden" type="button">New messages</button>
+          </div>
+        </aside>
+      </div>
     </main>
   </div>
 
