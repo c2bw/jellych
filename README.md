@@ -89,12 +89,16 @@ The VODs library is optional, but it allows to watch Twitch VODs in Jellyfin. To
 - Select `Prefer embedded titles over filenames` to have the VOD title displayed in Jellyfin instead of the filename (requires rescan if the VODs were already downloaded)
 
 
-### Log in to Twitch
+## Configure Twitch Chat
+
+### Add OAuth Redirect URL
 
 In your [Twitch Developer Portal](https://dev.twitch.tv/console/apps):
 
 Add `${SERVER_URL}/api/chat/oauth/callback` as an OAuth Redirect URL for the same Twitch application.
 
 For example, a deployment using `SERVER_URL=https://example.com` must register `https://example.com/api/chat/oauth/callback`.
+
+### Log in to Twitch
 
 Once the redirect URL is registered, you can log in to Twitch in the Web-UI by clicking **Log in** in the chat panel. The server will request the `chat:read` and `chat:edit` scopes to allow sending messages as your Twitch account.
