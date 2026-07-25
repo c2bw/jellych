@@ -61,7 +61,7 @@ const manager = initManager({
   playerTitleEl,
   onPlaybackChannelChange: (channel)=>chat.setChannel(channel),
 });
-initPlayerControls({ video, stage: playerStageEl });
+initPlayerControls({ video, stage: playerStageEl, player });
 
 // Wire video events to stats update
 ['pause','play','waiting','playing','timeupdate','loadedmetadata'].forEach(ev => video.addEventListener(ev, ()=>stats.update()));

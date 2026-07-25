@@ -1,10 +1,13 @@
-export function initPlayerControls({ video, stage }){
+const LOW_LATENCY_STORAGE_KEY = 'jellych_low_latency';
+
+export function initPlayerControls({ video, stage, player }){
   const playToggle = document.getElementById('playerPlayToggle');
   const centerPlay = document.getElementById('playerCenterPlay');
   const muteToggle = document.getElementById('playerMuteToggle');
   const volume = document.getElementById('playerVolume');
   const pipToggle = document.getElementById('playerPipToggle');
   const fullscreenToggle = document.getElementById('playerFullscreenToggle');
+  const lowLatencyToggle = document.getElementById('playerLowLatencyToggle');
   let previousVolume = 1;
 
   function hasSource(){
@@ -49,6 +52,19 @@ export function initPlayerControls({ video, stage }){
     syncVolume();
   }
 
+  function setLowLatencyMode(enabled, persist){
+    if(!lowLatencyToggle || !player || typeof player.setLowLatencyMode !== 'function') return;
+    player.setLowLatencyMode(enabled);
+    lowLatencyToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    lowLatencyToggle.setAttribute('aria-label', enabled ? 'Disable low latency mode' : 'Enable low latency mode');
+    lowLatencyToggle.title = enabled
+      ? 'Low latency enabled: approximately two seconds behind live'
+      : 'Use an approximately two-second live buffer';
+    if(persist){
+      try{ window.localStorage.setItem(LOW_LATENCY_STORAGE_KEY, enabled ? 'true' : 'false'); }catch(e){ /* ignore */ }
+    }
+  }
+
   async function toggleFullscreen(){
     try{
       if(document.fullscreenElement) await document.exitFullscreen();
@@ -78,6 +94,11 @@ export function initPlayerControls({ video, stage }){
   });
   pipToggle.addEventListener('click', togglePictureInPicture);
   fullscreenToggle.addEventListener('click', toggleFullscreen);
+  if(lowLatencyToggle){
+    lowLatencyToggle.addEventListener('click', ()=>{
+      setLowLatencyMode(!player.isLowLatencyMode(), true);
+    });
+  }
 
   stage.addEventListener('keydown', (event)=>{
     if(event.target !== stage) return;
@@ -113,6 +134,9 @@ export function initPlayerControls({ video, stage }){
   });
 
   if(!document.pictureInPictureEnabled || !video.requestPictureInPicture) pipToggle.classList.add('hidden');
+  let lowLatencyEnabled = false;
+  try{ lowLatencyEnabled = window.localStorage.getItem(LOW_LATENCY_STORAGE_KEY) === 'true'; }catch(e){ /* ignore */ }
+  setLowLatencyMode(lowLatencyEnabled, false);
   syncPlayback();
   syncVolume();
 }

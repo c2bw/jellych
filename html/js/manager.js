@@ -14,7 +14,7 @@ export function initManager({
   playerTitleEl,
   onPlaybackChannelChange = ()=>{},
 }){
-  const MIN_SEGMENTS_TO_PLAY = 4;
+  const DEFAULT_MIN_SEGMENTS_TO_PLAY = 4;
   const MAX_WAIT_MS = 45000;
   const POLL_MS = 250;
   const PLAY_HEARTBEAT_MS = 5000;
@@ -32,7 +32,7 @@ export function initManager({
 
   function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
-  async function waitForSegments(url, minSegments){
+  async function waitForSegments(url, getMinSegments){
     const start = Date.now();
     let channel = '';
     try{
@@ -43,8 +43,9 @@ export function initManager({
 
     if(!channel) return false;
 
-    const readyUrl = '/api/stream-ready/' + encodeURIComponent(channel) + '?minSegments=' + encodeURIComponent(String(minSegments));
     while(Date.now() - start < MAX_WAIT_MS){
+      const minSegments = typeof getMinSegments === 'function' ? getMinSegments() : getMinSegments;
+      const readyUrl = '/api/stream-ready/' + encodeURIComponent(channel) + '?minSegments=' + encodeURIComponent(String(minSegments));
       try{
         const check = await fetch(readyUrl, { cache: 'no-store' });
         if(check.ok){
@@ -55,6 +56,13 @@ export function initManager({
       await sleep(POLL_MS);
     }
     return false;
+  }
+
+  function minSegmentsToPlay(){
+    if(player && typeof player.getStartupSegmentCount === 'function'){
+      return player.getStartupSegmentCount();
+    }
+    return DEFAULT_MIN_SEGMENTS_TO_PLAY;
   }
   function clearList(){ listEl.innerHTML = ''; channelEls.clear(); }
 
@@ -456,7 +464,7 @@ export function initManager({
         setControlsDisabled(startBtn, null, false);
         playPauseBtn.textContent = 'Buffering...';
 
-        const ready = await waitForSegments(url, MIN_SEGMENTS_TO_PLAY);
+        const ready = await waitForSegments(url, minSegmentsToPlay);
         playPauseBtn.disabled = false;
         if(ready){
           beginPlayback(channelName, url, playPauseBtn);
@@ -483,7 +491,7 @@ export function initManager({
   async function playWhenReady(channelName, url, playPauseBtn){
     playPauseBtn.disabled = true;
     playPauseBtn.textContent = 'Buffering...';
-    const ready = await waitForSegments(url, MIN_SEGMENTS_TO_PLAY);
+    const ready = await waitForSegments(url, minSegmentsToPlay);
     playPauseBtn.disabled = false;
     if(!ready){
       playPauseBtn.textContent = 'Play';

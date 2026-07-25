@@ -3,6 +3,24 @@ const NATIVE_RECOVERY_MAX_DELAY_MS = 8000;
 const NATIVE_RECOVERY_MAX_ATTEMPTS = 5;
 const MEDIA_ERR_NETWORK = 2;
 const BITRATE_SAMPLE_WEIGHT = 0.25;
+const STANDARD_STARTUP_SEGMENTS = 4;
+const LOW_LATENCY_STARTUP_SEGMENTS = 2;
+
+const STANDARD_HLS_BUFFER_CONFIG = Object.freeze({
+  liveSyncDurationCount: 4,
+  liveMaxLatencyDurationCount: 8,
+  maxBufferLength: 30,
+  maxMaxBufferLength: 600,
+  backBufferLength: Infinity,
+});
+
+const LOW_LATENCY_HLS_BUFFER_CONFIG = Object.freeze({
+  liveSyncDurationCount: 2,
+  liveMaxLatencyDurationCount: 4,
+  maxBufferLength: 2,
+  maxMaxBufferLength: 4,
+  backBufferLength: 0,
+});
 
 function isPositiveFinite(value){
   return Number.isFinite(value) && value > 0;
@@ -25,6 +43,7 @@ export class Player {
   constructor(video){
     this.video = video;
     this.hls = null;
+    this.lowLatencyMode = false;
     this.currentUrl = '';
     this.wantsPlayback = false;
     this.networkRecoveryTimer = null;
@@ -38,6 +57,31 @@ export class Player {
       this.clearNativeRecovery();
       this.nativeRecoveryAttempts = 0;
     });
+  }
+
+  getStartupSegmentCount(){
+    return this.lowLatencyMode ? LOW_LATENCY_STARTUP_SEGMENTS : STANDARD_STARTUP_SEGMENTS;
+  }
+
+  isLowLatencyMode(){
+    return this.lowLatencyMode;
+  }
+
+  setLowLatencyMode(enabled){
+    this.lowLatencyMode = !!enabled;
+    if(!this.hls || !this.hls.config) return;
+
+    Object.assign(
+      this.hls.config,
+      this.lowLatencyMode ? LOW_LATENCY_HLS_BUFFER_CONFIG : STANDARD_HLS_BUFFER_CONFIG,
+    );
+    if(this.lowLatencyMode){
+      const liveSyncPosition = Number(this.hls.liveSyncPosition);
+      const currentTime = Number(this.video.currentTime);
+      if(Number.isFinite(liveSyncPosition) && Number.isFinite(currentTime) && liveSyncPosition > currentTime){
+        try{ this.video.currentTime = liveSyncPosition; }catch(e){ /* wait for the next live sync update */ }
+      }
+    }
   }
 
   recordFragmentBitrate(data){
@@ -108,8 +152,7 @@ export class Player {
 
     if(window.Hls && Hls.isSupported()){
       const hls = new Hls({
-        liveSyncDurationCount: 4,
-        liveMaxLatencyDurationCount: 8,
+        ...(this.lowLatencyMode ? LOW_LATENCY_HLS_BUFFER_CONFIG : STANDARD_HLS_BUFFER_CONFIG),
         manifestLoadingMaxRetry: 10,
         manifestLoadingRetryDelay: 1000,
         levelLoadingMaxRetry: 10,

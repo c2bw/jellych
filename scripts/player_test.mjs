@@ -58,7 +58,8 @@ class FakeHls {
 
   static isSupported(){ return true; }
 
-  constructor(){
+  constructor(config){
+    this.config = { ...config };
     this.handlers = new Map();
   }
 
@@ -200,6 +201,61 @@ test('Hls.js is preferred when native HLS is also reported', (t)=>{
   assert.ok(player.hls instanceof FakeHls);
   assert.equal(player.usingNativeHls, false);
   assert.equal(video.src, '');
+});
+
+test('low latency mode uses a two-segment startup and a tight Hls.js buffer', (t)=>{
+  enableFakeHls(t);
+  const video = new NativeHLSVideo();
+  const player = new Player(video);
+  t.after(()=>player.stop());
+
+  player.setLowLatencyMode(true);
+  assert.equal(player.isLowLatencyMode(), true);
+  assert.equal(player.getStartupSegmentCount(), 2);
+
+  player.play('/live/testchannel/index.m3u8');
+
+  assert.equal(player.hls.config.liveSyncDurationCount, 2);
+  assert.equal(player.hls.config.liveMaxLatencyDurationCount, 4);
+  assert.equal(player.hls.config.maxBufferLength, 2);
+  assert.equal(player.hls.config.maxMaxBufferLength, 4);
+  assert.equal(player.hls.config.backBufferLength, 0);
+});
+
+test('standard mode retains the existing four-segment startup and buffer', (t)=>{
+  enableFakeHls(t);
+  const video = new NativeHLSVideo();
+  const player = new Player(video);
+  t.after(()=>player.stop());
+
+  assert.equal(player.isLowLatencyMode(), false);
+  assert.equal(player.getStartupSegmentCount(), 4);
+
+  player.play('/live/testchannel/index.m3u8');
+
+  assert.equal(player.hls.config.liveSyncDurationCount, 4);
+  assert.equal(player.hls.config.liveMaxLatencyDurationCount, 8);
+  assert.equal(player.hls.config.maxBufferLength, 30);
+});
+
+test('switching latency mode updates an active Hls.js player', (t)=>{
+  enableFakeHls(t);
+  const video = new NativeHLSVideo();
+  const player = new Player(video);
+  t.after(()=>player.stop());
+
+  player.play('/live/testchannel/index.m3u8');
+  video.currentTime = 10;
+  player.hls.liveSyncPosition = 12;
+  player.setLowLatencyMode(true);
+  assert.equal(player.hls.config.liveSyncDurationCount, 2);
+  assert.equal(player.hls.config.maxBufferLength, 2);
+  assert.equal(video.currentTime, 12);
+
+  player.setLowLatencyMode(false);
+  assert.equal(player.hls.config.liveSyncDurationCount, 4);
+  assert.equal(player.hls.config.maxBufferLength, 30);
+  assert.equal(player.hls.config.backBufferLength, Infinity);
 });
 
 test('bandwidth reports smoothed media bitrate instead of fragment download throughput', (t)=>{
