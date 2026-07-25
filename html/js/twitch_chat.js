@@ -1,7 +1,9 @@
 const IRC_URL = 'wss://irc-ws.chat.twitch.tv:443';
 const CHAT_VISIBILITY_KEY = 'jellych_chat_visible';
+const CHAT_AUTH_KEY = 'jellych_twitch_chat_identity';
 const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 const MAX_CHAT_ROWS = 100;
+const MAX_CHAT_MESSAGE_BYTES = 450;
 const SCROLL_FOLLOW_THRESHOLD_PX = 48;
 const CHANNEL_PATTERN = /^[a-z0-9_]{1,25}$/;
 const COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
@@ -49,6 +51,15 @@ function socketCanSend(socket){
 function normalizeChannel(channel){
   const normalized = String(channel || '').trim().replace(/^#/, '').toLowerCase();
   return CHANNEL_PATTERN.test(normalized) ? normalized : '';
+}
+
+function normalizeIdentity(identity){
+  const login = normalizeChannel(identity && identity.login);
+  const accessToken = String(identity && identity.accessToken || '').trim();
+  const expiresAt = Number(identity && identity.expiresAt);
+  if(!login || !accessToken || accessToken.length > 512 || /[\s\x00-\x1f\x7f]/.test(accessToken)) return null;
+  if(!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
+  return { login, accessToken, expiresAt };
 }
 
 function usernameFromPrefix(prefix){
@@ -200,6 +211,48 @@ export function writeChatVisibility(storage, visible){
   }catch(error){ /* local storage can be unavailable in privacy modes */ }
 }
 
+export function readChatIdentity(storage, now = Date.now()){
+  try{
+    const parsed = JSON.parse(storage && storage.getItem(CHAT_AUTH_KEY) || 'null');
+    const identity = normalizeIdentity(parsed);
+    if(!identity || identity.expiresAt <= now + 30000) return null;
+    return identity;
+  }catch(error){
+    return null;
+  }
+}
+
+export function writeChatIdentity(storage, identity){
+  const normalized = normalizeIdentity(identity);
+  try{
+    if(!storage) return false;
+    if(!normalized){
+      storage.removeItem(CHAT_AUTH_KEY);
+      return false;
+    }
+    storage.setItem(CHAT_AUTH_KEY, JSON.stringify(normalized));
+    return true;
+  }catch(error){
+    return false;
+  }
+}
+
+export function clearChatIdentity(storage){
+  try{
+    if(storage) storage.removeItem(CHAT_AUTH_KEY);
+  }catch(error){ /* session storage can be unavailable */ }
+}
+
+export function chatIdentityFromOAuthPayload(payload, now = Date.now()){
+  const expiresIn = Number(payload && payload.expiresIn);
+  if(!Number.isFinite(expiresIn) || expiresIn <= 0 || expiresIn > 31 * 24 * 60 * 60) return null;
+  return normalizeIdentity({
+    accessToken: payload && payload.accessToken,
+    login: payload && payload.login,
+    expiresAt: now + Math.floor(expiresIn * 1000),
+  });
+}
+
 export class TwitchIRCClient {
   constructor(options = {}){
     this.socketFactory = options.socketFactory || defaultSocketFactory;
@@ -211,7 +264,9 @@ export class TwitchIRCClient {
     this.onClearMessage = options.onClearMessage;
     this.onClearChat = options.onClearChat;
     this.onSystem = options.onSystem;
+    this.onAuthenticationFailed = options.onAuthenticationFailed;
     this.endpoint = options.endpoint || IRC_URL;
+    const identity = normalizeIdentity(options.identity);
 
     this.channel = '';
     this.enabled = false;
@@ -224,11 +279,42 @@ export class TwitchIRCClient {
     this.authenticationFailed = false;
     this.metadataAvailable = true;
     this.state = 'idle';
+    this.login = identity ? identity.login : '';
+    this.accessToken = identity ? identity.accessToken : '';
+    this.expiresAt = identity ? identity.expiresAt : 0;
+    this.localMessageSequence = 0;
   }
 
   setState(state, details = {}){
     this.state = state;
-    safeCallback(this.onState, { state, channel: this.channel, ...details });
+    safeCallback(this.onState, {
+      state,
+      channel: this.channel,
+      authenticated: this.isAuthenticated(),
+      login: this.login,
+      ...details,
+    });
+  }
+
+  isAuthenticated(){
+    return !!(this.login && this.accessToken && this.expiresAt > Date.now());
+  }
+
+  setIdentity(identity){
+    const normalized = normalizeIdentity(identity);
+    const nextLogin = normalized ? normalized.login : '';
+    const nextToken = normalized ? normalized.accessToken : '';
+    const nextExpiresAt = normalized ? normalized.expiresAt : 0;
+    if(nextLogin === this.login && nextToken === this.accessToken && nextExpiresAt === this.expiresAt) return;
+
+    this.cancelConnection(true);
+    this.login = nextLogin;
+    this.accessToken = nextToken;
+    this.expiresAt = nextExpiresAt;
+    this.authenticationFailed = false;
+    this.retryIndex = 0;
+    if(this.enabled && this.channel) this.connectNow(false);
+    else this.setState('idle');
   }
 
   setChannel(channel){
@@ -288,10 +374,12 @@ export class TwitchIRCClient {
 
     socket.addEventListener('open', ()=>{
       if(!this.isCurrentSocket(socket, generation)) return;
+      const authenticated = this.isAuthenticated();
       const suffix = Math.floor(10000 + this.random() * 90000);
-      const nick = 'justinfan' + suffix;
+      const nick = authenticated ? this.login : 'justinfan' + suffix;
+      const password = authenticated ? 'oauth:' + this.accessToken : 'blah';
       try{
-        socket.send('PASS blah\r\n');
+        socket.send('PASS ' + password + '\r\n');
         socket.send('NICK ' + nick + '\r\n');
         socket.send('CAP REQ :twitch.tv/tags twitch.tv/commands\r\n');
         socket.send('JOIN #' + this.channel + '\r\n');
@@ -360,10 +448,12 @@ export class TwitchIRCClient {
       return;
     }
 
-    if(message.command === 'NOTICE' && /login authentication failed/i.test(message.trailing)){
+    if(message.command === 'NOTICE' && /(login authentication failed|improperly formatted auth)/i.test(message.trailing)){
+      const authenticated = this.isAuthenticated();
       this.authenticationFailed = true;
       this.setState('unavailable', { reason: 'authentication' });
       this.cancelConnection(false);
+      safeCallback(this.onAuthenticationFailed, { authenticated, login: this.login });
       return;
     }
 
@@ -441,6 +531,36 @@ export class TwitchIRCClient {
     this.retryTimer = null;
   }
 
+  sendMessage(message){
+    if(!this.isAuthenticated()) return { ok: false, error: 'login-required' };
+    if(this.state !== 'connected' || !socketCanSend(this.socket) || !this.channel){
+      return { ok: false, error: 'not-connected' };
+    }
+    const text = String(message || '').replace(/[\r\n\x00]+/g, ' ').trim();
+    if(!text) return { ok: false, error: 'empty' };
+    const byteLength = new TextEncoder().encode(text).byteLength;
+    if(byteLength > MAX_CHAT_MESSAGE_BYTES) return { ok: false, error: 'too-long' };
+    try{
+      this.socket.send('PRIVMSG #' + this.channel + ' :' + text + '\r\n');
+      const actionMatch = text.match(/^\/me\s+(.+)$/i);
+      safeCallback(this.onMessage, {
+        id: 'local-' + Date.now().toString(36) + '-' + (++this.localMessageSequence),
+        userId: '',
+        username: this.login,
+        displayName: this.login,
+        color: '',
+        text: actionMatch ? actionMatch[1] : text,
+        isAction: !!actionMatch,
+        emotes: '',
+        timestamp: Date.now(),
+        local: true,
+      });
+      return { ok: true };
+    }catch(error){
+      return { ok: false, error: 'send-failed' };
+    }
+  }
+
   cancelSocket(sendPart){
     const socket = this.socket;
     this.socket = null;
@@ -512,18 +632,33 @@ export function initTwitchChat({
   channelEl,
   newMessagesEl,
   layoutEl,
+  authButtonEl,
+  identityEl,
+  composerEl,
+  inputEl,
+  sendButtonEl,
   storage,
+  authStorage,
   socketFactory,
+  openOAuthWindow,
 }){
   const documentRef = panelEl.ownerDocument;
   let storageRef = storage;
   if(storageRef === undefined){
     try{ storageRef = window.localStorage; }catch(error){ storageRef = null; }
   }
+  let authStorageRef = authStorage;
+  if(authStorageRef === undefined){
+    try{ authStorageRef = window.sessionStorage; }catch(error){ authStorageRef = null; }
+  }
+  const initialIdentity = readChatIdentity(authStorageRef);
   let visible = readChatVisibility(storageRef);
   let currentChannel = '';
   let unreadCount = 0;
   let destroyed = false;
+  let authExpiryTimer = null;
+  let oauthPopup = null;
+  let client;
 
   function resetUnread(){
     unreadCount = 0;
@@ -597,11 +732,63 @@ export function initTwitchChat({
     updateEmptyState();
   }
 
-  const client = new TwitchIRCClient({
+  function updateAuthUI(){
+    const authenticated = !!(client && client.isAuthenticated());
+    const connected = !!(client && client.state === 'connected');
+    if(identityEl) identityEl.textContent = authenticated ? '@' + client.login : 'Anonymous · read only';
+    if(authButtonEl){
+      authButtonEl.textContent = authenticated ? 'Log out' : 'Log in';
+      authButtonEl.setAttribute('aria-label', authenticated ? 'Log out of Twitch chat' : 'Log in to Twitch chat');
+    }
+    if(composerEl) composerEl.classList.toggle('is-disabled', !authenticated);
+    if(inputEl){
+      inputEl.disabled = !authenticated || !connected || !currentChannel;
+      inputEl.placeholder = authenticated ? (connected ? 'Send a message' : 'Connecting to chat…') : 'Log in to send messages';
+    }
+    if(sendButtonEl) sendButtonEl.disabled = !authenticated || !connected || !currentChannel;
+  }
+
+  function clearIdentityExpiry(){
+    if(authExpiryTimer == null) return;
+    clearTimeout(authExpiryTimer);
+    authExpiryTimer = null;
+  }
+
+  function scheduleIdentityExpiry(){
+    clearIdentityExpiry();
+    if(!client || !client.isAuthenticated()) return;
+    const remaining = client.expiresAt - Date.now();
+    if(remaining <= 0){
+      logout('Your Twitch chat login expired. Log in again to send messages.');
+      return;
+    }
+    authExpiryTimer = setTimeout(()=>{
+      authExpiryTimer = null;
+      if(client.expiresAt <= Date.now()) logout('Your Twitch chat login expired. Log in again to send messages.');
+      else scheduleIdentityExpiry();
+    }, Math.min(remaining, 2147483647));
+  }
+
+  function logout(message){
+    clearIdentityExpiry();
+    clearChatIdentity(authStorageRef);
+    client.setIdentity(null);
+    updateAuthUI();
+    if(message) appendSystem({ text: message });
+  }
+
+  function handleAuthenticationFailed({ authenticated }){
+    if(!authenticated) return;
+    logout('Your Twitch chat login is no longer valid. Log in again to send messages.');
+  }
+
+  client = new TwitchIRCClient({
     socketFactory,
+    identity: initialIdentity,
     onState: ({ state, delayMs })=>{
       setStatus(statusEl, state, delayMs);
       updateEmptyState();
+      updateAuthUI();
     },
     onMessage: appendMessage,
     onSystem: appendSystem,
@@ -619,7 +806,66 @@ export function initTwitchChat({
         (normalizedUsername && row.dataset.username === normalizedUsername)
       );
     },
+    onAuthenticationFailed: handleAuthenticationFailed,
   });
+
+  function startOAuthLogin(){
+    const openPopup = openOAuthWindow || ((url, name, features)=>window.open(url, name, features));
+    oauthPopup = openPopup(
+      '/api/chat/oauth/start',
+      'jellych-twitch-chat-oauth',
+      'popup=yes,width=560,height=720,resizable=yes,scrollbars=yes'
+    );
+    if(!oauthPopup){
+      appendSystem({ text: 'The Twitch login window was blocked. Allow popups for Jellych and try again.' });
+      return;
+    }
+    if(typeof oauthPopup.focus === 'function') oauthPopup.focus();
+  }
+
+  function handleAuthButton(){
+    if(client.isAuthenticated()) logout('Logged out of Twitch chat.');
+    else startOAuthLogin();
+  }
+
+  function handleOAuthMessage(event){
+    if(event.origin !== window.location.origin) return;
+    const payload = event.data;
+    if(!payload || payload.type !== 'jellych-twitch-chat-oauth') return;
+    if(payload.error){
+      appendSystem({ text: String(payload.error) });
+      return;
+    }
+    const identity = chatIdentityFromOAuthPayload(payload);
+    if(!identity){
+      appendSystem({ text: 'Twitch returned an invalid chat login. Please try again.' });
+      return;
+    }
+    writeChatIdentity(authStorageRef, identity);
+    client.setIdentity(identity);
+    scheduleIdentityExpiry();
+    updateAuthUI();
+    appendSystem({ text: 'Logged in to Twitch chat as @' + identity.login + '.' });
+    oauthPopup = null;
+  }
+
+  function handleComposerSubmit(event){
+    event.preventDefault();
+    const result = client.sendMessage(inputEl && inputEl.value);
+    if(result.ok){
+      inputEl.value = '';
+      inputEl.focus();
+      return;
+    }
+    const errors = {
+      'login-required': 'Log in to Twitch before sending messages.',
+      'not-connected': 'Chat is not connected yet.',
+      empty: 'Enter a message first.',
+      'too-long': 'That message is too long for Twitch chat.',
+      'send-failed': 'The message could not be sent.',
+    };
+    appendSystem({ text: errors[result.error] || 'The message could not be sent.' });
+  }
 
   function updateToggle(){
     panelEl.hidden = !visible;
@@ -675,12 +921,17 @@ export function initTwitchChat({
 
   toggleEl.addEventListener('click', ()=>setVisible(!visible));
   newMessagesEl.addEventListener('click', jumpToLatest);
+  if(authButtonEl) authButtonEl.addEventListener('click', handleAuthButton);
+  if(composerEl) composerEl.addEventListener('submit', handleComposerSubmit);
   documentRef.addEventListener('keydown', handleKeydown);
   window.addEventListener('beforeunload', handleUnload);
+  window.addEventListener('message', handleOAuthMessage);
 
   updateToggle();
   client.setChannel(currentChannel);
   client.setEnabled(visible);
+  scheduleIdentityExpiry();
+  updateAuthUI();
   updateEmptyState();
 
   return {
@@ -688,8 +939,10 @@ export function initTwitchChat({
     destroy(){
       if(destroyed) return;
       destroyed = true;
+      clearIdentityExpiry();
       documentRef.removeEventListener('keydown', handleKeydown);
       window.removeEventListener('beforeunload', handleUnload);
+      window.removeEventListener('message', handleOAuthMessage);
       client.destroy();
     },
   };

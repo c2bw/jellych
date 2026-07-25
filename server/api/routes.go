@@ -12,6 +12,7 @@ type API struct {
 	playback           *PlaybackTracker
 	vodMediaRegistry   *vodMediaRegistry
 	vodMediaHTTPClient *http.Client
+	chatOAuth          *chatOAuthService
 	now                func() time.Time
 }
 
@@ -49,6 +50,7 @@ func newAPI(state *APIState, dependencies Dependencies) *API {
 		playback:           newPlaybackTracker(now),
 		vodMediaRegistry:   &vodMediaRegistry{},
 		vodMediaHTTPClient: mediaClient,
+		chatOAuth:          newChatOAuthService(dependencies.ChatOAuth),
 		now:                now,
 	}
 }
@@ -62,6 +64,8 @@ func (a *API) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/ping", a.handlePing)
 	mux.HandleFunc("GET /api/ping/", a.handlePing)
+	mux.HandleFunc("GET /api/chat/oauth/start", a.handleChatOAuthStart)
+	mux.HandleFunc("GET /api/chat/oauth/callback", a.handleChatOAuthCallback)
 	mux.HandleFunc("GET /api/channels", a.handleChannels)
 	mux.HandleFunc("GET /api/vod-presets", a.handleVODPresets)
 	mux.HandleFunc("GET /api/vods", a.handleVODs)

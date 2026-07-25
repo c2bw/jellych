@@ -25,6 +25,11 @@ const chatEmptyEl = document.getElementById('chatEmpty');
 const chatStatusEl = document.getElementById('chatStatus');
 const chatChannelEl = document.getElementById('chatChannel');
 const chatNewMessagesEl = document.getElementById('chatNewMessages');
+const chatAuthButtonEl = document.getElementById('chatAuthButton');
+const chatIdentityEl = document.getElementById('chatIdentity');
+const chatComposerEl = document.getElementById('chatComposer');
+const chatInputEl = document.getElementById('chatInput');
+const chatSendButtonEl = document.getElementById('chatSendButton');
 
 const player = new Player(video);
 const stats = initStats({ video, player, statsOverlay, statsState, statsGrid });
@@ -38,6 +43,11 @@ const chat = initTwitchChat({
   channelEl: chatChannelEl,
   newMessagesEl: chatNewMessagesEl,
   layoutEl: watchLayoutEl,
+  authButtonEl: chatAuthButtonEl,
+  identityEl: chatIdentityEl,
+  composerEl: chatComposerEl,
+  inputEl: chatInputEl,
+  sendButtonEl: chatSendButtonEl,
 });
 const manager = initManager({
   listEl,

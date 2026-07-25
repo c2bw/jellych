@@ -3,12 +3,16 @@ import test from 'node:test';
 
 import {
   TwitchIRCClient,
+  chatIdentityFromOAuthPayload,
+  clearChatIdentity,
   initTwitchChat,
   parseIRCLine,
+  readChatIdentity,
   readChatVisibility,
   resolveUsernameColor,
   tokenizeChatMessage,
   unescapeIRCTag,
+  writeChatIdentity,
   writeChatVisibility,
 } from '../html/js/twitch_chat.js';
 
@@ -224,6 +228,64 @@ test('client authenticates anonymously, joins the channel, answers PING, and par
   }]);
 });
 
+test('authenticated client uses OAuth credentials and sends guarded PRIVMSG commands', ()=>{
+  const sockets = fakeSockets();
+  const received = [];
+  const identity = {
+    login: 'Viewer_Name',
+    accessToken: 'user-token-123',
+    expiresAt: Date.now() + 60_000,
+  };
+  const client = new TwitchIRCClient({
+    socketFactory: sockets.factory,
+    identity,
+    onMessage: (message)=>received.push(message),
+  });
+  client.setChannel('channel');
+  client.setEnabled(true);
+  const socket = sockets.sockets[0];
+  socket.open();
+
+  assert.deepEqual(socket.sent.slice(0, 4), [
+    'PASS oauth:user-token-123\r\n',
+    'NICK viewer_name\r\n',
+    'CAP REQ :twitch.tv/tags twitch.tv/commands\r\n',
+    'JOIN #channel\r\n',
+  ]);
+  assert.deepEqual(client.sendMessage('not ready'), { ok: false, error: 'not-connected' });
+
+  socket.message(':tmi.twitch.tv 001 viewer_name :Welcome, GLHF!\r\n');
+  assert.deepEqual(client.sendMessage('hello\r\nJOIN #other'), { ok: true });
+  assert.equal(socket.sent.at(-1), 'PRIVMSG #channel :hello JOIN #other\r\n');
+  assert.equal(received.length, 1);
+  assert.match(received[0].id, /^local-/);
+  assert.deepEqual({
+    username: received[0].username,
+    displayName: received[0].displayName,
+    text: received[0].text,
+    isAction: received[0].isAction,
+    emotes: received[0].emotes,
+    local: received[0].local,
+  }, {
+    username: 'viewer_name',
+    displayName: 'viewer_name',
+    text: 'hello JOIN #other',
+    isAction: false,
+    emotes: '',
+    local: true,
+  });
+
+  assert.deepEqual(client.sendMessage('/me waves'), { ok: true });
+  assert.equal(socket.sent.at(-1), 'PRIVMSG #channel :/me waves\r\n');
+  assert.equal(received[1].text, 'waves');
+  assert.equal(received[1].isAction, true);
+  assert.deepEqual(client.sendMessage('😀'.repeat(113)), { ok: false, error: 'too-long' });
+
+  client.setIdentity(null);
+  assert.equal(sockets.sockets.length, 2, 'logging out should reconnect anonymously');
+  assert.deepEqual(client.sendMessage('hello'), { ok: false, error: 'login-required' });
+});
+
 test('client emits actions, system messages, and moderation updates only for the active channel', ()=>{
   const sockets = fakeSockets();
   const messages = [];
@@ -372,6 +434,44 @@ test('visibility defaults hidden and persists explicit choices', ()=>{
   };
   assert.equal(readChatVisibility(blockedStorage), false);
   assert.doesNotThrow(()=>writeChatVisibility(blockedStorage, true));
+});
+
+test('chat identities are session-scoped, validated, and clearable', ()=>{
+  const values = new Map();
+  const storage = {
+    getItem(key){ return values.get(key) ?? null; },
+    setItem(key, value){ values.set(key, value); },
+    removeItem(key){ values.delete(key); },
+  };
+  const identity = {
+    login: 'Viewer',
+    accessToken: 'token-value',
+    expiresAt: Date.now() + 120_000,
+  };
+
+  assert.equal(writeChatIdentity(storage, identity), true);
+  assert.deepEqual(readChatIdentity(storage), { ...identity, login: 'viewer' });
+  assert.equal(readChatIdentity(storage, identity.expiresAt), null);
+  clearChatIdentity(storage);
+  assert.equal(readChatIdentity(storage), null);
+
+  assert.equal(writeChatIdentity(storage, { ...identity, accessToken: 'bad token' }), false);
+  assert.equal(readChatIdentity(storage), null);
+});
+
+test('OAuth callback payloads become bounded session identities', ()=>{
+  const now = Date.now();
+  assert.deepEqual(chatIdentityFromOAuthPayload({
+    login: 'Viewer',
+    accessToken: 'token-value',
+    expiresIn: 3600,
+  }, now), {
+    login: 'viewer',
+    accessToken: 'token-value',
+    expiresAt: now + 3_600_000,
+  });
+  assert.equal(chatIdentityFromOAuthPayload({ login: 'viewer', accessToken: 'token', expiresIn: 0 }, now), null);
+  assert.equal(chatIdentityFromOAuthPayload({ login: 'viewer', accessToken: 'token', expiresIn: 99_999_999 }, now), null);
 });
 
 test('UI controller stays disconnected while hidden and remembers toggle changes', (t)=>{

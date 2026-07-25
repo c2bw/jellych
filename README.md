@@ -21,6 +21,11 @@ Required environment variables:
 - `SERVER_URL` publicly accessible URL where the server is reachable, also used for Jellyfin webhook
 - `JELLYFIN_WEBHOOK_SECRET` shared secret expected on `X-Jellych-Secret`
 
+Add `${SERVER_URL}/api/chat/oauth/callback` as an OAuth Redirect URL for the
+same Twitch application. For example, a local deployment using
+`SERVER_URL=http://localhost:8080` must register
+`http://localhost:8080/api/chat/oauth/callback`.
+
 Optional environment variables:
 
 - `LOG_LEVEL` logging level (default `INFO`)
@@ -35,6 +40,12 @@ Optional flags:
 - `-vods` folder where manually downloaded VODs are saved
 
 The VOD page can download directly as Original, H.264, HEVC, or VP9. A completed Original download can later be converted once to any compressed preset from its codec selector. Conversion replaces the original only after the new MKV is complete, and converted entries show both original and converted file sizes.
+
+The live page includes read-only anonymous Twitch chat. Select **Log in** in
+the chat panel to authorize the `chat:read` and `chat:edit` scopes and send
+messages as your Twitch account. The user token is kept only in the current
+browser tab's session storage; selecting **Log out** returns chat to anonymous
+read-only mode.
 
 ## Run
 

@@ -105,6 +105,11 @@ func main() {
 	// Start the HTTP server only after all application dependencies are ready.
 	appAPI := api.NewWithDependencies(apiState, api.Dependencies{
 		Streams: api.NewStreamOperations(streamServices.Streams, streamServices.Downloads),
+		ChatOAuth: api.ChatOAuthConfig{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			ServerURL:    serverURL,
+		},
 	})
 	srv, err := server.StartWithAssets(*addr, webAssets, server.Handlers{
 		API:       appAPI.Handler(),

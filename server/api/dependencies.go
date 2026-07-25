@@ -33,6 +33,7 @@ type Dependencies struct {
 	Streams            StreamOperations
 	VODMediaHTTPClient *http.Client
 	Now                func() time.Time
+	ChatOAuth          ChatOAuthConfig
 }
 
 func defaultStreamOperations() StreamOperations {

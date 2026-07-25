@@ -130,11 +130,19 @@
             </div>
             <span id="chatStatus" class="chat-status" data-state="idle" aria-live="polite">Idle</span>
           </header>
+          <div class="chat-auth-bar">
+            <span id="chatIdentity">Anonymous · read only</span>
+            <button id="chatAuthButton" class="chat-auth-button" type="button">Log in</button>
+          </div>
           <div class="chat-feed">
             <div id="chatMessages" class="chat-messages" role="log" aria-label="Twitch chat messages"></div>
             <div id="chatEmpty" class="chat-empty">Select a live channel to view chat</div>
             <button id="chatNewMessages" class="chat-new-messages hidden" type="button">New messages</button>
           </div>
+          <form id="chatComposer" class="chat-composer is-disabled" autocomplete="off">
+            <input id="chatInput" type="text" maxlength="450" placeholder="Log in to send messages" aria-label="Chat message" disabled />
+            <button id="chatSendButton" type="submit" disabled>Send</button>
+          </form>
         </aside>
       </div>
     </main>
