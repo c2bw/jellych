@@ -72,6 +72,12 @@ func newHandler(htmlFS fs.FS, handlers Handlers) http.Handler {
 	mux.HandleFunc("/vods/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFileFS(w, r, htmlFS, "vods.html")
 	})
+	mux.HandleFunc("/tools", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, htmlFS, "tools.html")
+	})
+	mux.HandleFunc("/tools/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, htmlFS, "tools.html")
+	})
 	mux.Handle("/html/", http.StripPrefix("/html/", http.FileServerFS(htmlFS)))
 	mux.Handle("/live/", handlers.Live)
 	mux.Handle("/_live-write/", handlers.LiveWrite)

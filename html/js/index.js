@@ -3,6 +3,7 @@ import { initStats } from './stats.js';
 import { initManager } from './manager.js';
 import { initPlayerControls } from './player_controls.js';
 import { initTwitchChat } from './twitch_chat.js';
+import { parseTwitchChannelInput } from './utils.js';
 
 const listEl = document.getElementById('channelsList');
 const video = document.getElementById('player');
@@ -16,6 +17,10 @@ const newNameEl = document.getElementById('newName');
 const removeBtn = document.getElementById('removeBtn');
 const managerMsgEl = document.getElementById('managerMsg');
 const playerStageEl = document.getElementById('playerStage');
+const playerGridEl = document.getElementById('playerGrid');
+const multiToggleEl = document.getElementById('multiToggle');
+const multiToolbarEl = document.getElementById('multiToolbar');
+const multiCountEl = document.getElementById('multiCount');
 const watchLayoutEl = document.querySelector('.watch-layout');
 const chatToggleEl = document.getElementById('chatToggle');
 const chatToggleLabelEl = document.getElementById('chatToggleLabel');
@@ -31,8 +36,16 @@ const chatComposerEl = document.getElementById('chatComposer');
 const chatInputEl = document.getElementById('chatInput');
 const chatSendButtonEl = document.getElementById('chatSendButton');
 
+let manager;
 const player = new Player(video);
-const stats = initStats({ video, player, statsOverlay, statsState, statsGrid });
+const stats = initStats({
+  video,
+  player,
+  getStreams: ()=>manager ? manager.getActiveStreams() : [{ video, player }],
+  statsOverlay,
+  statsState,
+  statsGrid,
+});
 const chat = initTwitchChat({
   toggleEl: chatToggleEl,
   toggleLabelEl: chatToggleLabelEl,
@@ -49,7 +62,7 @@ const chat = initTwitchChat({
   inputEl: chatInputEl,
   sendButtonEl: chatSendButtonEl,
 });
-const manager = initManager({
+manager = initManager({
   listEl,
   removeSelect,
   addBtn,
@@ -59,14 +72,24 @@ const manager = initManager({
   player,
   stats,
   playerTitleEl,
+  playerStageEl,
+  playerGridEl,
+  multiToggleEl,
+  multiToolbarEl,
+  multiCountEl,
   onPlaybackChannelChange: (channel)=>chat.setChannel(channel),
 });
 initPlayerControls({ video, stage: playerStageEl, player });
 
 // Wire video events to stats update
 ['pause','play','waiting','playing','timeupdate','loadedmetadata'].forEach(ev => video.addEventListener(ev, ()=>stats.update()));
-video.addEventListener('emptied', ()=>stats.clear());
+video.addEventListener('emptied', ()=>stats.update());
 
 // initial load
 manager.fetchChannels();
 stats.update();
+
+const directViewChannel = parseTwitchChannelInput(new URLSearchParams(window.location.search).get('view') || '');
+if(directViewChannel){
+  manager.playDirectChannel(directViewChannel);
+}
