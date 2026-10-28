@@ -424,10 +424,14 @@ test('initManager Multi mode adds tiles, supports layout/spotlight/reordering, a
   assert.equal(multiToggleEl.getAttribute('aria-pressed'), 'true');
   assert.equal(multiToolbarEl.classList.contains('hidden'), false);
 
-  // Play three streams in Multi mode
+  // Play first stream in Multi mode -> single stream keeps full-page single stage layout (no .is-multi)
   managerRef.playDirectChannel('alpha');
+  assert.equal(gridEl.classList.contains('is-multi'), false);
+
+  // Play two more streams in Multi mode -> activates .is-multi grid tiling
   managerRef.playDirectChannel('bravo');
   managerRef.playDirectChannel('charlie');
+  assert.equal(gridEl.classList.contains('is-multi'), true);
 
   const active = managerRef.getActiveStreams();
   assert.equal(active.length, 3);

@@ -271,45 +271,50 @@
     height: 100%;
     min-width: 0;
     min-height: 0;
-    flex-direction: column;
-    gap: 10px;
+    justify-content: center;
   }
   .multi-toolbar {
     display: flex;
-    width: 100%;
     flex-shrink: 0;
+    flex-direction: column;
+    gap: 7px;
+    margin: 0 9px 6px;
+    padding: 8px 9px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.22);
+  }
+  .multi-toolbar-left {
+    display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 8px 12px;
+    gap: 8px;
   }
-  .multi-toolbar-left { display: flex; align-items: center; gap: 9px; }
   .multi-count-badge {
     display: inline-flex;
     align-items: center;
-    padding: 4px 8px;
+    padding: 3px 7px;
     border: 1px solid var(--line);
     border-radius: 999px;
     color: var(--muted);
     background: rgba(0, 0, 0, 0.28);
-    font-size: 11px;
+    font-size: 10px;
     font-variant-numeric: tabular-nums;
     font-weight: 650;
   }
   .multi-layout-group {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 5px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
   }
   .multi-layout-btn {
-    min-height: 28px;
-    padding: 0 10px;
+    min-height: 26px;
+    padding: 0 6px;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: 7px;
     color: var(--muted);
     background: rgba(255, 255, 255, 0.03);
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 650;
     transition: 140ms ease;
   }
@@ -331,7 +336,6 @@
     min-width: 0;
     min-height: 0;
     flex: 1;
-    align-items: flex-start;
     justify-content: center;
   }
   .watch-layout.chat-is-visible .player-grid:not(.is-multi) {
@@ -421,11 +425,6 @@
     border-radius: var(--radius);
     background: #030304;
     box-shadow: 0 28px 70px rgba(0, 0, 0, 0.36), 0 0 0 1px rgba(0, 0, 0, 0.6);
-    transition: border-color 150ms ease, box-shadow 150ms ease;
-  }
-  .player-stage.is-focused {
-    border-color: rgba(182, 157, 255, 0.52);
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(155, 122, 255, 0.28);
   }
   .player-stage::after { position: absolute; inset: 0; pointer-events: none; border-radius: inherit; box-shadow: inset 0 1px rgba(255, 255, 255, 0.05); content: ""; }
   .player-stage video { position: relative; z-index: 2; width: 100%; height: 100%; cursor: pointer; background: transparent; object-fit: contain; }

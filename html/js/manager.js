@@ -254,11 +254,12 @@ export function initManager({
       if(!tileOrder.includes(key)) tileOrder.push(key);
     }
     const count = tileOrder.length;
-    const effectiveLayout = (multiMode || count > 1) ? currentLayout : 'auto';
+    const isMultiGrid = count > 1;
+    const effectiveLayout = isMultiGrid ? currentLayout : 'auto';
     if(resolvedGridEl){
       resolvedGridEl.dataset.layout = effectiveLayout;
       resolvedGridEl.dataset.count = String(count);
-      resolvedGridEl.classList.toggle('is-multi', multiMode || count > 1);
+      resolvedGridEl.classList.toggle('is-multi', isMultiGrid);
     }
     if(resolvedMultiToolbar){
       resolvedMultiToolbar.classList.toggle('hidden', !multiMode && count <= 1);
