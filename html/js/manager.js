@@ -300,6 +300,13 @@ export function initManager({
   function setTilingLayout(layoutName, persist = true){
     if(!VALID_LAYOUTS.has(layoutName)) return;
     currentLayout = layoutName;
+    if(currentLayout === 'spotlight' && focusedChannel && activeTiles.has(focusedChannel)){
+      const idx = tileOrder.indexOf(focusedChannel);
+      if(idx > 0){
+        tileOrder.splice(idx, 1);
+        tileOrder.unshift(focusedChannel);
+      }
+    }
     if(persist){
       try{
         if(window.localStorage) window.localStorage.setItem(MULTI_LAYOUT_STORAGE_KEY, currentLayout);

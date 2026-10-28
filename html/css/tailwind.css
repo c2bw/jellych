@@ -153,7 +153,8 @@
     min-height: 0;
     flex: 1;
     grid-template-columns: 240px minmax(0, 1fr);
-    align-items: start;
+    grid-template-rows: minmax(0, 1fr);
+    align-items: stretch;
     gap: 16px;
     padding-top: 16px;
   }
@@ -164,12 +165,12 @@
     min-width: 0;
     min-height: 0;
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     align-items: stretch;
     gap: 16px;
   }
   .watch-layout.chat-is-visible .viewer-shell { grid-template-columns: minmax(0, 1fr) clamp(280px, 24vw, 340px); }
-  .viewer-shell .player-column { height: auto; }
-  .watch-layout.chat-is-visible .player-column { justify-content: flex-end; }
+  .viewer-shell .player-column { height: 100%; }
   .stats-card, .manager-card { padding: 13px; }
   .stats-chip {
     display: inline-flex;
@@ -266,12 +267,11 @@
 
   .player-column {
     display: flex;
+    width: 100%;
     height: 100%;
     min-width: 0;
     min-height: 0;
     flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
     gap: 10px;
   }
   .multi-toolbar {
@@ -324,50 +324,90 @@
     background: var(--accent-soft);
   }
 
-  .player-grid {
+  .player-grid:not(.is-multi) {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+    align-items: flex-start;
+    justify-content: center;
+  }
+  .watch-layout.chat-is-visible .player-grid:not(.is-multi) {
+    justify-content: flex-end;
+  }
+
+  .player-grid.is-multi {
     display: grid;
     width: 100%;
+    height: 100%;
     min-width: 0;
     min-height: 0;
     flex: 1;
     grid-template-columns: minmax(0, 1fr);
-    align-content: start;
-    justify-items: center;
-    gap: 12px;
-    overflow-x: hidden;
-    overflow-y: auto;
+    grid-template-rows: minmax(0, 1fr);
+    grid-auto-rows: minmax(0, 1fr);
+    align-items: stretch;
+    justify-items: stretch;
+    gap: 10px;
+    overflow: hidden;
   }
-  .player-grid.is-multi[data-layout="auto"]:not([data-count="0"]):not([data-count="1"]) {
+  .player-grid.is-multi .player-stage {
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    min-width: 0;
+    min-height: 0;
+    aspect-ratio: auto;
+  }
+  .player-grid.is-multi[data-layout="auto"][data-count="2"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .player-grid.is-multi[data-layout="auto"][data-count="3"],
+  .player-grid.is-multi[data-layout="auto"][data-count="4"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(2, minmax(0, 1fr));
   }
   .player-grid.is-multi[data-layout="auto"][data-count="5"],
   .player-grid.is-multi[data-layout="auto"][data-count="6"] {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
+  .player-grid.is-multi[data-layout="auto"]:not([data-count="0"]):not([data-count="1"]):not([data-count="2"]):not([data-count="3"]):not([data-count="4"]):not([data-count="5"]):not([data-count="6"]) {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: none;
+    grid-auto-rows: minmax(0, 1fr);
   }
   .player-grid.is-multi[data-layout="columns"]:not([data-count="0"]):not([data-count="1"]) {
+    grid-template-columns: none;
+    grid-template-rows: minmax(0, 1fr);
     grid-auto-flow: column;
     grid-auto-columns: minmax(0, 1fr);
-    grid-template-columns: none;
   }
-  .player-grid.is-multi[data-layout="stacked"] {
+  .player-grid.is-multi[data-layout="stacked"]:not([data-count="0"]):not([data-count="1"]) {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-rows: minmax(0, 1fr);
   }
   .player-grid.is-multi[data-layout="spotlight"]:not([data-count="0"]):not([data-count="1"]) {
     grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-rows: minmax(0, 2fr) minmax(0, 1fr);
   }
-  .player-grid.is-multi[data-layout="spotlight"]:not([data-count="0"]):not([data-count="1"]) .player-stage {
+  .player-grid.is-multi[data-layout="spotlight"]:not([data-count="0"]):not([data-count="1"]) .player-stage:not(.is-spotlight) {
     grid-column: span 3;
+  }
+  .player-grid.is-multi[data-layout="spotlight"][data-count="2"] .player-stage:not(.is-spotlight) {
+    grid-column: 1 / -1;
   }
   .player-grid.is-multi[data-layout="spotlight"][data-count="4"] .player-stage:not(.is-spotlight) {
     grid-column: span 2;
   }
   .player-grid.is-multi[data-layout="spotlight"]:not([data-count="0"]):not([data-count="1"]) .player-stage.is-spotlight {
     grid-column: 1 / -1;
-    max-width: calc((56vh) * 16 / 9);
-    max-width: calc((56dvh) * 16 / 9);
-  }
-  .player-grid.is-multi:not([data-count="0"]):not([data-count="1"]) .player-stage:not(.is-spotlight) {
-    max-width: none;
+    grid-row: 1;
   }
 
   .player-stage {
@@ -707,7 +747,8 @@
 
 @media (max-width: 1180px) {
   .watch-layout.chat-is-visible .viewer-shell { grid-template-columns: minmax(0, 1fr); }
-  .watch-layout.chat-is-visible .player-column { justify-content: center; }
+  .watch-layout.chat-is-visible .player-column,
+  .watch-layout.chat-is-visible .player-grid:not(.is-multi) { justify-content: center; }
   .chat-panel {
     position: fixed;
     z-index: 30;
