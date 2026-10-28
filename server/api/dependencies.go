@@ -26,6 +26,7 @@ type StreamOperations struct {
 	RemoveVODWithArtifacts   func(string, func() error) error
 	ResolveVODPlaylist       func(context.Context, string) ([]byte, error)
 	ResolveLiveProxyPlaylist func(context.Context, string) ([]byte, error)
+	ResolveLiveStreamURL     func(context.Context, string) (string, error)
 }
 
 // Dependencies configures runtime services owned by an API instance. Zero
@@ -58,6 +59,7 @@ func NewStreamOperations(registry *stream.StreamRegistry, downloads *stream.VODD
 		RemoveVODWithArtifacts:   downloads.RemoveWithArtifacts,
 		ResolveVODPlaylist:       stream.ResolveVODPlaylist,
 		ResolveLiveProxyPlaylist: stream.ResolveLiveProxyPlaylist,
+		ResolveLiveStreamURL:     stream.ResolveLiveStreamURL,
 	}
 }
 
@@ -77,7 +79,8 @@ func (operations StreamOperations) empty() bool {
 		operations.GetVODDownloadProgress == nil && operations.StartVODDownload == nil &&
 		operations.ConvertVODDownload == nil && operations.DeleteVODDownload == nil &&
 		operations.OpenVODDownload == nil && operations.RemoveVODWithArtifacts == nil &&
-		operations.ResolveVODPlaylist == nil && operations.ResolveLiveProxyPlaylist == nil
+		operations.ResolveVODPlaylist == nil && operations.ResolveLiveProxyPlaylist == nil &&
+		operations.ResolveLiveStreamURL == nil
 }
 
 func (operations StreamOperations) complete() bool {
@@ -86,5 +89,6 @@ func (operations StreamOperations) complete() bool {
 		operations.GetVODDownloadProgress != nil && operations.StartVODDownload != nil &&
 		operations.ConvertVODDownload != nil && operations.DeleteVODDownload != nil &&
 		operations.OpenVODDownload != nil && operations.RemoveVODWithArtifacts != nil &&
-		operations.ResolveVODPlaylist != nil && operations.ResolveLiveProxyPlaylist != nil
+		operations.ResolveVODPlaylist != nil && operations.ResolveLiveProxyPlaylist != nil &&
+		operations.ResolveLiveStreamURL != nil
 }

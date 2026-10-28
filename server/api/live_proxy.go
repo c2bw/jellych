@@ -34,6 +34,30 @@ func (a *API) rewriteLiveProxyPlaylist(channel string, playlist []byte) ([]byte,
 	})
 }
 
+func (a *API) handleGetLiveStreamURL(w http.ResponseWriter, r *http.Request) {
+	channel, ok := requireValidChannelName(w, r.PathValue("channel"))
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	streamURL, err := a.streams.ResolveLiveStreamURL(ctx, channel)
+	if err != nil {
+		if !errors.Is(err, stream.ErrLiveStreamOffline) {
+			slog.Warn("failed to resolve live stream URL", "channel", channel, "error", err)
+		}
+		writeMappedError(w, err, liveProxyPlaylistErrors, http.StatusBadGateway, "failed to resolve live stream URL: %v")
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, map[string]string{
+		"channel": channel,
+		"url":     streamURL,
+	})
+}
+
 func (a *API) handleGetLiveProxyPlaylist(w http.ResponseWriter, r *http.Request) {
 	channel, ok := requireValidChannelName(w, r.PathValue("channel"))
 	if !ok {

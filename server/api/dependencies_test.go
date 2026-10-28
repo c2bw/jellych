@@ -122,5 +122,8 @@ func completeTestStreamOperations(overrides StreamOperations) StreamOperations {
 	if overrides.ResolveLiveProxyPlaylist != nil {
 		operations.ResolveLiveProxyPlaylist = overrides.ResolveLiveProxyPlaylist
 	}
+	if overrides.ResolveLiveStreamURL != nil {
+		operations.ResolveLiveStreamURL = overrides.ResolveLiveStreamURL
+	}
 	return operations
 }

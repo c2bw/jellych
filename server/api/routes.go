@@ -102,6 +102,7 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("HEAD /api/live-proxy/{channel}/index.m3u8", a.handleGetLiveProxyPlaylist)
 	mux.HandleFunc("GET /api/live-proxy/{channel}/media/{token}", a.handleGetLiveProxyMedia)
 	mux.HandleFunc("HEAD /api/live-proxy/{channel}/media/{token}", a.handleGetLiveProxyMedia)
+	mux.HandleFunc("GET /api/live-url/{channel}", a.handleGetLiveStreamURL)
 
 	return mux
 }

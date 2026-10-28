@@ -505,3 +505,26 @@ func TestOfflineLiveStreamErrorIsClassified(t *testing.T) {
 		t.Fatal("did not expect network timeout to be classified as offline")
 	}
 }
+
+func TestResolveLiveStreamURLNormalizesChannelAndReturnsUpstreamURL(t *testing.T) {
+	originalResolve := resolveLiveProxyUpstream
+	t.Cleanup(func() {
+		resolveLiveProxyUpstream = originalResolve
+	})
+
+	resolveLiveProxyUpstream = func(_ context.Context, channel string) (string, error) {
+		return "https://weaver.example.test/" + channel + ".m3u8", nil
+	}
+
+	got, err := ResolveLiveStreamURL(context.Background(), "  Caedrel ")
+	if err != nil {
+		t.Fatalf("ResolveLiveStreamURL: %v", err)
+	}
+	if want := "https://weaver.example.test/caedrel.m3u8"; got != want {
+		t.Fatalf("ResolveLiveStreamURL = %q; want %q", got, want)
+	}
+
+	if _, err := ResolveLiveStreamURL(context.Background(), "bad channel!"); err == nil {
+		t.Fatal("expected invalid channel name to fail")
+	}
+}

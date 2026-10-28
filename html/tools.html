@@ -34,27 +34,52 @@
       </nav>
     </header>
 
-    <main class="library-layout">
-      <aside class="library-sidebar">
-        <section class="surface-card add-vod-card">
-          <div class="section-heading">
-            <div>
-              <span class="eyebrow">Direct proxy</span>
-              <h1>View a livestream</h1>
-              <p>Watch any live Twitch channel in the web player without adding it to followed channels or Jellyfin.</p>
-            </div>
+    <main class="tools-layout">
+      <section class="surface-card add-vod-card">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Direct proxy</span>
+            <h1>View a livestream</h1>
+            <p>Watch any live Twitch channel in the web player without adding it to followed channels or Jellyfin.</p>
           </div>
-          <form id="viewStreamForm" class="vod-form">
-            <label class="field-label" for="streamChannelInput">Channel or Twitch URL</label>
-            <input id="streamChannelInput" class="field" type="text" placeholder="channel or https://www.twitch.tv/channel" autocomplete="off" spellcheck="false" required />
-            <button id="viewStreamBtn" class="button button-primary" type="submit">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
-              View stream
-            </button>
-            <div id="viewStreamMsg" class="form-message" aria-live="polite"></div>
-          </form>
-        </section>
-      </aside>
+        </div>
+        <form id="viewStreamForm" class="vod-form">
+          <label class="field-label" for="streamChannelInput">Channel or Twitch URL</label>
+          <input id="streamChannelInput" class="field" type="text" placeholder="channel or https://www.twitch.tv/channel" autocomplete="off" spellcheck="false" required />
+          <button id="viewStreamBtn" class="button button-primary" type="submit">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+            View stream
+          </button>
+          <div id="viewStreamMsg" class="form-message" aria-live="polite"></div>
+        </form>
+      </section>
+
+      <section class="surface-card add-vod-card">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">URL extractor</span>
+            <h2>Extract stream URL</h2>
+            <p>Resolve the raw Twitch backend HLS (.m3u8) URL for any live channel.</p>
+          </div>
+        </div>
+        <form id="extractUrlForm" class="vod-form">
+          <label class="field-label" for="extractChannelInput">Channel or Twitch URL</label>
+          <input id="extractChannelInput" class="field" type="text" placeholder="channel or https://www.twitch.tv/channel" autocomplete="off" spellcheck="false" required />
+          <button id="extractUrlBtn" class="button button-primary" type="submit">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>
+            Get stream URL
+          </button>
+          <div id="extractUrlMsg" class="form-message" aria-live="polite"></div>
+        </form>
+
+        <div id="extractUrlResult" class="settings-block hidden">
+          <div class="settings-heading">
+            <span class="eyebrow">Backend HLS URL</span>
+            <button id="copyStreamUrlBtn" class="button compact-button" type="button">Copy URL</button>
+          </div>
+          <code id="extractedStreamUrl" class="command-preview"></code>
+        </div>
+      </section>
     </main>
   </div>
 

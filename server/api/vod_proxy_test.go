@@ -186,3 +186,39 @@ func TestLiveProxyPlaylistAndMediaForUnconfiguredChannel(t *testing.T) {
 		t.Fatalf("media body = %q; want %q", got, "live-segment-bytes")
 	}
 }
+
+func TestLiveStreamURLEndpointReturnsUpstreamURLAndMapsOfflineToNotFound(t *testing.T) {
+	apiInstance := NewWithDependencies(&APIState{}, Dependencies{
+		Streams: completeTestStreamOperations(StreamOperations{
+			ResolveLiveStreamURL: func(_ context.Context, channel string) (string, error) {
+				if channel == "offlinechan" {
+					return "", fmt.Errorf("%w: offline", stream.ErrLiveStreamOffline)
+				}
+				return "https://video-weaver.example.test/v1/playlist/" + channel + ".m3u8", nil
+			},
+		}),
+	})
+	handler := apiInstance.Handler()
+
+	offlineReq := httptest.NewRequest(http.MethodGet, "/api/live-url/offlinechan", nil)
+	offlineRec := httptest.NewRecorder()
+	handler.ServeHTTP(offlineRec, offlineReq)
+	if offlineRec.Code != http.StatusNotFound {
+		t.Fatalf("offline status = %d; want %d", offlineRec.Code, http.StatusNotFound)
+	}
+
+	liveReq := httptest.NewRequest(http.MethodGet, "/api/live-url/Caedrel", nil)
+	liveRec := httptest.NewRecorder()
+	handler.ServeHTTP(liveRec, liveReq)
+	if liveRec.Code != http.StatusOK {
+		t.Fatalf("live status = %d; want %d: %s", liveRec.Code, http.StatusOK, liveRec.Body.String())
+	}
+	if got := liveRec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q; want no-store", got)
+	}
+	for _, want := range []string{`"channel": "caedrel"`, `"url": "https://video-weaver.example.test/v1/playlist/caedrel.m3u8"`} {
+		if !strings.Contains(liveRec.Body.String(), want) {
+			t.Fatalf("response %q did not contain %q", liveRec.Body.String(), want)
+		}
+	}
+}

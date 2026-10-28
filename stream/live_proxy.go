@@ -51,6 +51,16 @@ var liveProxyURLCache = struct {
 	inflight map[string]*liveProxyURLCall
 }{}
 
+// ResolveLiveStreamURL resolves a fresh upstream Twitch HLS media playlist URL
+// for channel without fetching or rewriting the playlist body.
+func ResolveLiveStreamURL(ctx context.Context, channel string) (string, error) {
+	key := strings.ToLower(strings.TrimSpace(channel))
+	if err := ValidateChannelName(key); err != nil {
+		return "", err
+	}
+	return resolveLiveProxyUpstream(ctx, key)
+}
+
 // ResolveLiveProxyPlaylist resolves the upstream live HLS media playlist for
 // channel and returns the normalized playlist with absolute segment URLs.
 // The resolved upstream weaver URL is cached across polls while each call
