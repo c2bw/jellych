@@ -79,6 +79,9 @@
               <span class="eyebrow">Directory</span>
               <h2>Channels</h2>
             </div>
+            <button id="multiToggle" class="btn-base multi-toggle" type="button" aria-pressed="false" title="Play multiple streams simultaneously">
+              Multi
+            </button>
           </div>
           <div id="channelsList" class="channel-list">Loading channels…</div>
         </section>
@@ -86,45 +89,66 @@
 
       <div class="viewer-shell">
         <section class="player-column" aria-label="Stream player">
-          <div id="playerStage" class="player-stage" tabindex="0">
-            <div id="playerTitle" class="player-title hidden">
-              <div class="truncate"></div>
+          <div id="multiToolbar" class="surface-card multi-toolbar hidden" role="toolbar" aria-label="Stream tiling layout">
+            <div class="multi-toolbar-left">
+              <span class="eyebrow">Tiling</span>
+              <span id="multiCount" class="multi-count-badge">0 streams</span>
             </div>
-            <video id="player" playsinline preload="metadata"></video>
-            <div class="player-idle" aria-hidden="true">
-              <img src="/html/assets/img/twitch_jellyfish_icon.svg" alt="" />
-              <span>Select a live channel to begin</span>
+            <div class="multi-layout-group">
+              <button type="button" class="multi-layout-btn is-active" data-layout-option="auto" aria-pressed="true" title="Automatic grid">Auto</button>
+              <button type="button" class="multi-layout-btn" data-layout-option="spotlight" aria-pressed="false" title="Primary spotlight with secondary tiles">Spotlight</button>
+              <button type="button" class="multi-layout-btn" data-layout-option="columns" aria-pressed="false" title="Side-by-side columns">Side-by-side</button>
+              <button type="button" class="multi-layout-btn" data-layout-option="stacked" aria-pressed="false" title="Stacked rows">Stacked</button>
             </div>
-            <button id="playerCenterPlay" class="player-center-play hidden" type="button" aria-label="Play stream">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
-            </button>
-            <div id="playerControls" class="player-controls">
-              <div class="player-controls-left">
-                <button id="playerPlayToggle" class="player-control-button" type="button" aria-label="Play" disabled>
-                  <svg class="player-icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
-                  <svg class="player-icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h3v14H8zM14 5h3v14h-3z" /></svg>
-                </button>
-                <span class="player-live-badge"><i></i> Live</span>
-                <button id="playerLowLatencyToggle" class="player-latency-toggle" type="button" aria-pressed="false" title="Use an approximately two-second live buffer">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 2-8 12h6l-1 8 9-13h-6z" /></svg>
-                  <span>Low latency</span>
-                </button>
-              </div>
-              <div class="player-controls-right">
-                <div class="player-volume">
-                  <button id="playerMuteToggle" class="player-control-button" type="button" aria-label="Mute">
-                    <svg class="player-icon-volume" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9zm12.5.5a4 4 0 0 1 0 5M19.5 7a7 7 0 0 1 0 10" /></svg>
-                    <svg class="player-icon-muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9zm12 1 4 4m0-4-4 4" /></svg>
-                  </button>
-                  <input id="playerVolume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume" />
+          </div>
+
+          <div id="playerGrid" class="player-grid" data-layout="auto" data-count="0">
+            <div id="playerStage" class="player-stage" tabindex="0">
+              <div id="playerTitle" class="player-title hidden" data-control="title-bar">
+                <div class="truncate" data-control="title-text"></div>
+                <div class="tile-actions hidden" data-control="tile-actions">
+                  <button type="button" class="tile-action-btn" data-tile-action="spotlight" title="Spotlight this stream" aria-label="Spotlight stream">★</button>
+                  <button type="button" class="tile-action-btn" data-tile-action="move-prev" title="Move tile earlier" aria-label="Move tile earlier">←</button>
+                  <button type="button" class="tile-action-btn" data-tile-action="move-next" title="Move tile later" aria-label="Move tile later">→</button>
+                  <button type="button" class="tile-action-btn tile-action-close" data-tile-action="close" title="Close stream tile" aria-label="Close stream tile">×</button>
                 </div>
-                <button id="playerPipToggle" class="player-control-button" type="button" aria-label="Picture in picture" title="Picture in picture">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM12 12h6v5h-6z" /></svg>
-                </button>
-                <button id="playerFullscreenToggle" class="player-control-button" type="button" aria-label="Enter fullscreen" title="Fullscreen">
-                  <svg class="player-icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /></svg>
-                  <svg class="player-icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5" /></svg>
-                </button>
+              </div>
+              <video id="player" playsinline preload="metadata"></video>
+              <div class="player-idle" aria-hidden="true">
+                <img src="/html/assets/img/twitch_jellyfish_icon.svg" alt="" />
+                <span>Select a live channel to begin</span>
+              </div>
+              <button id="playerCenterPlay" data-control="center-play" class="player-center-play hidden" type="button" aria-label="Play stream">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+              </button>
+              <div id="playerControls" class="player-controls">
+                <div class="player-controls-left">
+                  <button id="playerPlayToggle" data-control="play-toggle" class="player-control-button" type="button" aria-label="Play" disabled>
+                    <svg class="player-icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+                    <svg class="player-icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h3v14H8zM14 5h3v14h-3z" /></svg>
+                  </button>
+                  <span class="player-live-badge"><i></i> Live</span>
+                  <button id="playerLowLatencyToggle" data-control="low-latency-toggle" class="player-latency-toggle" type="button" aria-pressed="false" title="Use an approximately two-second live buffer">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 2-8 12h6l-1 8 9-13h-6z" /></svg>
+                    <span>Low latency</span>
+                  </button>
+                </div>
+                <div class="player-controls-right">
+                  <div class="player-volume">
+                    <button id="playerMuteToggle" data-control="mute-toggle" class="player-control-button" type="button" aria-label="Mute">
+                      <svg class="player-icon-volume" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9zm12.5.5a4 4 0 0 1 0 5M19.5 7a7 7 0 0 1 0 10" /></svg>
+                      <svg class="player-icon-muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9zm12 1 4 4m0-4-4 4" /></svg>
+                    </button>
+                    <input id="playerVolume" data-control="volume-range" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume" />
+                  </div>
+                  <button id="playerPipToggle" data-control="pip-toggle" class="player-control-button" type="button" aria-label="Picture in picture" title="Picture in picture">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM12 12h6v5h-6z" /></svg>
+                  </button>
+                  <button id="playerFullscreenToggle" data-control="fullscreen-toggle" class="player-control-button" type="button" aria-label="Enter fullscreen" title="Fullscreen">
+                    <svg class="player-icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /></svg>
+                    <svg class="player-icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5" /></svg>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
