@@ -27,6 +27,7 @@ export function initManager({
   let playingChannel = null;
   let playHeartbeatId = null;
   let playTargetChannel = null;
+  let isDirectPlayback = false;
   let suppressPauseHandling = false;
   const video = player && player.video ? player.video : null;
 
@@ -133,7 +134,7 @@ export function initManager({
     if(!playerTitleEl) return;
     const titleTextEl = playerTitleEl.firstElementChild || playerTitleEl;
     const details = statusDetails.get(channelName) || {};
-    const title = details.title || '';
+    const title = details.title || (isDirectPlayback ? channelName : '');
     titleTextEl.textContent = title;
     playerTitleEl.classList.toggle('hidden', !title);
   }
@@ -145,7 +146,20 @@ export function initManager({
     playerTitleEl.classList.add('hidden');
   }
 
+  function clearViewQueryParam(){
+    try{
+      if(!window.location || !window.history || typeof window.history.replaceState !== 'function') return;
+      const url = new URL(window.location.href);
+      if(!url.searchParams.has('view')) return;
+      url.searchParams.delete('view');
+      window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+    }catch(e){ /* ignore */ }
+  }
+
   function beginPlayback(channelName, url, playPauseBtn){
+    stopPlaybackTracking();
+    isDirectPlayback = false;
+    clearViewQueryParam();
     setPlaying(channelName, true);
     setPlayButtonState(playPauseBtn, true);
     playTargetChannel = channelName;
@@ -158,6 +172,26 @@ export function initManager({
       setTimeout(()=>{ suppressPauseHandling = false; }, 0);
     }
     stats.start();
+  }
+
+  function playDirectChannel(channelName){
+    const channelKey = normalizeChannelKey(channelName);
+    if(!channelKey) return false;
+    stopPlaybackTracking();
+    isDirectPlayback = true;
+    setPlaying(null, false);
+    playTargetChannel = channelKey;
+    setPlayerTitle(channelKey);
+    const url = '/api/live-proxy/' + encodeURIComponent(channelKey) + '/index.m3u8';
+    suppressPauseHandling = true;
+    try{
+      player.play(url);
+      onPlaybackChannelChange(channelKey);
+    } finally {
+      setTimeout(()=>{ suppressPauseHandling = false; }, 0);
+    }
+    stats.start();
+    return true;
   }
 
   function recoverBufferedPlayback(){
@@ -176,6 +210,7 @@ export function initManager({
       stats.stop();
       if(clearStats) stats.clear();
       playTargetChannel = null;
+      isDirectPlayback = false;
       onPlaybackChannelChange(null);
       clearPlayerTitle();
       stopPlaybackTracking();
@@ -218,7 +253,7 @@ export function initManager({
   }
 
   function startPlaybackTracking(channel){
-    if(!channel) return;
+    if(!channel || isDirectPlayback) return;
     if(playingChannel === channel && playHeartbeatId) return;
     stopPlaybackTracking();
     playingChannel = channel;
@@ -596,5 +631,5 @@ export function initManager({
     }catch(e){ showManagerMsg('Remove failed: '+e.message, true); }
   }
 
-  return { fetchChannels };
+  return { fetchChannels, playDirectChannel };
 }

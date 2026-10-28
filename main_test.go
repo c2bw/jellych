@@ -129,6 +129,7 @@ func TestEmbeddedPagesUseSelfHostedFrontendAssets(t *testing.T) {
 	}{
 		{path: "html/watch.html", required: []string{"/html/assets/app.css", "/html/vendor/hls.min.js"}},
 		{path: "html/vods.html", required: []string{"/html/assets/app.css"}},
+		{path: "html/tools.html", required: []string{"/html/assets/app.css"}},
 	}
 
 	for _, page := range pages {

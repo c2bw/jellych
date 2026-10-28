@@ -11,6 +11,7 @@ type API struct {
 	streams            StreamOperations
 	playback           *PlaybackTracker
 	vodMediaRegistry   *vodMediaRegistry
+	liveMediaRegistry  *vodMediaRegistry
 	vodMediaHTTPClient *http.Client
 	chatOAuth          *chatOAuthService
 	now                func() time.Time
@@ -49,6 +50,7 @@ func newAPI(state *APIState, dependencies Dependencies) *API {
 		streams:            fillStreamOperationDefaults(dependencies.Streams),
 		playback:           newPlaybackTracker(now),
 		vodMediaRegistry:   &vodMediaRegistry{},
+		liveMediaRegistry:  &vodMediaRegistry{},
 		vodMediaHTTPClient: mediaClient,
 		chatOAuth:          newChatOAuthService(dependencies.ChatOAuth),
 		now:                now,
@@ -96,6 +98,11 @@ func (a *API) Handler() http.Handler {
 	mux.HandleFunc("HEAD /vod/{id}/file.mkv", a.handleGetLocalVOD)
 	mux.HandleFunc("GET /vod/{id}/media/{token}", a.handleGetVODMedia)
 	mux.HandleFunc("HEAD /vod/{id}/media/{token}", a.handleGetVODMedia)
+	mux.HandleFunc("GET /api/live-proxy/{channel}/index.m3u8", a.handleGetLiveProxyPlaylist)
+	mux.HandleFunc("HEAD /api/live-proxy/{channel}/index.m3u8", a.handleGetLiveProxyPlaylist)
+	mux.HandleFunc("GET /api/live-proxy/{channel}/media/{token}", a.handleGetLiveProxyMedia)
+	mux.HandleFunc("HEAD /api/live-proxy/{channel}/media/{token}", a.handleGetLiveProxyMedia)
+	mux.HandleFunc("GET /api/live-url/{channel}", a.handleGetLiveStreamURL)
 
 	return mux
 }

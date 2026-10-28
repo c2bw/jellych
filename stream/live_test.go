@@ -2,10 +2,14 @@ package stream
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -405,5 +409,122 @@ func TestLiveHandlerReturnsServiceUnavailableForActiveChannelWhenPlaylistMissing
 	}
 	if got := rec.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("expected Retry-After header %q, got %q", "1", got)
+	}
+}
+
+func TestResolveLiveProxyPlaylistCachesUpstreamURLAndFetchesFreshPlaylist(t *testing.T) {
+	liveProxyURLCache.Lock()
+	liveProxyURLCache.entries = nil
+	liveProxyURLCache.inflight = nil
+	liveProxyURLCache.Unlock()
+	originalResolve := resolveLiveProxyUpstream
+	originalFetch := fetchLiveProxyPlaylist
+	t.Cleanup(func() {
+		resolveLiveProxyUpstream = originalResolve
+		fetchLiveProxyPlaylist = originalFetch
+	})
+
+	var resolves atomic.Int32
+	var fetches atomic.Int32
+	resolveLiveProxyUpstream = func(_ context.Context, channel string) (string, error) {
+		resolves.Add(1)
+		return "https://weaver.example.test/" + channel + "/index.m3u8", nil
+	}
+	fetchLiveProxyPlaylist = func(_ context.Context, playlistURL string) ([]byte, error) {
+		seq := fetches.Add(1)
+		return []byte(fmt.Sprintf("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:%d\n%s/seg-%d.ts\n", seq, playlistURL, seq)), nil
+	}
+
+	first, err := ResolveLiveProxyPlaylist(context.Background(), "Caedrel")
+	if err != nil {
+		t.Fatalf("first ResolveLiveProxyPlaylist: %v", err)
+	}
+	second, err := ResolveLiveProxyPlaylist(context.Background(), "caedrel")
+	if err != nil {
+		t.Fatalf("second ResolveLiveProxyPlaylist: %v", err)
+	}
+	if got := resolves.Load(); got != 1 {
+		t.Fatalf("expected 1 upstream URL resolution across polls, got %d", got)
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("expected 2 playlist fetches across polls, got %d", got)
+	}
+	if string(first) == string(second) {
+		t.Fatalf("expected each poll to return fresh playlist content, got identical %q", string(first))
+	}
+}
+
+func TestResolveLiveProxyPlaylistReResolvesWhenCachedUpstreamFails(t *testing.T) {
+	liveProxyURLCache.Lock()
+	liveProxyURLCache.entries = nil
+	liveProxyURLCache.inflight = nil
+	liveProxyURLCache.Unlock()
+	originalResolve := resolveLiveProxyUpstream
+	originalFetch := fetchLiveProxyPlaylist
+	t.Cleanup(func() {
+		resolveLiveProxyUpstream = originalResolve
+		fetchLiveProxyPlaylist = originalFetch
+	})
+
+	var resolves atomic.Int32
+	resolveLiveProxyUpstream = func(_ context.Context, _ string) (string, error) {
+		n := resolves.Add(1)
+		return fmt.Sprintf("https://weaver.example.test/session-%d.m3u8", n), nil
+	}
+	var failFirstCachedFetch atomic.Bool
+	fetchLiveProxyPlaylist = func(_ context.Context, playlistURL string) ([]byte, error) {
+		if playlistURL == "https://weaver.example.test/session-1.m3u8" && failFirstCachedFetch.Load() {
+			return nil, errors.New("upstream playlist returned status 403")
+		}
+		return []byte("#EXTM3U\n" + playlistURL + "\n"), nil
+	}
+
+	if _, err := ResolveLiveProxyPlaylist(context.Background(), "shroud"); err != nil {
+		t.Fatalf("initial ResolveLiveProxyPlaylist: %v", err)
+	}
+	failFirstCachedFetch.Store(true)
+
+	recovered, err := ResolveLiveProxyPlaylist(context.Background(), "shroud")
+	if err != nil {
+		t.Fatalf("recovered ResolveLiveProxyPlaylist: %v", err)
+	}
+	if got := resolves.Load(); got != 2 {
+		t.Fatalf("expected expired upstream URL to trigger re-resolution, got %d resolves", got)
+	}
+	if !strings.Contains(string(recovered), "session-2.m3u8") {
+		t.Fatalf("expected recovered playlist from session-2, got %q", string(recovered))
+	}
+}
+
+func TestOfflineLiveStreamErrorIsClassified(t *testing.T) {
+	err := errors.New("failed to resolve stream URL: no playback token returned; stream may be offline or unavailable")
+	if !isOfflineLiveStreamError(err) {
+		t.Fatal("expected offline error to be classified")
+	}
+	if isOfflineLiveStreamError(errors.New("dial tcp: i/o timeout")) {
+		t.Fatal("did not expect network timeout to be classified as offline")
+	}
+}
+
+func TestResolveLiveStreamURLNormalizesChannelAndReturnsUpstreamURL(t *testing.T) {
+	originalResolve := resolveLiveProxyUpstream
+	t.Cleanup(func() {
+		resolveLiveProxyUpstream = originalResolve
+	})
+
+	resolveLiveProxyUpstream = func(_ context.Context, channel string) (string, error) {
+		return "https://weaver.example.test/" + channel + ".m3u8", nil
+	}
+
+	got, err := ResolveLiveStreamURL(context.Background(), "  Caedrel ")
+	if err != nil {
+		t.Fatalf("ResolveLiveStreamURL: %v", err)
+	}
+	if want := "https://weaver.example.test/caedrel.m3u8"; got != want {
+		t.Fatalf("ResolveLiveStreamURL = %q; want %q", got, want)
+	}
+
+	if _, err := ResolveLiveStreamURL(context.Background(), "bad channel!"); err == nil {
+		t.Fatal("expected invalid channel name to fail")
 	}
 }

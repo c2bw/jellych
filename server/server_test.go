@@ -108,3 +108,22 @@ func testHandlers() Handlers {
 	notFound := http.NotFoundHandler()
 	return Handlers{API: notFound, Live: notFound, LiveWrite: notFound}
 }
+
+func TestToolsRoutesServeToolsHTML(t *testing.T) {
+	htmlFS := fstest.MapFS{
+		"tools.html": &fstest.MapFile{Data: []byte("<!doctype html><title>Tools</title>")},
+	}
+	handler := newHandler(htmlFS, testHandlers())
+
+	for _, path := range []string{"/tools", "/tools/"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d; want %d", path, rec.Code, http.StatusOK)
+		}
+		if !strings.Contains(rec.Body.String(), "<title>Tools</title>") {
+			t.Fatalf("GET %s body = %q; want tools.html content", path, rec.Body.String())
+		}
+	}
+}
