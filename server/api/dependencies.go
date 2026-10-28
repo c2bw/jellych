@@ -22,9 +22,10 @@ type StreamOperations struct {
 	StartVODDownload       func(context.Context, string, string, string, string, stream.VODDownloadPreset, time.Duration) error
 	ConvertVODDownload     func(context.Context, string, stream.VODDownloadPreset) error
 	DeleteVODDownload      func(string) error
-	OpenVODDownload        func(string) (*os.File, error)
-	RemoveVODWithArtifacts func(string, func() error) error
-	ResolveVODPlaylist     func(context.Context, string) ([]byte, error)
+	OpenVODDownload          func(string) (*os.File, error)
+	RemoveVODWithArtifacts   func(string, func() error) error
+	ResolveVODPlaylist       func(context.Context, string) ([]byte, error)
+	ResolveLiveProxyPlaylist func(context.Context, string) ([]byte, error)
 }
 
 // Dependencies configures runtime services owned by an API instance. Zero
@@ -53,9 +54,10 @@ func NewStreamOperations(registry *stream.StreamRegistry, downloads *stream.VODD
 		StartVODDownload:       downloads.StartWithPresetAndDuration,
 		ConvertVODDownload:     downloads.Convert,
 		DeleteVODDownload:      downloads.Delete,
-		OpenVODDownload:        downloads.Open,
-		RemoveVODWithArtifacts: downloads.RemoveWithArtifacts,
-		ResolveVODPlaylist:     stream.ResolveVODPlaylist,
+		OpenVODDownload:          downloads.Open,
+		RemoveVODWithArtifacts:   downloads.RemoveWithArtifacts,
+		ResolveVODPlaylist:       stream.ResolveVODPlaylist,
+		ResolveLiveProxyPlaylist: stream.ResolveLiveProxyPlaylist,
 	}
 }
 
@@ -75,7 +77,7 @@ func (operations StreamOperations) empty() bool {
 		operations.GetVODDownloadProgress == nil && operations.StartVODDownload == nil &&
 		operations.ConvertVODDownload == nil && operations.DeleteVODDownload == nil &&
 		operations.OpenVODDownload == nil && operations.RemoveVODWithArtifacts == nil &&
-		operations.ResolveVODPlaylist == nil
+		operations.ResolveVODPlaylist == nil && operations.ResolveLiveProxyPlaylist == nil
 }
 
 func (operations StreamOperations) complete() bool {
@@ -84,5 +86,5 @@ func (operations StreamOperations) complete() bool {
 		operations.GetVODDownloadProgress != nil && operations.StartVODDownload != nil &&
 		operations.ConvertVODDownload != nil && operations.DeleteVODDownload != nil &&
 		operations.OpenVODDownload != nil && operations.RemoveVODWithArtifacts != nil &&
-		operations.ResolveVODPlaylist != nil
+		operations.ResolveVODPlaylist != nil && operations.ResolveLiveProxyPlaylist != nil
 }

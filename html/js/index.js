@@ -3,6 +3,7 @@ import { initStats } from './stats.js';
 import { initManager } from './manager.js';
 import { initPlayerControls } from './player_controls.js';
 import { initTwitchChat } from './twitch_chat.js';
+import { parseTwitchChannelInput } from './utils.js';
 
 const listEl = document.getElementById('channelsList');
 const video = document.getElementById('player');
@@ -70,3 +71,8 @@ video.addEventListener('emptied', ()=>stats.clear());
 // initial load
 manager.fetchChannels();
 stats.update();
+
+const directViewChannel = parseTwitchChannelInput(new URLSearchParams(window.location.search).get('view') || '');
+if(directViewChannel){
+  manager.playDirectChannel(directViewChannel);
+}
