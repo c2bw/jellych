@@ -501,10 +501,22 @@
   .player-control-button:active { transform: scale(0.94); }
   .player-control-button:disabled { cursor: default; opacity: 0.28; }
   .player-control-button svg { width: 18px; height: 18px; fill: currentColor; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-  .player-live-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 999px; color: #aaaab3; background: rgba(0, 0, 0, 0.3); font-size: 10px; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
+  .player-live-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 999px; color: #aaaab3; background: rgba(0, 0, 0, 0.3); font-size: 10px; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; transition: color 140ms ease, border-color 140ms ease, background 140ms ease; }
+  .player-live-badge:disabled { cursor: default; }
   .player-live-badge i { width: 6px; height: 6px; border-radius: 50%; background: #666670; transition: background 150ms ease, box-shadow 150ms ease; }
   .player-stage.is-playing .player-live-badge { color: #d8fbe9; border-color: rgba(72, 213, 151, 0.18); background: rgba(12, 74, 48, 0.28); }
   .player-stage.is-playing .player-live-badge i { background: var(--success); box-shadow: 0 0 0 3px rgba(72, 213, 151, 0.11), 0 0 12px rgba(72, 213, 151, 0.5); }
+  .player-stage .player-live-badge.is-behind-live { cursor: pointer; color: #ede8ff; border-color: rgba(182, 157, 255, 0.42); background: rgba(104, 70, 203, 0.34); }
+  .player-stage .player-live-badge.is-behind-live:hover:not(:disabled) { color: white; border-color: rgba(182, 157, 255, 0.65); background: rgba(120, 82, 225, 0.52); }
+  .player-stage .player-live-badge.is-behind-live i { background: var(--accent-bright); box-shadow: 0 0 0 3px rgba(182, 157, 255, 0.16), 0 0 10px rgba(182, 157, 255, 0.55); }
+  .player-time-controls { display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 999px; background: rgba(0, 0, 0, 0.34); }
+  .player-step-button { display: inline-flex; min-height: 22px; align-items: center; justify-content: center; padding: 0 6px; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 999px; color: #dcdce3; background: rgba(255, 255, 255, 0.05); font-size: 10px; font-weight: 720; font-variant-numeric: tabular-nums; transition: 140ms ease; }
+  .player-step-button:hover:not(:disabled) { border-color: rgba(182, 157, 255, 0.45); color: white; background: rgba(145, 70, 255, 0.25); }
+  .player-step-button:disabled { cursor: default; opacity: 0.32; }
+  .player-seek-range { width: 72px; height: 4px; appearance: none; cursor: pointer; border-radius: 999px; outline: none; background: linear-gradient(to right, var(--accent-bright) 0 var(--seek-progress, 100%), rgba(255, 255, 255, 0.2) var(--seek-progress, 100%) 100%); }
+  .player-seek-range:disabled { cursor: default; opacity: 0.35; }
+  .player-seek-range::-webkit-slider-thumb { width: 11px; height: 11px; appearance: none; border: 2px solid #ded6ff; border-radius: 50%; background: var(--accent); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4); }
+  .player-seek-range::-moz-range-thumb { width: 9px; height: 9px; border: 2px solid #ded6ff; border-radius: 50%; background: var(--accent); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4); }
   .player-latency-toggle { display: inline-flex; min-height: 30px; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 999px; color: #aaaab3; background: rgba(0, 0, 0, 0.3); font-size: 10px; font-weight: 700; letter-spacing: 0.035em; transition: color 140ms ease, border-color 140ms ease, background 140ms ease; }
   .player-latency-toggle:hover { border-color: rgba(182, 157, 255, 0.28); color: white; background: rgba(145, 70, 255, 0.12); }
   .player-latency-toggle[aria-pressed="true"] { border-color: rgba(72, 213, 151, 0.24); color: #d8fbe9; background: rgba(12, 74, 48, 0.34); }
@@ -529,6 +541,26 @@
     overflow: hidden;
   }
   .chat-panel[hidden] { display: none; }
+  .chat-stack {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .chat-pane {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 0%;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .chat-pane.hidden { display: none; }
+  .chat-panel.is-stacked .chat-pane + .chat-pane {
+    border-top: 1px solid var(--line-strong);
+  }
   .chat-header {
     display: flex;
     min-height: 62px;
@@ -538,6 +570,25 @@
     gap: 12px;
     padding: 12px 13px;
     border-bottom: 1px solid var(--line);
+  }
+  .chat-header-actions {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+  }
+  .chat-multi-toggle {
+    min-width: 42px;
+    min-height: 24px;
+    padding: 0 7px;
+    font-size: 11px;
+  }
+  .chat-panel.is-stacked .chat-header {
+    min-height: 40px;
+    padding: 6px 11px;
+  }
+  .chat-panel.is-stacked .chat-header .eyebrow {
+    display: none;
   }
   .chat-header h2 {
     max-width: 190px;
@@ -549,6 +600,10 @@
     letter-spacing: -0.015em;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .chat-panel.is-stacked .chat-header h2 {
+    margin-top: 0;
+    font-size: 13px;
   }
   .chat-status {
     display: inline-flex;
@@ -696,6 +751,17 @@
   }
   .chat-composer button:hover:not(:disabled) { border-color: rgba(211, 198, 255, 0.6); background: linear-gradient(180deg, #9273f0, #7350d7); }
   .chat-composer.is-disabled input, .chat-composer button:disabled { cursor: not-allowed; opacity: 0.48; }
+  .chat-panel.is-stacked .chat-auth-bar {
+    min-height: 30px;
+    padding: 4px 10px;
+  }
+  .chat-panel.is-stacked .chat-composer {
+    padding: 6px 8px;
+  }
+  .chat-panel.is-stacked .chat-composer input,
+  .chat-panel.is-stacked .chat-composer button {
+    height: 28px;
+  }
 
   .oauth-result-body { display: grid; min-height: 100vh; place-items: center; padding: 24px; }
   .oauth-result-card { width: min(420px, 100%); padding: 24px; text-align: center; }

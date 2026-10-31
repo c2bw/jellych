@@ -19,8 +19,15 @@ export function initPlayerControls({ video, stage, player }){
   const pipToggle = findControl(stage, 'pip-toggle', 'playerPipToggle');
   const fullscreenToggle = findControl(stage, 'fullscreen-toggle', 'playerFullscreenToggle');
   const lowLatencyToggle = findControl(stage, 'low-latency-toggle', 'playerLowLatencyToggle');
+  const liveBadge = findControl(stage, 'live-badge', 'playerLiveBadge');
+  const liveBadgeText = findControl(stage, 'live-badge-text', null);
+  const timeControls = findControl(stage, 'time-controls', 'playerTimeControls');
+  const seekBack = findControl(stage, 'seek-back', null);
+  const seekForward = findControl(stage, 'seek-forward', null);
+  const seekRange = findControl(stage, 'seek-range', null);
   const doc = (stage && stage.ownerDocument) || (typeof document !== 'undefined' ? document : null);
   let previousVolume = 1;
+  let isScrubbing = false;
 
   function hasSource(){
     return !!(video.currentSrc || video.src || (video.getAttribute && video.getAttribute('src')));
@@ -70,6 +77,51 @@ export function initPlayerControls({ video, stage, player }){
     syncVolume();
   }
 
+  function syncTimeShift(){
+    const ready = hasSource();
+    const win = (ready && player && typeof player.getLiveSeekWindow === 'function')
+      ? player.getLiveSeekWindow()
+      : { minTime: 0, maxTime: 0, liveEdge: 0, currentTime: 0, windowSeconds: 0, behindLiveSeconds: 0, isLive: true };
+    const hasWindow = ready && win.windowSeconds > 0.5;
+    const behindSeconds = (ready && !win.isLive && win.behindLiveSeconds > 0.25)
+      ? Math.max(1, Math.round(win.behindLiveSeconds))
+      : 0;
+    const isBehindLive = behindSeconds > 0;
+
+    if(liveBadge){
+      if(liveBadge.classList) liveBadge.classList.toggle('is-behind-live', isBehindLive);
+      liveBadge.disabled = !ready || !isBehindLive;
+      liveBadge.setAttribute('aria-label', isBehindLive ? `Behind live by ${behindSeconds} seconds. Jump to live edge` : 'Live edge');
+      liveBadge.title = isBehindLive ? 'Jump to live edge' : 'At live edge';
+    }
+    if(liveBadgeText){
+      liveBadgeText.textContent = isBehindLive ? `-${behindSeconds}s · Live` : 'Live';
+    }
+    if(seekBack){
+      seekBack.disabled = !hasWindow || (win.behindLiveSeconds >= win.windowSeconds - 0.1);
+    }
+    if(seekForward){
+      seekForward.disabled = !hasWindow || !isBehindLive;
+    }
+    if(seekRange){
+      seekRange.disabled = !hasWindow;
+      const maxWindow = hasWindow ? Math.max(1, Math.ceil(win.windowSeconds * 2) / 2) : 30;
+      seekRange.min = String(-maxWindow);
+      seekRange.max = '0';
+      seekRange.step = '0.5';
+      if(!isScrubbing){
+        const clampedBehind = hasWindow ? Math.min(maxWindow, Math.max(0, win.behindLiveSeconds)) : 0;
+        const sliderVal = isBehindLive ? -Math.round(clampedBehind * 2) / 2 : 0;
+        seekRange.value = String(sliderVal);
+      }
+      const currentVal = Number(seekRange.value) || 0;
+      const progressPct = maxWindow > 0 ? Math.min(100, Math.max(0, ((maxWindow + currentVal) / maxWindow) * 100)) : 100;
+      if(seekRange.style && typeof seekRange.style.setProperty === 'function'){
+        seekRange.style.setProperty('--seek-progress', progressPct + '%');
+      }
+    }
+  }
+
   function setLowLatencyMode(enabled, persist){
     if(!lowLatencyToggle || !player || typeof player.setLowLatencyMode !== 'function') return;
     player.setLowLatencyMode(enabled);
@@ -81,6 +133,7 @@ export function initPlayerControls({ video, stage, player }){
     if(persist){
       try{ window.localStorage.setItem(LOW_LATENCY_STORAGE_KEY, enabled ? 'true' : 'false'); }catch(e){ /* ignore */ }
     }
+    syncTimeShift();
   }
 
   async function toggleFullscreen(){
@@ -129,6 +182,53 @@ export function initPlayerControls({ video, stage, player }){
       setLowLatencyMode(!player.isLowLatencyMode(), true);
     });
   }
+  if(liveBadge){
+    liveBadge.addEventListener('click', ()=>{
+      if(player && typeof player.seekToLive === 'function'){
+        player.seekToLive();
+        syncTimeShift();
+      }
+    });
+  }
+  if(seekBack){
+    seekBack.addEventListener('click', ()=>{
+      if(player && typeof player.seekBy === 'function'){
+        player.seekBy(-1);
+        syncTimeShift();
+      }
+    });
+  }
+  if(seekForward){
+    seekForward.addEventListener('click', ()=>{
+      if(player && typeof player.seekBy === 'function'){
+        player.seekBy(1);
+        syncTimeShift();
+      }
+    });
+  }
+  if(seekRange){
+    seekRange.addEventListener('pointerdown', ()=>{ isScrubbing = true; });
+    seekRange.addEventListener('pointerup', ()=>{ isScrubbing = false; syncTimeShift(); });
+    seekRange.addEventListener('input', ()=>{
+      const offset = Math.max(0, -Number(seekRange.value));
+      if(player && typeof player.seekToLiveOffset === 'function'){
+        player.seekToLiveOffset(offset);
+      }
+      syncTimeShift();
+    });
+    seekRange.addEventListener('change', ()=>{
+      isScrubbing = false;
+      const offset = Math.max(0, -Number(seekRange.value));
+      if(player && typeof player.seekToLiveOffset === 'function'){
+        player.seekToLiveOffset(offset);
+      }
+      syncTimeShift();
+    });
+  }
+
+  function isTimeControlsVisible(){
+    return !!(timeControls && (!timeControls.classList || !timeControls.classList.contains('hidden')));
+  }
 
   if(stage){
     stage.addEventListener('keydown', (event)=>{
@@ -143,6 +243,18 @@ export function initPlayerControls({ video, stage, player }){
       }else if(key === 'f'){
         event.preventDefault();
         toggleFullscreen();
+      }else if(key === 'arrowleft' && isTimeControlsVisible()){
+        event.preventDefault();
+        if(player && typeof player.seekBy === 'function'){
+          player.seekBy(-1);
+          syncTimeShift();
+        }
+      }else if(key === 'arrowright' && isTimeControlsVisible()){
+        event.preventDefault();
+        if(player && typeof player.seekBy === 'function'){
+          player.seekBy(1);
+          syncTimeShift();
+        }
       }
     });
     stage.addEventListener('focusin', (event)=>{
@@ -155,9 +267,18 @@ export function initPlayerControls({ video, stage, player }){
     });
   }
 
+  function syncPlaybackAndTime(){
+    syncPlayback();
+    syncTimeShift();
+  }
+
   const mediaEvents = ['loadstart', 'loadedmetadata', 'play', 'playing', 'pause', 'ended', 'emptied'];
   mediaEvents.forEach((eventName)=>{
-    video.addEventListener(eventName, syncPlayback);
+    video.addEventListener(eventName, syncPlaybackAndTime);
+  });
+  const timeEvents = ['timeupdate', 'progress', 'seeking', 'seeked'];
+  timeEvents.forEach((eventName)=>{
+    video.addEventListener(eventName, syncTimeShift);
   });
   video.addEventListener('volumechange', syncVolume);
   if(doc) doc.addEventListener('fullscreenchange', onFullscreenChange);
@@ -170,14 +291,18 @@ export function initPlayerControls({ video, stage, player }){
   setLowLatencyMode(lowLatencyEnabled, false);
   syncPlayback();
   syncVolume();
+  syncTimeShift();
 
   function destroy(){
     if(doc) doc.removeEventListener('fullscreenchange', onFullscreenChange);
     mediaEvents.forEach((eventName)=>{
-      video.removeEventListener(eventName, syncPlayback);
+      video.removeEventListener(eventName, syncPlaybackAndTime);
+    });
+    timeEvents.forEach((eventName)=>{
+      video.removeEventListener(eventName, syncTimeShift);
     });
     video.removeEventListener('volumechange', syncVolume);
   }
 
-  return { destroy, setLowLatencyMode, syncPlayback, syncVolume };
+  return { destroy, setLowLatencyMode, syncPlayback, syncVolume, syncTimeShift };
 }

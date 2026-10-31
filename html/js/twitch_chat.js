@@ -622,10 +622,157 @@ function createMessageBody(documentRef, payload){
   return body;
 }
 
+function insertAfterHeader(paneEl, headerEl, authBarEl){
+  if(!paneEl || !authBarEl) return;
+  if(typeof paneEl.insertBefore === 'function' && headerEl && headerEl.parentNode === paneEl){
+    if(authBarEl.parentNode !== paneEl || headerEl.nextSibling !== authBarEl){
+      paneEl.insertBefore(authBarEl, headerEl.nextSibling || null);
+    }
+    return;
+  }
+  if(Array.isArray(paneEl.children)){
+    if(authBarEl.parentNode && typeof authBarEl.remove === 'function') authBarEl.remove();
+    const headerIdx = paneEl.children.indexOf(headerEl);
+    authBarEl.parentNode = paneEl;
+    if(headerIdx >= 0) paneEl.children.splice(headerIdx + 1, 0, authBarEl);
+    else paneEl.children.unshift(authBarEl);
+  }
+}
+
+function insertBeforeStatus(headerActionsEl, statusEl, multiToggleEl){
+  if(!headerActionsEl || !multiToggleEl) return;
+  if(typeof headerActionsEl.insertBefore === 'function' && statusEl && statusEl.parentNode === headerActionsEl){
+    if(multiToggleEl.parentNode !== headerActionsEl || multiToggleEl.nextSibling !== statusEl){
+      headerActionsEl.insertBefore(multiToggleEl, statusEl);
+    }
+    return;
+  }
+  if(Array.isArray(headerActionsEl.children)){
+    if(multiToggleEl.parentNode && typeof multiToggleEl.remove === 'function') multiToggleEl.remove();
+    const statusIdx = headerActionsEl.children.indexOf(statusEl);
+    multiToggleEl.parentNode = headerActionsEl;
+    if(statusIdx >= 0) headerActionsEl.children.splice(statusIdx, 0, multiToggleEl);
+    else headerActionsEl.children.unshift(multiToggleEl);
+  }
+}
+
+function createDynamicChatPaneDOM(documentRef){
+  const paneEl = documentRef.createElement('div');
+  paneEl.className = 'chat-pane';
+
+  const headerEl = documentRef.createElement('header');
+  headerEl.className = 'chat-header';
+  if(headerEl.setAttribute) headerEl.setAttribute('data-chat', 'header');
+
+  const headerTitleWrap = documentRef.createElement('div');
+  const eyebrowEl = documentRef.createElement('span');
+  eyebrowEl.className = 'eyebrow';
+  eyebrowEl.textContent = 'Twitch IRC';
+  const channelEl = documentRef.createElement('h2');
+  channelEl.textContent = 'Chat';
+  if(channelEl.setAttribute) channelEl.setAttribute('data-chat', 'channel');
+  headerTitleWrap.appendChild(eyebrowEl);
+  headerTitleWrap.appendChild(channelEl);
+
+  const headerActionsEl = documentRef.createElement('div');
+  headerActionsEl.className = 'chat-header-actions';
+  if(headerActionsEl.setAttribute) headerActionsEl.setAttribute('data-chat', 'header-actions');
+
+  const statusEl = documentRef.createElement('span');
+  statusEl.className = 'chat-status';
+  statusEl.textContent = 'Idle';
+  if(statusEl.dataset) statusEl.dataset.state = 'idle';
+  if(statusEl.setAttribute){
+    statusEl.setAttribute('data-chat', 'status');
+    statusEl.setAttribute('data-state', 'idle');
+    statusEl.setAttribute('aria-live', 'polite');
+  }
+  headerActionsEl.appendChild(statusEl);
+
+  headerEl.appendChild(headerTitleWrap);
+  headerEl.appendChild(headerActionsEl);
+
+  const feedEl = documentRef.createElement('div');
+  feedEl.className = 'chat-feed';
+
+  const messagesEl = documentRef.createElement('div');
+  messagesEl.className = 'chat-messages';
+  if(messagesEl.setAttribute){
+    messagesEl.setAttribute('data-chat', 'messages');
+    messagesEl.setAttribute('role', 'log');
+    messagesEl.setAttribute('aria-label', 'Twitch chat messages');
+  }
+
+  const emptyEl = documentRef.createElement('div');
+  emptyEl.className = 'chat-empty';
+  emptyEl.textContent = 'Select a live channel to view chat';
+  if(emptyEl.setAttribute) emptyEl.setAttribute('data-chat', 'empty');
+
+  const newMessagesEl = documentRef.createElement('button');
+  newMessagesEl.className = 'chat-new-messages hidden';
+  if(newMessagesEl.classList) newMessagesEl.classList.add('chat-new-messages', 'hidden');
+  newMessagesEl.type = 'button';
+  newMessagesEl.textContent = 'New messages';
+  if(newMessagesEl.setAttribute) newMessagesEl.setAttribute('data-chat', 'new-messages');
+
+  feedEl.appendChild(messagesEl);
+  feedEl.appendChild(emptyEl);
+  feedEl.appendChild(newMessagesEl);
+
+  const composerEl = documentRef.createElement('form');
+  composerEl.className = 'chat-composer is-disabled';
+  if(composerEl.classList) composerEl.classList.add('chat-composer', 'is-disabled');
+  if(composerEl.setAttribute){
+    composerEl.setAttribute('data-chat', 'composer');
+    composerEl.setAttribute('autocomplete', 'off');
+  }
+
+  const inputEl = documentRef.createElement('input');
+  inputEl.type = 'text';
+  inputEl.maxLength = 450;
+  inputEl.placeholder = 'Log in to send messages';
+  inputEl.disabled = true;
+  if(inputEl.setAttribute){
+    inputEl.setAttribute('data-chat', 'input');
+    inputEl.setAttribute('aria-label', 'Chat message');
+  }
+
+  const sendButtonEl = documentRef.createElement('button');
+  sendButtonEl.type = 'submit';
+  sendButtonEl.disabled = true;
+  sendButtonEl.textContent = 'Send';
+  if(sendButtonEl.setAttribute) sendButtonEl.setAttribute('data-chat', 'send-button');
+
+  composerEl.appendChild(inputEl);
+  composerEl.appendChild(sendButtonEl);
+
+  paneEl.appendChild(headerEl);
+  paneEl.appendChild(feedEl);
+  paneEl.appendChild(composerEl);
+
+  return {
+    paneEl,
+    headerEl,
+    headerActionsEl,
+    channelEl,
+    statusEl,
+    messagesEl,
+    emptyEl,
+    newMessagesEl,
+    composerEl,
+    inputEl,
+    sendButtonEl,
+  };
+}
+
 export function initTwitchChat({
   toggleEl,
   toggleLabelEl,
   panelEl,
+  stackEl,
+  primaryPaneEl,
+  authBarEl,
+  multiToggleEl,
   messagesEl,
   emptyEl,
   statusEl,
@@ -651,101 +798,322 @@ export function initTwitchChat({
   if(authStorageRef === undefined){
     try{ authStorageRef = window.sessionStorage; }catch(error){ authStorageRef = null; }
   }
-  const initialIdentity = readChatIdentity(authStorageRef);
+
+  const queryInPanel = (selector)=>
+    (panelEl && typeof panelEl.querySelector === 'function') ? panelEl.querySelector(selector) : null;
+
+  const resolvedStackEl = stackEl || queryInPanel('#chatStack') || panelEl;
+  const resolvedPrimaryPaneEl = primaryPaneEl || queryInPanel('#chatPrimaryPane') || null;
+  const resolvedAuthBarEl = authBarEl || queryInPanel('#chatAuthBar') || queryInPanel('[data-chat="auth-bar"]') || null;
+  const resolvedMultiToggleEl = multiToggleEl || queryInPanel('#chatMultiToggle') || null;
+  const primaryHeaderEl = (resolvedPrimaryPaneEl && typeof resolvedPrimaryPaneEl.querySelector === 'function' && resolvedPrimaryPaneEl.querySelector('[data-chat="header"]')) || queryInPanel('[data-chat="header"]') || null;
+  const primaryHeaderActionsEl = (resolvedPrimaryPaneEl && typeof resolvedPrimaryPaneEl.querySelector === 'function' && resolvedPrimaryPaneEl.querySelector('[data-chat="header-actions"]')) || queryInPanel('[data-chat="header-actions"]') || null;
+
+  let currentIdentity = readChatIdentity(authStorageRef);
   let visible = readChatVisibility(storageRef);
-  let currentChannel = '';
-  let unreadCount = 0;
+  let streamMultiMode = false;
+  let chatMultiMode = false;
+  let openChannels = [];
+  let focusedChannel = '';
   let destroyed = false;
   let authExpiryTimer = null;
   let oauthPopup = null;
-  let client;
 
-  function resetUnread(){
-    unreadCount = 0;
-    newMessagesEl.textContent = 'New messages';
-    newMessagesEl.classList.add('hidden');
+  const activePanes = new Map();
+  let paneOrder = [];
+  let primaryPaneOwner = null;
+
+  function isAuthenticated(){
+    return !!(currentIdentity && currentIdentity.login && currentIdentity.accessToken && currentIdentity.expiresAt > Date.now());
   }
 
-  function updateEmptyState(){
-    const hasMessages = messagesEl.childElementCount > 0;
-    emptyEl.classList.toggle('hidden', hasMessages);
-    if(hasMessages) return;
-    if(!currentChannel) emptyEl.textContent = 'Select a live channel to view chat';
-    else if(client.state === 'connected') emptyEl.textContent = 'Waiting for chat messages…';
-    else if(client.state === 'unavailable') emptyEl.textContent = 'Twitch chat is unavailable';
-    else emptyEl.textContent = 'Connecting to #' + currentChannel + '…';
-  }
-
-  function clearMessages(){
-    messagesEl.textContent = '';
-    resetUnread();
-    updateEmptyState();
-  }
-
-  function appendRow(row){
-    const follow = isNearBottom(messagesEl);
-    messagesEl.appendChild(row);
-    while(messagesEl.childElementCount > MAX_CHAT_ROWS){
-      messagesEl.firstElementChild.remove();
-    }
-    updateEmptyState();
-    if(follow){
-      resetUnread();
-      requestAnimationFrame(()=>{ messagesEl.scrollTop = messagesEl.scrollHeight; });
-    } else {
-      unreadCount++;
-      newMessagesEl.textContent = unreadCount === 1 ? '1 new message' : unreadCount + ' new messages';
-      newMessagesEl.classList.remove('hidden');
-    }
-  }
-
-  function appendMessage(payload){
-    const row = documentRef.createElement('div');
-    row.className = payload.isAction ? 'chat-message is-action' : 'chat-message';
-    if(payload.id) row.dataset.messageId = payload.id;
-    if(payload.userId) row.dataset.userId = payload.userId;
-    if(payload.username) row.dataset.username = payload.username.toLowerCase();
-
-    const name = documentRef.createElement('span');
-    name.className = 'chat-message-name';
-    name.textContent = payload.displayName || payload.username || 'unknown';
-    name.style.color = resolveUsernameColor(payload.username, payload.color);
-
-    row.appendChild(name);
-    row.appendChild(documentRef.createTextNode(payload.isAction ? ' ' : ': '));
-    row.appendChild(createMessageBody(documentRef, payload));
-    appendRow(row);
-  }
-
-  function appendSystem({ text }){
-    if(!text) return;
-    const row = documentRef.createElement('div');
-    row.className = 'chat-system-message';
-    row.textContent = text;
-    appendRow(row);
-  }
-
-  function removeMatching(predicate){
-    for(const child of Array.from(messagesEl.children)){
-      if(predicate(child)) child.remove();
-    }
-    updateEmptyState();
-  }
-
-  function updateAuthUI(){
-    const authenticated = !!(client && client.isAuthenticated());
-    const connected = !!(client && client.state === 'connected');
-    if(identityEl) identityEl.textContent = authenticated ? '@' + client.login : 'Anonymous · read only';
+  function updateGlobalAuthHeader(){
+    const authenticated = isAuthenticated();
+    if(identityEl) identityEl.textContent = authenticated ? '@' + currentIdentity.login : 'Anonymous · read only';
     if(authButtonEl){
       authButtonEl.textContent = authenticated ? 'Log out' : 'Log in';
       authButtonEl.setAttribute('aria-label', authenticated ? 'Log out of Twitch chat' : 'Log in to Twitch chat');
     }
-    if(composerEl) composerEl.classList.toggle('is-disabled', !authenticated);
-    if(inputEl){
-      inputEl.disabled = !authenticated || !connected || !currentChannel;
-      inputEl.placeholder = authenticated ? (connected ? 'Send a message' : 'Connecting to chat…') : 'Log in to send messages';
+  }
+
+  function createPaneInstance({
+    isPrimary = false,
+    paneEl = null,
+    headerEl = null,
+    headerActionsEl = null,
+    paneChannelEl,
+    paneStatusEl,
+    paneMessagesEl,
+    paneEmptyEl,
+    paneNewMessagesEl,
+    paneComposerEl,
+    paneInputEl,
+    paneSendButtonEl,
+  }){
+    let currentChannel = '';
+    let unreadCount = 0;
+    let client;
+
+    function resetUnread(){
+      unreadCount = 0;
+      if(paneNewMessagesEl){
+        paneNewMessagesEl.textContent = 'New messages';
+        if(paneNewMessagesEl.classList) paneNewMessagesEl.classList.add('hidden');
+      }
     }
-    if(sendButtonEl) sendButtonEl.disabled = !authenticated || !connected || !currentChannel;
+
+    function updateEmptyState(){
+      if(!paneEmptyEl || !paneMessagesEl) return;
+      const hasMessages = paneMessagesEl.childElementCount > 0;
+      if(paneEmptyEl.classList) paneEmptyEl.classList.toggle('hidden', hasMessages);
+      if(hasMessages) return;
+      if(!currentChannel) paneEmptyEl.textContent = 'Select a live channel to view chat';
+      else if(client && client.state === 'connected') paneEmptyEl.textContent = 'Waiting for chat messages…';
+      else if(client && client.state === 'unavailable') paneEmptyEl.textContent = 'Twitch chat is unavailable';
+      else paneEmptyEl.textContent = 'Connecting to #' + currentChannel + '…';
+    }
+
+    function clearMessages(){
+      if(paneMessagesEl) paneMessagesEl.textContent = '';
+      resetUnread();
+      updateEmptyState();
+    }
+
+    function appendRow(row){
+      if(!paneMessagesEl) return;
+      const follow = isNearBottom(paneMessagesEl);
+      paneMessagesEl.appendChild(row);
+      while(paneMessagesEl.childElementCount > MAX_CHAT_ROWS){
+        paneMessagesEl.firstElementChild.remove();
+      }
+      updateEmptyState();
+      if(follow){
+        resetUnread();
+        if(typeof requestAnimationFrame === 'function'){
+          requestAnimationFrame(()=>{ paneMessagesEl.scrollTop = paneMessagesEl.scrollHeight; });
+        } else {
+          paneMessagesEl.scrollTop = paneMessagesEl.scrollHeight;
+        }
+      } else if(paneNewMessagesEl){
+        unreadCount++;
+        paneNewMessagesEl.textContent = unreadCount === 1 ? '1 new message' : unreadCount + ' new messages';
+        if(paneNewMessagesEl.classList) paneNewMessagesEl.classList.remove('hidden');
+      }
+    }
+
+    function appendMessage(payload){
+      const row = documentRef.createElement('div');
+      row.className = payload.isAction ? 'chat-message is-action' : 'chat-message';
+      if(payload.id) row.dataset.messageId = payload.id;
+      if(payload.userId) row.dataset.userId = payload.userId;
+      if(payload.username) row.dataset.username = payload.username.toLowerCase();
+
+      const name = documentRef.createElement('span');
+      name.className = 'chat-message-name';
+      name.textContent = payload.displayName || payload.username || 'unknown';
+      if(!name.style) name.style = {};
+      name.style.color = resolveUsernameColor(payload.username, payload.color);
+
+      row.appendChild(name);
+      row.appendChild(documentRef.createTextNode(payload.isAction ? ' ' : ': '));
+      row.appendChild(createMessageBody(documentRef, payload));
+      appendRow(row);
+    }
+
+    function appendSystem({ text }){
+      if(!text) return;
+      const row = documentRef.createElement('div');
+      row.className = 'chat-system-message';
+      row.textContent = text;
+      appendRow(row);
+    }
+
+    function removeMatching(predicate){
+      if(!paneMessagesEl) return;
+      for(const child of Array.from(paneMessagesEl.children)){
+        if(predicate(child)) child.remove();
+      }
+      updateEmptyState();
+    }
+
+    function updatePaneAuthUI(){
+      const authenticated = !!(client && client.isAuthenticated());
+      const connected = !!(client && client.state === 'connected');
+      if(paneComposerEl && paneComposerEl.classList) paneComposerEl.classList.toggle('is-disabled', !authenticated);
+      if(paneInputEl){
+        paneInputEl.disabled = !authenticated || !connected || !currentChannel;
+        paneInputEl.placeholder = authenticated ? (connected ? 'Send a message' : 'Connecting to chat…') : 'Log in to send messages';
+      }
+      if(paneSendButtonEl) paneSendButtonEl.disabled = !authenticated || !connected || !currentChannel;
+    }
+
+    function jumpToLatest(){
+      if(paneMessagesEl) paneMessagesEl.scrollTop = paneMessagesEl.scrollHeight;
+      resetUnread();
+    }
+
+    function handleComposerSubmit(event){
+      event.preventDefault();
+      const result = client.sendMessage(paneInputEl && paneInputEl.value);
+      if(result.ok){
+        paneInputEl.value = '';
+        if(typeof paneInputEl.focus === 'function') paneInputEl.focus();
+        return;
+      }
+      const errors = {
+        'login-required': 'Log in to Twitch before sending messages.',
+        'not-connected': 'Chat is not connected yet.',
+        'empty': 'Enter a message first.',
+        'too-long': 'That message is too long for Twitch chat.',
+        'send-failed': 'The message could not be sent.',
+      };
+      appendSystem({ text: errors[result.error] || 'The message could not be sent.' });
+    }
+
+    client = new TwitchIRCClient({
+      socketFactory,
+      identity: currentIdentity,
+      onState: ({ state, delayMs })=>{
+        setStatus(paneStatusEl, state, delayMs);
+        updateEmptyState();
+        updatePaneAuthUI();
+        updateGlobalAuthHeader();
+      },
+      onMessage: appendMessage,
+      onSystem: appendSystem,
+      onClearMessage: ({ messageId })=>{
+        if(messageId) removeMatching((row)=>row.dataset.messageId === messageId);
+      },
+      onClearChat: ({ userId, username })=>{
+        if(!userId && !username){
+          clearMessages();
+          return;
+        }
+        const normalizedUsername = String(username || '').toLowerCase();
+        removeMatching((row)=>
+          (userId && row.dataset.userId === userId) ||
+          (normalizedUsername && row.dataset.username === normalizedUsername)
+        );
+      },
+      onAuthenticationFailed: handleAuthenticationFailed,
+    });
+
+    if(paneNewMessagesEl && typeof paneNewMessagesEl.addEventListener === 'function'){
+      paneNewMessagesEl.addEventListener('click', jumpToLatest);
+    }
+    if(paneComposerEl && typeof paneComposerEl.addEventListener === 'function'){
+      paneComposerEl.addEventListener('submit', handleComposerSubmit);
+    }
+
+    function setPaneChannel(channel){
+      const normalized = normalizeChannel(channel);
+      if(normalized === currentChannel){
+        if(paneChannelEl) paneChannelEl.textContent = currentChannel ? '#' + currentChannel : 'Chat';
+        updateEmptyState();
+        updatePaneAuthUI();
+        return;
+      }
+      currentChannel = normalized;
+      if(paneEl && paneEl.dataset){
+        if(currentChannel) paneEl.dataset.channel = currentChannel;
+        else delete paneEl.dataset.channel;
+      }
+      if(paneChannelEl) paneChannelEl.textContent = currentChannel ? '#' + currentChannel : 'Chat';
+      clearMessages();
+      client.setChannel(currentChannel);
+      updatePaneAuthUI();
+    }
+
+    function setPaneEnabled(enabled){
+      client.setEnabled(enabled);
+      if(!enabled){
+        clearMessages();
+      } else {
+        updateEmptyState();
+      }
+      updatePaneAuthUI();
+    }
+
+    function setPaneIdentity(identity){
+      client.setIdentity(identity);
+      updatePaneAuthUI();
+    }
+
+    setStatus(paneStatusEl, client.state, 0);
+    client.setChannel(currentChannel);
+    client.setEnabled(visible);
+    updatePaneAuthUI();
+    updateEmptyState();
+
+    return {
+      isPrimary,
+      paneEl,
+      headerEl,
+      headerActionsEl,
+      statusEl: paneStatusEl,
+      channelEl: paneChannelEl,
+      messagesEl: paneMessagesEl,
+      emptyEl: paneEmptyEl,
+      newMessagesEl: paneNewMessagesEl,
+      composerEl: paneComposerEl,
+      inputEl: paneInputEl,
+      sendButtonEl: paneSendButtonEl,
+      client,
+      getChannel: ()=>currentChannel,
+      setChannel: setPaneChannel,
+      setEnabled: setPaneEnabled,
+      setIdentity: setPaneIdentity,
+      appendSystem,
+      clearMessages,
+      updateEmptyState,
+      updateAuthUI: updatePaneAuthUI,
+      destroy(){
+        if(paneNewMessagesEl && typeof paneNewMessagesEl.removeEventListener === 'function'){
+          paneNewMessagesEl.removeEventListener('click', jumpToLatest);
+        }
+        if(paneComposerEl && typeof paneComposerEl.removeEventListener === 'function'){
+          paneComposerEl.removeEventListener('submit', handleComposerSubmit);
+        }
+        client.destroy();
+        if(!isPrimary && paneEl && typeof paneEl.remove === 'function'){
+          paneEl.remove();
+        }
+      },
+    };
+  }
+
+  const primaryPane = createPaneInstance({
+    isPrimary: true,
+    paneEl: resolvedPrimaryPaneEl,
+    headerEl: primaryHeaderEl,
+    headerActionsEl: primaryHeaderActionsEl,
+    paneChannelEl: channelEl,
+    paneStatusEl: statusEl,
+    paneMessagesEl: messagesEl,
+    paneEmptyEl: emptyEl,
+    paneNewMessagesEl: newMessagesEl,
+    paneComposerEl: composerEl,
+    paneInputEl: inputEl,
+    paneSendButtonEl: sendButtonEl,
+  });
+
+  function getVisiblePanes(){
+    if(activePanes.size === 0) return [primaryPane];
+    return paneOrder.map((ch)=>activePanes.get(ch)).filter(Boolean);
+  }
+
+  function appendSystemToVisiblePanes(payload){
+    for(const pane of getVisiblePanes()){
+      pane.appendSystem(payload);
+    }
+  }
+
+  function updateAllAuthUI(){
+    updateGlobalAuthHeader();
+    primaryPane.updateAuthUI();
+    for(const pane of activePanes.values()){
+      pane.updateAuthUI();
+    }
   }
 
   function clearIdentityExpiry(){
@@ -756,58 +1124,39 @@ export function initTwitchChat({
 
   function scheduleIdentityExpiry(){
     clearIdentityExpiry();
-    if(!client || !client.isAuthenticated()) return;
-    const remaining = client.expiresAt - Date.now();
+    if(!isAuthenticated()) return;
+    const remaining = currentIdentity.expiresAt - Date.now();
     if(remaining <= 0){
       logout('Your Twitch chat login expired. Log in again to send messages.');
       return;
     }
     authExpiryTimer = setTimeout(()=>{
       authExpiryTimer = null;
-      if(client.expiresAt <= Date.now()) logout('Your Twitch chat login expired. Log in again to send messages.');
+      if(!isAuthenticated()) logout('Your Twitch chat login expired. Log in again to send messages.');
       else scheduleIdentityExpiry();
     }, Math.min(remaining, 2147483647));
+  }
+
+  function applyIdentityToPanes(identity){
+    currentIdentity = normalizeIdentity(identity);
+    primaryPane.setIdentity(currentIdentity);
+    for(const pane of activePanes.values()){
+      if(pane !== primaryPane) pane.setIdentity(currentIdentity);
+    }
+    updateAllAuthUI();
   }
 
   function logout(message){
     clearIdentityExpiry();
     clearChatIdentity(authStorageRef);
-    client.setIdentity(null);
-    updateAuthUI();
-    if(message) appendSystem({ text: message });
+    applyIdentityToPanes(null);
+    if(message) appendSystemToVisiblePanes({ text: message });
   }
 
   function handleAuthenticationFailed({ authenticated }){
     if(!authenticated) return;
     logout('Your Twitch chat login is no longer valid. Log in again to send messages.');
   }
-
-  client = new TwitchIRCClient({
-    socketFactory,
-    identity: initialIdentity,
-    onState: ({ state, delayMs })=>{
-      setStatus(statusEl, state, delayMs);
-      updateEmptyState();
-      updateAuthUI();
-    },
-    onMessage: appendMessage,
-    onSystem: appendSystem,
-    onClearMessage: ({ messageId })=>{
-      if(messageId) removeMatching((row)=>row.dataset.messageId === messageId);
-    },
-    onClearChat: ({ userId, username })=>{
-      if(!userId && !username){
-        clearMessages();
-        return;
-      }
-      const normalizedUsername = String(username || '').toLowerCase();
-      removeMatching((row)=>
-        (userId && row.dataset.userId === userId) ||
-        (normalizedUsername && row.dataset.username === normalizedUsername)
-      );
-    },
-    onAuthenticationFailed: handleAuthenticationFailed,
-  });
 
   function startOAuthLogin(){
     const openPopup = openOAuthWindow || ((url, name, features)=>window.open(url, name, features));
@@ -817,14 +1166,14 @@ export function initTwitchChat({
       'popup=yes,width=560,height=720,resizable=yes,scrollbars=yes'
     );
     if(!oauthPopup){
-      appendSystem({ text: 'The Twitch login window was blocked. Allow popups for Jellych and try again.' });
+      appendSystemToVisiblePanes({ text: 'The Twitch login window was blocked. Allow popups for Jellych and try again.' });
       return;
     }
     if(typeof oauthPopup.focus === 'function') oauthPopup.focus();
   }
 
   function handleAuthButton(){
-    if(client.isAuthenticated()) logout('Logged out of Twitch chat.');
+    if(isAuthenticated()) logout('Logged out of Twitch chat.');
     else startOAuthLogin();
   }
 
@@ -833,38 +1182,130 @@ export function initTwitchChat({
     const payload = event.data;
     if(!payload || payload.type !== 'jellych-twitch-chat-oauth') return;
     if(payload.error){
-      appendSystem({ text: String(payload.error) });
+      appendSystemToVisiblePanes({ text: String(payload.error) });
       return;
     }
     const identity = chatIdentityFromOAuthPayload(payload);
     if(!identity){
-      appendSystem({ text: 'Twitch returned an invalid chat login. Please try again.' });
+      appendSystemToVisiblePanes({ text: 'Twitch returned an invalid chat login. Please try again.' });
       return;
     }
     writeChatIdentity(authStorageRef, identity);
-    client.setIdentity(identity);
+    applyIdentityToPanes(identity);
     scheduleIdentityExpiry();
-    updateAuthUI();
-    appendSystem({ text: 'Logged in to Twitch chat as @' + identity.login + '.' });
+    appendSystemToVisiblePanes({ text: 'Logged in to Twitch chat as @' + identity.login + '.' });
     oauthPopup = null;
   }
 
-  function handleComposerSubmit(event){
-    event.preventDefault();
-    const result = client.sendMessage(inputEl && inputEl.value);
-    if(result.ok){
-      inputEl.value = '';
-      inputEl.focus();
-      return;
+  function updateMultiToggleUI(){
+    if(!resolvedMultiToggleEl) return;
+    const active = streamMultiMode && chatMultiMode;
+    if(resolvedMultiToggleEl.classList){
+      resolvedMultiToggleEl.classList.toggle('hidden', !streamMultiMode);
+      resolvedMultiToggleEl.classList.toggle('is-active', active);
     }
-    const errors = {
-      'login-required': 'Log in to Twitch before sending messages.',
-      'not-connected': 'Chat is not connected yet.',
-      empty: 'Enter a message first.',
-      'too-long': 'That message is too long for Twitch chat.',
-      'send-failed': 'The message could not be sent.',
-    };
-    appendSystem({ text: errors[result.error] || 'The message could not be sent.' });
+    if(typeof resolvedMultiToggleEl.setAttribute === 'function'){
+      resolvedMultiToggleEl.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+  }
+
+  function acquirePaneForChannel(channelKey){
+    const existing = activePanes.get(channelKey);
+    if(existing) return existing;
+
+    if(!primaryPaneOwner){
+      primaryPaneOwner = channelKey;
+      if(resolvedPrimaryPaneEl && resolvedPrimaryPaneEl.classList){
+        resolvedPrimaryPaneEl.classList.remove('hidden');
+      }
+      primaryPane.setChannel(channelKey);
+      activePanes.set(channelKey, primaryPane);
+      return primaryPane;
+    }
+
+    const dom = createDynamicChatPaneDOM(documentRef);
+    if(resolvedStackEl && typeof resolvedStackEl.appendChild === 'function'){
+      resolvedStackEl.appendChild(dom.paneEl);
+    }
+    const pane = createPaneInstance({
+      isPrimary: false,
+      paneEl: dom.paneEl,
+      headerEl: dom.headerEl,
+      headerActionsEl: dom.headerActionsEl,
+      paneChannelEl: dom.channelEl,
+      paneStatusEl: dom.statusEl,
+      paneMessagesEl: dom.messagesEl,
+      paneEmptyEl: dom.emptyEl,
+      paneNewMessagesEl: dom.newMessagesEl,
+      paneComposerEl: dom.composerEl,
+      paneInputEl: dom.inputEl,
+      paneSendButtonEl: dom.sendButtonEl,
+    });
+    pane.setChannel(channelKey);
+    activePanes.set(channelKey, pane);
+    return pane;
+  }
+
+  function releasePaneForChannel(channelKey){
+    const pane = activePanes.get(channelKey);
+    if(!pane) return;
+    activePanes.delete(channelKey);
+    if(pane.isPrimary){
+      primaryPaneOwner = null;
+      pane.setChannel('');
+    } else {
+      pane.destroy();
+    }
+  }
+
+  function getTargetChannels(){
+    if(streamMultiMode && chatMultiMode && openChannels.length > 0){
+      return openChannels.slice();
+    }
+    const single = focusedChannel || openChannels[0] || '';
+    return single ? [single] : [];
+  }
+
+  function syncChatPanes(){
+    const targets = getTargetChannels();
+    const targetSet = new Set(targets);
+
+    for(const existingKey of Array.from(activePanes.keys())){
+      if(!targetSet.has(existingKey)){
+        releasePaneForChannel(existingKey);
+      }
+    }
+
+    for(const channelKey of targets){
+      acquirePaneForChannel(channelKey);
+    }
+
+    paneOrder = targets.slice();
+    const count = paneOrder.length;
+    const isStacked = streamMultiMode && chatMultiMode && count > 1;
+
+    if(panelEl){
+      if(panelEl.classList) panelEl.classList.toggle('is-stacked', isStacked);
+      if(panelEl.dataset) panelEl.dataset.count = String(count);
+    }
+
+    if(resolvedPrimaryPaneEl && resolvedPrimaryPaneEl.classList){
+      resolvedPrimaryPaneEl.classList.toggle('hidden', count > 0 && !primaryPaneOwner);
+    }
+
+    paneOrder.forEach((channelKey, index)=>{
+      const pane = activePanes.get(channelKey);
+      if(!pane || !pane.paneEl) return;
+      if(pane.paneEl.style) pane.paneEl.style.order = String(index);
+      if(resolvedStackEl && typeof resolvedStackEl.appendChild === 'function' && pane.paneEl.parentNode === resolvedStackEl){
+        resolvedStackEl.appendChild(pane.paneEl);
+      }
+    });
+
+    const topPane = (paneOrder[0] && activePanes.get(paneOrder[0])) || primaryPane;
+    insertBeforeStatus(topPane.headerActionsEl, topPane.statusEl, resolvedMultiToggleEl);
+    insertAfterHeader(topPane.paneEl, topPane.headerEl, resolvedAuthBarEl);
+    updateMultiToggleUI();
   }
 
   function updateToggle(){
@@ -886,27 +1327,70 @@ export function initTwitchChat({
     visible = next;
     if(persist) writeChatVisibility(storageRef, visible);
     updateToggle();
-    if(!visible){
-      client.setEnabled(false);
-      clearMessages();
-      return;
+    primaryPane.setEnabled(visible);
+    for(const pane of activePanes.values()){
+      if(pane !== primaryPane) pane.setEnabled(visible);
     }
-    client.setEnabled(true);
-    updateEmptyState();
   }
 
   function setChannel(channel){
     const normalized = normalizeChannel(channel);
-    if(normalized === currentChannel) return;
-    currentChannel = normalized;
-    channelEl.textContent = currentChannel ? '#' + currentChannel : 'Chat';
-    clearMessages();
-    client.setChannel(currentChannel);
+    focusedChannel = normalized;
+    if(!streamMultiMode){
+      openChannels = normalized ? [normalized] : [];
+    } else if(normalized && !openChannels.includes(normalized)){
+      openChannels = [normalized];
+    }
+    syncChatPanes();
   }
 
-  function jumpToLatest(){
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-    resetUnread();
+  function setChannels(channels){
+    const normalizedList = [];
+    if(Array.isArray(channels)){
+      for(const ch of channels){
+        const norm = normalizeChannel(ch);
+        if(norm && !normalizedList.includes(norm)) normalizedList.push(norm);
+      }
+    }
+    openChannels = normalizedList;
+    if(!focusedChannel || !openChannels.includes(focusedChannel)){
+      focusedChannel = openChannels[0] || '';
+    }
+    syncChatPanes();
+  }
+
+  function setPlaybackState({ channels = [], focusedChannel: nextFocused = null, multiMode = false } = {}){
+    const normalizedList = [];
+    if(Array.isArray(channels)){
+      for(const ch of channels){
+        const norm = normalizeChannel(ch);
+        if(norm && !normalizedList.includes(norm)) normalizedList.push(norm);
+      }
+    }
+    openChannels = normalizedList;
+    const normFocus = normalizeChannel(nextFocused);
+    if(normFocus && openChannels.includes(normFocus)){
+      focusedChannel = normFocus;
+    } else if(openChannels.length > 0){
+      focusedChannel = openChannels[0];
+    } else {
+      focusedChannel = normFocus || '';
+    }
+    streamMultiMode = !!multiMode;
+    if(!streamMultiMode){
+      chatMultiMode = false;
+    }
+    syncChatPanes();
+  }
+
+  function setChatMultiMode(enabled){
+    const next = streamMultiMode ? !!enabled : false;
+    if(chatMultiMode === next){
+      updateMultiToggleUI();
+      return;
+    }
+    chatMultiMode = next;
+    syncChatPanes();
   }
 
   function handleKeydown(event){
@@ -916,26 +1400,37 @@ export function initTwitchChat({
   }
 
   function handleUnload(){
-    client.destroy();
+    primaryPane.client.destroy();
+    for(const pane of activePanes.values()){
+      if(pane !== primaryPane) pane.destroy();
+    }
   }
 
   toggleEl.addEventListener('click', ()=>setVisible(!visible));
-  newMessagesEl.addEventListener('click', jumpToLatest);
+  if(resolvedMultiToggleEl && typeof resolvedMultiToggleEl.addEventListener === 'function'){
+    resolvedMultiToggleEl.addEventListener('click', ()=>{
+      if(!streamMultiMode) return;
+      setChatMultiMode(!chatMultiMode);
+    });
+  }
   if(authButtonEl) authButtonEl.addEventListener('click', handleAuthButton);
-  if(composerEl) composerEl.addEventListener('submit', handleComposerSubmit);
   documentRef.addEventListener('keydown', handleKeydown);
   window.addEventListener('beforeunload', handleUnload);
   window.addEventListener('message', handleOAuthMessage);
 
   updateToggle();
-  client.setChannel(currentChannel);
-  client.setEnabled(visible);
+  updateMultiToggleUI();
   scheduleIdentityExpiry();
-  updateAuthUI();
-  updateEmptyState();
+  updateAllAuthUI();
+  syncChatPanes();
 
   return {
     setChannel,
+    setChannels,
+    setPlaybackState,
+    setChatMultiMode,
+    isChatMultiMode: ()=>streamMultiMode && chatMultiMode,
+    getActiveChannels: ()=>paneOrder.slice(),
     destroy(){
       if(destroyed) return;
       destroyed = true;
@@ -943,7 +1438,11 @@ export function initTwitchChat({
       documentRef.removeEventListener('keydown', handleKeydown);
       window.removeEventListener('beforeunload', handleUnload);
       window.removeEventListener('message', handleOAuthMessage);
-      client.destroy();
+      for(const pane of Array.from(activePanes.values())){
+        if(pane !== primaryPane) pane.destroy();
+      }
+      activePanes.clear();
+      primaryPane.destroy();
     },
   };
 }
