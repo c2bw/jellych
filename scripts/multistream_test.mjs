@@ -458,6 +458,7 @@ test('initManager Multi mode adds tiles, supports layout/spotlight/reordering, a
   });
 
   const chatChannels = [];
+  const playbackStates = [];
   managerRef = initManager({
     listEl: new FakeElement('div'),
     removeSelect: new FakeElement('select'),
@@ -476,6 +477,7 @@ test('initManager Multi mode adds tiles, supports layout/spotlight/reordering, a
     createPlayer: createMockPlayer,
     setupPlayerControls: ()=>({ destroy(){} }),
     onPlaybackChannelChange: (ch)=>chatChannels.push(ch),
+    onPlaybackStateChange: (state)=>playbackStates.push(state),
   });
 
   // Enable Multi mode via toggle click
@@ -483,6 +485,11 @@ test('initManager Multi mode adds tiles, supports layout/spotlight/reordering, a
   assert.equal(managerRef.isMultiMode(), true);
   assert.equal(multiToggleEl.getAttribute('aria-pressed'), 'true');
   assert.equal(multiToolbarEl.classList.contains('hidden'), false);
+  assert.deepEqual(playbackStates.at(-1), {
+    channels: [],
+    focusedChannel: null,
+    multiMode: true,
+  });
 
   // Play first stream in Multi mode -> single stream keeps full-page single stage layout (no .is-multi)
   managerRef.playDirectChannel('alpha');
@@ -521,6 +528,11 @@ test('initManager Multi mode adds tiles, supports layout/spotlight/reordering, a
   const movePrevBtn = bravoStage.querySelector('[data-tile-action="move-prev"]');
   movePrevBtn.dispatchEvent(new Event('click'));
   assert.deepEqual(managerRef.getActiveStreams().map((s)=>s.channel), ['charlie', 'bravo', 'alpha']);
+  assert.deepEqual(playbackStates.at(-1), {
+    channels: ['charlie', 'bravo', 'alpha'],
+    focusedChannel: 'charlie',
+    multiMode: true,
+  });
 
   // Time controls are visible on tiles while Multi mode is active
   const charlieTimeControls = charlieStage.querySelector('[data-control="time-controls"]');

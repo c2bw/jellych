@@ -89,6 +89,7 @@ export function initManager({
   createPlayer = (video)=>new Player(video),
   setupPlayerControls = initPlayerControls,
   onPlaybackChannelChange = ()=>{},
+  onPlaybackStateChange = ()=>{},
 }){
   const DEFAULT_MIN_SEGMENTS_TO_PLAY = 4;
   const MAX_WAIT_MS = 45000;
@@ -239,6 +240,14 @@ export function initManager({
     playerTitleEl.classList.add('hidden');
   }
 
+  function notifyPlaybackState(){
+    onPlaybackStateChange({
+      channels: tileOrder.slice(),
+      focusedChannel,
+      multiMode,
+    });
+  }
+
   function setFocusedChannel(channelName){
     const normalized = channelName ? normalizeChannelKey(channelName) : null;
     const nextFocus = (normalized && activeTiles.has(normalized))
@@ -253,6 +262,7 @@ export function initManager({
     }
     if(changed){
       onPlaybackChannelChange(focusedChannel);
+      notifyPlaybackState();
     }
   }
 
@@ -311,6 +321,7 @@ export function initManager({
       }
       updateTileTitle(tile);
     });
+    notifyPlaybackState();
   }
 
   function setTilingLayout(layoutName, persist = true){
@@ -585,6 +596,7 @@ export function initManager({
       if(clearStats) stats.clear();
       clearPrimaryTitle();
       onPlaybackChannelChange(null);
+      notifyPlaybackState();
       return;
     }
     channels.forEach((ch, idx)=>{

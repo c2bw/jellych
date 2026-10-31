@@ -162,26 +162,35 @@
         </section>
 
         <aside id="chatPanel" class="surface-card chat-panel" aria-labelledby="chatChannel" tabindex="-1" hidden>
-          <header class="chat-header">
-            <div>
-              <span class="eyebrow">Twitch IRC</span>
-              <h2 id="chatChannel">Chat</h2>
+          <div id="chatStack" class="chat-stack">
+            <div id="chatPrimaryPane" class="chat-pane">
+              <header class="chat-header" data-chat="header">
+                <div>
+                  <span class="eyebrow">Twitch IRC</span>
+                  <h2 id="chatChannel" data-chat="channel">Chat</h2>
+                </div>
+                <div class="chat-header-actions" data-chat="header-actions">
+                  <button id="chatMultiToggle" class="btn-base multi-toggle chat-multi-toggle hidden" type="button" aria-pressed="false" title="Stack chats for all open streams">
+                    Multi
+                  </button>
+                  <span id="chatStatus" data-chat="status" class="chat-status" data-state="idle" aria-live="polite">Idle</span>
+                </div>
+              </header>
+              <div id="chatAuthBar" class="chat-auth-bar" data-chat="auth-bar">
+                <span id="chatIdentity">Anonymous · read only</span>
+                <button id="chatAuthButton" class="chat-auth-button" type="button">Log in</button>
+              </div>
+              <div class="chat-feed">
+                <div id="chatMessages" data-chat="messages" class="chat-messages" role="log" aria-label="Twitch chat messages"></div>
+                <div id="chatEmpty" data-chat="empty" class="chat-empty">Select a live channel to view chat</div>
+                <button id="chatNewMessages" data-chat="new-messages" class="chat-new-messages hidden" type="button">New messages</button>
+              </div>
+              <form id="chatComposer" data-chat="composer" class="chat-composer is-disabled" autocomplete="off">
+                <input id="chatInput" data-chat="input" type="text" maxlength="450" placeholder="Log in to send messages" aria-label="Chat message" disabled />
+                <button id="chatSendButton" data-chat="send-button" type="submit" disabled>Send</button>
+              </form>
             </div>
-            <span id="chatStatus" class="chat-status" data-state="idle" aria-live="polite">Idle</span>
-          </header>
-          <div class="chat-auth-bar">
-            <span id="chatIdentity">Anonymous · read only</span>
-            <button id="chatAuthButton" class="chat-auth-button" type="button">Log in</button>
           </div>
-          <div class="chat-feed">
-            <div id="chatMessages" class="chat-messages" role="log" aria-label="Twitch chat messages"></div>
-            <div id="chatEmpty" class="chat-empty">Select a live channel to view chat</div>
-            <button id="chatNewMessages" class="chat-new-messages hidden" type="button">New messages</button>
-          </div>
-          <form id="chatComposer" class="chat-composer is-disabled" autocomplete="off">
-            <input id="chatInput" type="text" maxlength="450" placeholder="Log in to send messages" aria-label="Chat message" disabled />
-            <button id="chatSendButton" type="submit" disabled>Send</button>
-          </form>
         </aside>
       </div>
     </main>

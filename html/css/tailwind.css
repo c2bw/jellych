@@ -541,6 +541,26 @@
     overflow: hidden;
   }
   .chat-panel[hidden] { display: none; }
+  .chat-stack {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .chat-pane {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 0%;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .chat-pane.hidden { display: none; }
+  .chat-panel.is-stacked .chat-pane + .chat-pane {
+    border-top: 1px solid var(--line-strong);
+  }
   .chat-header {
     display: flex;
     min-height: 62px;
@@ -550,6 +570,25 @@
     gap: 12px;
     padding: 12px 13px;
     border-bottom: 1px solid var(--line);
+  }
+  .chat-header-actions {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
+  }
+  .chat-multi-toggle {
+    min-width: 42px;
+    min-height: 24px;
+    padding: 0 7px;
+    font-size: 11px;
+  }
+  .chat-panel.is-stacked .chat-header {
+    min-height: 40px;
+    padding: 6px 11px;
+  }
+  .chat-panel.is-stacked .chat-header .eyebrow {
+    display: none;
   }
   .chat-header h2 {
     max-width: 190px;
@@ -561,6 +600,10 @@
     letter-spacing: -0.015em;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .chat-panel.is-stacked .chat-header h2 {
+    margin-top: 0;
+    font-size: 13px;
   }
   .chat-status {
     display: inline-flex;
@@ -708,6 +751,17 @@
   }
   .chat-composer button:hover:not(:disabled) { border-color: rgba(211, 198, 255, 0.6); background: linear-gradient(180deg, #9273f0, #7350d7); }
   .chat-composer.is-disabled input, .chat-composer button:disabled { cursor: not-allowed; opacity: 0.48; }
+  .chat-panel.is-stacked .chat-auth-bar {
+    min-height: 30px;
+    padding: 4px 10px;
+  }
+  .chat-panel.is-stacked .chat-composer {
+    padding: 6px 8px;
+  }
+  .chat-panel.is-stacked .chat-composer input,
+  .chat-panel.is-stacked .chat-composer button {
+    height: 28px;
+  }
 
   .oauth-result-body { display: grid; min-height: 100vh; place-items: center; padding: 24px; }
   .oauth-result-card { width: min(420px, 100%); padding: 24px; text-align: center; }

@@ -25,6 +25,10 @@ const watchLayoutEl = document.querySelector('.watch-layout');
 const chatToggleEl = document.getElementById('chatToggle');
 const chatToggleLabelEl = document.getElementById('chatToggleLabel');
 const chatPanelEl = document.getElementById('chatPanel');
+const chatStackEl = document.getElementById('chatStack');
+const chatPrimaryPaneEl = document.getElementById('chatPrimaryPane');
+const chatAuthBarEl = document.getElementById('chatAuthBar');
+const chatMultiToggleEl = document.getElementById('chatMultiToggle');
 const chatMessagesEl = document.getElementById('chatMessages');
 const chatEmptyEl = document.getElementById('chatEmpty');
 const chatStatusEl = document.getElementById('chatStatus');
@@ -50,6 +54,10 @@ const chat = initTwitchChat({
   toggleEl: chatToggleEl,
   toggleLabelEl: chatToggleLabelEl,
   panelEl: chatPanelEl,
+  stackEl: chatStackEl,
+  primaryPaneEl: chatPrimaryPaneEl,
+  authBarEl: chatAuthBarEl,
+  multiToggleEl: chatMultiToggleEl,
   messagesEl: chatMessagesEl,
   emptyEl: chatEmptyEl,
   statusEl: chatStatusEl,
@@ -78,6 +86,7 @@ manager = initManager({
   multiToolbarEl,
   multiCountEl,
   onPlaybackChannelChange: (channel)=>chat.setChannel(channel),
+  onPlaybackStateChange: (state)=>chat.setPlaybackState(state),
 });
 initPlayerControls({ video, stage: playerStageEl, player });
 

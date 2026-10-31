@@ -44,6 +44,8 @@ class FakeElement {
     this.scrollHeight = 0;
     this.scrollTop = 0;
     this.clientHeight = 0;
+    this.parentNode = null;
+    this.style = { order: '' };
     this._textContent = '';
   }
 
@@ -53,6 +55,18 @@ class FakeElement {
   getAttribute(name){ return this.attributes.get(name); }
   focus(){ this.focused = true; }
   click(){ this.listeners.get('click')?.({ type: 'click' }); }
+  appendChild(child){
+    if(child.parentNode && typeof child.remove === 'function') child.remove();
+    child.parentNode = this;
+    this.children.push(child);
+    return child;
+  }
+  remove(){
+    if(!this.parentNode) return;
+    const idx = this.parentNode.children.indexOf(this);
+    if(idx >= 0) this.parentNode.children.splice(idx, 1);
+    this.parentNode = null;
+  }
   get childElementCount(){ return this.children.length; }
   get firstElementChild(){ return this.children[0] || null; }
   get textContent(){ return this._textContent; }
@@ -69,6 +83,12 @@ class FakeDocument {
 
   addEventListener(type, listener){ this.listeners.set(type, listener); }
   removeEventListener(type){ this.listeners.delete(type); }
+  createElement(){ return new FakeElement(this); }
+  createTextNode(text){
+    const node = new FakeElement(this);
+    node.textContent = text;
+    return node;
+  }
 }
 
 class FakeSocket {
@@ -533,4 +553,142 @@ test('UI controller stays disconnected while hidden and remembers toggle changes
   assert.equal(panelEl.hidden, true);
   assert.equal(readChatVisibility(storage), false);
   assert.equal(sockets.sockets[0].closeCalls.length, 1);
+});
+
+test('multistream mode keeps spotlight/focused chat by default and stacks all open chats when chat Multi button is clicked', (t)=>{
+  const previousWindow = globalThis.window;
+  const windowListeners = new Map();
+  globalThis.window = {
+    addEventListener(type, listener){ windowListeners.set(type, listener); },
+    removeEventListener(type){ windowListeners.delete(type); },
+  };
+
+  const documentRef = new FakeDocument();
+  const toggleEl = new FakeElement(documentRef);
+  const toggleLabelEl = new FakeElement(documentRef);
+  const panelEl = new FakeElement(documentRef);
+  const stackEl = new FakeElement(documentRef);
+  const primaryPaneEl = new FakeElement(documentRef);
+  const primaryHeaderEl = new FakeElement(documentRef);
+  const primaryHeaderActionsEl = new FakeElement(documentRef);
+  const authBarEl = new FakeElement(documentRef);
+  const multiToggleEl = new FakeElement(documentRef);
+  multiToggleEl.classList.add('hidden');
+  const messagesEl = new FakeElement(documentRef);
+  const emptyEl = new FakeElement(documentRef);
+  const statusEl = new FakeElement(documentRef);
+  const channelEl = new FakeElement(documentRef);
+  const newMessagesEl = new FakeElement(documentRef);
+  const layoutEl = new FakeElement(documentRef);
+
+  primaryHeaderActionsEl.appendChild(multiToggleEl);
+  primaryHeaderActionsEl.appendChild(statusEl);
+  primaryHeaderEl.appendChild(primaryHeaderActionsEl);
+  primaryPaneEl.appendChild(primaryHeaderEl);
+  primaryPaneEl.appendChild(authBarEl);
+  stackEl.appendChild(primaryPaneEl);
+  panelEl.appendChild(stackEl);
+
+  const sockets = fakeSockets();
+  const values = new Map([['jellych_chat_visible', 'true']]);
+  const storage = {
+    getItem(key){ return values.get(key) ?? null; },
+    setItem(key, value){ values.set(key, value); },
+  };
+
+  const controller = initTwitchChat({
+    toggleEl,
+    toggleLabelEl,
+    panelEl,
+    stackEl,
+    primaryPaneEl,
+    authBarEl,
+    multiToggleEl,
+    messagesEl,
+    emptyEl,
+    statusEl,
+    channelEl,
+    newMessagesEl,
+    layoutEl,
+    storage,
+    socketFactory: sockets.factory,
+  });
+  t.after(()=>{
+    controller.destroy();
+    if(previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  });
+
+  // In single-stream mode, #chatMultiToggle is hidden
+  assert.equal(multiToggleEl.classList.contains('hidden'), true);
+
+  // Enter Multistream mode with 3 open streams ('alpha', 'bravo', 'charlie') and 'charlie' focused/spotlighted
+  controller.setPlaybackState({
+    channels: ['alpha', 'bravo', 'charlie'],
+    focusedChannel: 'charlie',
+    multiMode: true,
+  });
+
+  // By default in Multistream mode: #chatMultiToggle is visible in the header, but off; only focused stream ('charlie') connects
+  assert.equal(multiToggleEl.classList.contains('hidden'), false);
+  assert.equal(multiToggleEl.getAttribute('aria-pressed'), 'false');
+  assert.equal(controller.isChatMultiMode(), false);
+  assert.deepEqual(controller.getActiveChannels(), ['charlie']);
+  assert.equal(panelEl.classList.contains('is-stacked'), false);
+  assert.equal(sockets.sockets.length, 1);
+  sockets.sockets[0].open();
+  assert.equal(sockets.sockets[0].sent.at(-1), 'JOIN #charlie\r\n');
+
+  // Receive a message in #charlie before enabling stacked chat
+  sockets.sockets[0].message(':tmi.twitch.tv 001 justinfan12345 :Welcome!\r\n@id=m-charlie;display-name=UserC :userc!userc@userc PRIVMSG #charlie :hello charlie\r\n');
+  assert.equal(messagesEl.childElementCount, 1);
+
+  // Click the chat 'Multi' button in the top chat header -> enables stacked chats for all open streams
+  multiToggleEl.click();
+  assert.equal(controller.isChatMultiMode(), true);
+  assert.equal(multiToggleEl.getAttribute('aria-pressed'), 'true');
+  assert.equal(multiToggleEl.classList.contains('is-active'), true);
+  assert.equal(panelEl.classList.contains('is-stacked'), true);
+  assert.deepEqual(controller.getActiveChannels(), ['alpha', 'bravo', 'charlie']);
+
+  // 'charlie' kept its existing socket and message history; 2 new sockets opened for 'alpha' and 'bravo'
+  assert.equal(sockets.sockets.length, 3);
+  assert.equal(sockets.sockets[0].closeCalls.length, 0, 'charlie socket must stay open');
+  assert.equal(messagesEl.childElementCount, 1, 'charlie messages must be preserved');
+
+  sockets.sockets[1].open();
+  sockets.sockets[2].open();
+  assert.equal(sockets.sockets[1].sent.at(-1), 'JOIN #alpha\r\n');
+  assert.equal(sockets.sockets[2].sent.at(-1), 'JOIN #bravo\r\n');
+
+  // Reorder streams (e.g. 'bravo' promoted to spotlight first) -> reorders panes without reconnecting any socket
+  controller.setPlaybackState({
+    channels: ['bravo', 'alpha', 'charlie'],
+    focusedChannel: 'bravo',
+    multiMode: true,
+  });
+  assert.equal(sockets.sockets.length, 3, 'reordering must not create new sockets');
+  assert.deepEqual(controller.getActiveChannels(), ['bravo', 'alpha', 'charlie']);
+  assert.deepEqual(stackEl.children.map((el)=>el.dataset.channel), ['bravo', 'alpha', 'charlie']);
+  // Top pane ('bravo') holds the #chatMultiToggle and #chatAuthBar
+  assert.equal(authBarEl.parentNode, stackEl.children[0]);
+
+  // Click the chat 'Multi' button again to turn off stacked chats -> collapses back to focused stream ('bravo')
+  multiToggleEl.click();
+  assert.equal(controller.isChatMultiMode(), false);
+  assert.equal(multiToggleEl.getAttribute('aria-pressed'), 'false');
+  assert.equal(panelEl.classList.contains('is-stacked'), false);
+  assert.deepEqual(controller.getActiveChannels(), ['bravo']);
+  assert.equal(sockets.sockets[2].closeCalls.length, 0, 'focused stream (bravo) socket must stay open');
+  assert.equal(sockets.sockets[0].closeCalls.length, 1, 'charlie socket closed');
+  assert.equal(sockets.sockets[1].closeCalls.length, 1, 'alpha socket closed');
+
+  // Turn stream Multi mode off -> hides #chatMultiToggle
+  controller.setPlaybackState({
+    channels: ['bravo'],
+    focusedChannel: 'bravo',
+    multiMode: false,
+  });
+  assert.equal(multiToggleEl.classList.contains('hidden'), true);
+  assert.equal(controller.isChatMultiMode(), false);
 });
