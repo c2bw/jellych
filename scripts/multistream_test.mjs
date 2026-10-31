@@ -202,6 +202,29 @@ function buildStageDOM(doc){
   stage.appendChild(centerPlay);
 
   const controls = new FakeElement('div');
+  const liveBadge = new FakeElement('button');
+  liveBadge.setAttribute('data-control', 'live-badge');
+  const liveBadgeText = new FakeElement('span');
+  liveBadgeText.setAttribute('data-control', 'live-badge-text');
+  liveBadgeText.textContent = 'Live';
+  liveBadge.appendChild(liveBadgeText);
+  controls.appendChild(liveBadge);
+
+  const timeControls = new FakeElement('div');
+  timeControls.className = 'player-time-controls hidden';
+  timeControls.setAttribute('data-control', 'time-controls');
+  const seekBack = new FakeElement('button');
+  seekBack.setAttribute('data-control', 'seek-back');
+  const seekRange = new FakeElement('input');
+  seekRange.setAttribute('data-control', 'seek-range');
+  seekRange.value = '0';
+  const seekForward = new FakeElement('button');
+  seekForward.setAttribute('data-control', 'seek-forward');
+  timeControls.appendChild(seekBack);
+  timeControls.appendChild(seekRange);
+  timeControls.appendChild(seekForward);
+  controls.appendChild(timeControls);
+
   for(const controlName of ['play-toggle', 'low-latency-toggle', 'mute-toggle', 'pip-toggle', 'fullscreen-toggle']){
     const btn = new FakeElement('button');
     btn.setAttribute('data-control', controlName);
@@ -358,16 +381,22 @@ test('initManager Multi mode adds tiles, supports layout/spotlight/reordering, a
     video,
     currentUrl: '',
     stopped: false,
+    timeShifted: false,
+    liveEdge: 100,
+    minTime: 70,
     play(url){
       this.currentUrl = url;
       this.stopped = false;
+      this.timeShifted = false;
       video.src = url;
       video.currentSrc = url;
       video.readyState = 4;
       video.paused = false;
+      video.currentTime = this.liveEdge;
     },
     stop(){
       this.stopped = true;
+      this.timeShifted = false;
       this.currentUrl = '';
       video.src = '';
       video.currentSrc = '';
@@ -380,6 +409,37 @@ test('initManager Multi mode adds tiles, supports layout/spotlight/reordering, a
     getBandwidthEstimate(){ return 3_000_000; },
     isLowLatencyMode(){ return false; },
     setLowLatencyMode(){},
+    isTimeShifted(){ return this.timeShifted; },
+    getLiveSeekWindow(){
+      const behind = Math.max(0, this.liveEdge - video.currentTime);
+      return {
+        minTime: this.minTime,
+        maxTime: this.liveEdge,
+        liveEdge: this.liveEdge,
+        currentTime: video.currentTime,
+        windowSeconds: this.liveEdge - this.minTime,
+        behindLiveSeconds: behind,
+        isLive: !this.timeShifted || behind <= 0.25,
+      };
+    },
+    seekToLive(){
+      this.timeShifted = false;
+      video.currentTime = this.liveEdge;
+      video.dispatchEvent(new Event('timeupdate'));
+      return this.liveEdge;
+    },
+    seekToLiveOffset(offset){
+      const clamped = Math.min(this.liveEdge - this.minTime, Math.max(0, Number(offset) || 0));
+      if(clamped <= 0.25) return this.seekToLive();
+      this.timeShifted = true;
+      video.currentTime = this.liveEdge - clamped;
+      video.dispatchEvent(new Event('timeupdate'));
+      return this.getLiveSeekWindow();
+    },
+    seekBy(delta){
+      const behind = Math.max(0, this.liveEdge - video.currentTime);
+      return this.seekToLiveOffset(behind - delta);
+    },
   });
 
   const primaryPlayer = createMockPlayer(primary.video);
@@ -462,9 +522,21 @@ test('initManager Multi mode adds tiles, supports layout/spotlight/reordering, a
   movePrevBtn.dispatchEvent(new Event('click'));
   assert.deepEqual(managerRef.getActiveStreams().map((s)=>s.channel), ['charlie', 'bravo', 'alpha']);
 
-  // Toggle Multi mode OFF -> keeps focused stream ('charlie') playing and closes the others
+  // Time controls are visible on tiles while Multi mode is active
+  const charlieTimeControls = charlieStage.querySelector('[data-control="time-controls"]');
+  assert.equal(charlieTimeControls.classList.contains('hidden'), false);
+  // Time-shift 'charlie' back by 5 seconds before turning Multi mode off
+  const charlieStream = managerRef.getActiveStreams().find((s)=>s.channel === 'charlie');
+  charlieStream.player.seekToLiveOffset(5);
+  assert.equal(charlieStream.video.currentTime, 95);
+  assert.equal(charlieStream.player.isTimeShifted(), true);
+
+  // Toggle Multi mode OFF -> keeps focused stream ('charlie'), hides time-controls, and snaps 'charlie' back to live
   multiToggleEl.dispatchEvent(new Event('click'));
   assert.equal(managerRef.isMultiMode(), false);
+  assert.equal(charlieTimeControls.classList.contains('hidden'), true);
+  assert.equal(charlieStream.player.isTimeShifted(), false);
+  assert.equal(charlieStream.video.currentTime, 100);
   const remaining = managerRef.getActiveStreams();
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].channel, 'charlie');
@@ -473,4 +545,104 @@ test('initManager Multi mode adds tiles, supports layout/spotlight/reordering, a
   managerRef.stopAllPlayback(true);
   assert.equal(managerRef.getActiveStreams().length, 0);
   assert.equal(statsState.textContent, 'Idle');
+});
+
+test('initPlayerControls time-shift buttons (-1s / +1s), range slider, and live badge sync two streams independently', ()=>{
+  const doc = new EventTarget();
+  doc.pictureInPictureEnabled = true;
+
+  const tile1 = buildStageDOM(doc);
+  const tile2 = buildStageDOM(doc);
+  tile1.video.src = '/live/one/index.m3u8';
+  tile2.video.src = '/live/two/index.m3u8';
+  tile1.video.currentTime = 100;
+  tile2.video.currentTime = 100;
+
+  const makePlayer = (video)=>{
+    let timeShifted = false;
+    const liveEdge = 100;
+    const minTime = 70;
+    return {
+      isLowLatencyMode: ()=>false,
+      setLowLatencyMode(){},
+      isTimeShifted: ()=>timeShifted,
+      getLiveSeekWindow(){
+        const behind = Math.max(0, liveEdge - video.currentTime);
+        return {
+          minTime,
+          maxTime: liveEdge,
+          liveEdge,
+          currentTime: video.currentTime,
+          windowSeconds: liveEdge - minTime,
+          behindLiveSeconds: behind,
+          isLive: !timeShifted || behind <= 0.25,
+        };
+      },
+      seekToLive(){
+        timeShifted = false;
+        video.currentTime = liveEdge;
+      },
+      seekToLiveOffset(offset){
+        const clamped = Math.min(liveEdge - minTime, Math.max(0, Number(offset) || 0));
+        if(clamped <= 0.25){
+          this.seekToLive();
+          return this.getLiveSeekWindow();
+        }
+        timeShifted = true;
+        video.currentTime = liveEdge - clamped;
+        return this.getLiveSeekWindow();
+      },
+      seekBy(delta){
+        const behind = Math.max(0, liveEdge - video.currentTime);
+        return this.seekToLiveOffset(behind - delta);
+      },
+    };
+  };
+
+  const ctrl1 = initPlayerControls({ video: tile1.video, stage: tile1.stage, player: makePlayer(tile1.video) });
+  const ctrl2 = initPlayerControls({ video: tile2.video, stage: tile2.stage, player: makePlayer(tile2.video) });
+
+  const seekBack1 = tile1.stage.querySelector('[data-control="seek-back"]');
+  const seekForward1 = tile1.stage.querySelector('[data-control="seek-forward"]');
+  const seekRange1 = tile1.stage.querySelector('[data-control="seek-range"]');
+  const liveBadge1 = tile1.stage.querySelector('[data-control="live-badge"]');
+  const liveBadgeText1 = tile1.stage.querySelector('[data-control="live-badge-text"]');
+  const liveBadgeText2 = tile2.stage.querySelector('[data-control="live-badge-text"]');
+
+  assert.equal(liveBadgeText1.textContent, 'Live');
+  assert.equal(seekForward1.disabled, true);
+
+  // Click -1s twice on tile 1 to rewind by 2 seconds
+  seekBack1.dispatchEvent(new Event('click'));
+  assert.equal(tile1.video.currentTime, 99);
+  assert.equal(liveBadgeText1.textContent, '-1s · Live');
+  assert.equal(liveBadge1.classList.contains('is-behind-live'), true);
+
+  seekBack1.dispatchEvent(new Event('click'));
+  assert.equal(tile1.video.currentTime, 98);
+  assert.equal(liveBadgeText1.textContent, '-2s · Live');
+
+  // Tile 2 is untouched at Live
+  assert.equal(tile2.video.currentTime, 100);
+  assert.equal(liveBadgeText2.textContent, 'Live');
+
+  // Click +1s once on tile 1 -> moves to -1s behind live
+  seekForward1.dispatchEvent(new Event('click'));
+  assert.equal(tile1.video.currentTime, 99);
+  assert.equal(liveBadgeText1.textContent, '-1s · Live');
+
+  // Drag range slider on tile 1 to -12s
+  seekRange1.value = '-12';
+  seekRange1.dispatchEvent(new Event('input'));
+  assert.equal(tile1.video.currentTime, 88);
+  assert.equal(liveBadgeText1.textContent, '-12s · Live');
+
+  // Click Live badge on tile 1 -> jumps right back to live edge (100)
+  liveBadge1.dispatchEvent(new Event('click'));
+  assert.equal(tile1.video.currentTime, 100);
+  assert.equal(liveBadgeText1.textContent, 'Live');
+  assert.equal(liveBadge1.classList.contains('is-behind-live'), false);
+
+  ctrl1.destroy();
+  ctrl2.destroy();
 });

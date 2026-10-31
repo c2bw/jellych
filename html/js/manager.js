@@ -36,7 +36,15 @@ function createDynamicStageElement(doc, channelName){
           <svg class="player-icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
           <svg class="player-icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h3v14H8zM14 5h3v14h-3z" /></svg>
         </button>
-        <span class="player-live-badge"><i></i> Live</span>
+        <button data-control="live-badge" class="player-live-badge" type="button" title="At live edge" aria-label="Live edge" disabled>
+          <i></i>
+          <span data-control="live-badge-text">Live</span>
+        </button>
+        <div data-control="time-controls" class="player-time-controls hidden" role="group" aria-label="Stream time sync controls">
+          <button data-control="seek-back" class="player-step-button" type="button" title="Rewind 1 second" aria-label="Rewind 1 second" disabled>-1s</button>
+          <input data-control="seek-range" class="player-seek-range" type="range" min="-30" max="0" step="0.5" value="0" aria-label="Stream time offset" disabled />
+          <button data-control="seek-forward" class="player-step-button" type="button" title="Forward 1 second" aria-label="Forward 1 second" disabled>+1s</button>
+        </div>
         <button data-control="low-latency-toggle" class="player-latency-toggle" type="button" aria-pressed="false" title="Use an approximately two-second live buffer">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 2-8 12h6l-1 8 9-13h-6z" /></svg>
           <span>Low latency</span>
@@ -260,6 +268,10 @@ export function initManager({
       resolvedGridEl.dataset.layout = effectiveLayout;
       resolvedGridEl.dataset.count = String(count);
       resolvedGridEl.classList.toggle('is-multi', isMultiGrid);
+      resolvedGridEl.classList.toggle('is-multi-mode', multiMode);
+    }
+    if(primaryTileProto && primaryTileProto.timeControlsEl && primaryTileProto.timeControlsEl.classList){
+      primaryTileProto.timeControlsEl.classList.toggle('hidden', !multiMode);
     }
     if(resolvedMultiToolbar){
       resolvedMultiToolbar.classList.toggle('hidden', !multiMode && count <= 1);
@@ -293,6 +305,9 @@ export function initManager({
         const isSpotlighted = effectiveLayout === 'spotlight' && index === 0 && count > 1;
         tile.spotlightBtn.classList.toggle('is-active', isSpotlighted);
         tile.spotlightBtn.setAttribute('aria-pressed', isSpotlighted ? 'true' : 'false');
+      }
+      if(tile.timeControlsEl && tile.timeControlsEl.classList){
+        tile.timeControlsEl.classList.toggle('hidden', !multiMode);
       }
       updateTileTitle(tile);
     });
@@ -436,7 +451,8 @@ export function initManager({
     const movePrevBtn = titleBarEl && titleBarEl.querySelector ? titleBarEl.querySelector('[data-tile-action="move-prev"]') : null;
     const moveNextBtn = titleBarEl && titleBarEl.querySelector ? titleBarEl.querySelector('[data-tile-action="move-next"]') : null;
     const closeBtn = titleBarEl && titleBarEl.querySelector ? titleBarEl.querySelector('[data-tile-action="close"]') : null;
-    return { titleBarEl, titleTextEl, tileActionsEl, spotlightBtn, movePrevBtn, moveNextBtn, closeBtn };
+    const timeControlsEl = stage && stage.querySelector ? stage.querySelector('[data-control="time-controls"]') : null;
+    return { titleBarEl, titleTextEl, tileActionsEl, spotlightBtn, movePrevBtn, moveNextBtn, closeBtn, timeControlsEl };
   }
 
   const primaryTileProto = {
@@ -628,16 +644,23 @@ export function initManager({
       resolvedMultiToggle.setAttribute('aria-pressed', multiMode ? 'true' : 'false');
       resolvedMultiToggle.classList.toggle('is-active', multiMode);
     }
-    if(!multiMode && activeTiles.size > 1){
-      const keepChannel = (focusedChannel && activeTiles.has(focusedChannel))
-        ? focusedChannel
-        : tileOrder[0];
-      for(const ch of Array.from(activeTiles.keys())){
-        if(ch !== keepChannel){
-          stopChannelPlayback(ch, false);
+    if(!multiMode){
+      if(activeTiles.size > 1){
+        const keepChannel = (focusedChannel && activeTiles.has(focusedChannel))
+          ? focusedChannel
+          : tileOrder[0];
+        for(const ch of Array.from(activeTiles.keys())){
+          if(ch !== keepChannel){
+            stopChannelPlayback(ch, false);
+          }
+        }
+        setFocusedChannel(keepChannel);
+      }
+      for(const tile of activeTiles.values()){
+        if(tile.player && typeof tile.player.isTimeShifted === 'function' && tile.player.isTimeShifted()){
+          if(typeof tile.player.seekToLive === 'function') tile.player.seekToLive();
         }
       }
-      setFocusedChannel(keepChannel);
     }
     syncGridLayout();
   }

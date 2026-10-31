@@ -22,6 +22,15 @@ const LOW_LATENCY_HLS_BUFFER_CONFIG = Object.freeze({
   backBufferLength: 0,
 });
 
+const TIME_SHIFT_HLS_BUFFER_CONFIG = Object.freeze({
+  liveMaxLatencyDurationCount: Infinity,
+  maxBufferLength: 30,
+  maxMaxBufferLength: 600,
+  backBufferLength: Infinity,
+});
+
+const LIVE_EDGE_SNAP_SECONDS = 0.25;
+
 function isPositiveFinite(value){
   return Number.isFinite(value) && value > 0;
 }
@@ -44,6 +53,7 @@ export class Player {
     this.video = video;
     this.hls = null;
     this.lowLatencyMode = false;
+    this.timeShifted = false;
     this.currentUrl = '';
     this.wantsPlayback = false;
     this.networkRecoveryTimer = null;
@@ -67,14 +77,36 @@ export class Player {
     return this.lowLatencyMode;
   }
 
-  setLowLatencyMode(enabled){
-    this.lowLatencyMode = !!enabled;
-    if(!this.hls || !this.hls.config) return;
+  isTimeShifted(){
+    return this.timeShifted;
+  }
 
+  applyBufferConfig(){
+    if(!this.hls || !this.hls.config) return;
     Object.assign(
       this.hls.config,
       this.lowLatencyMode ? LOW_LATENCY_HLS_BUFFER_CONFIG : STANDARD_HLS_BUFFER_CONFIG,
     );
+    if(this.timeShifted){
+      Object.assign(this.hls.config, TIME_SHIFT_HLS_BUFFER_CONFIG);
+    }
+  }
+
+  setTimeShifted(enabled){
+    const next = !!enabled;
+    if(this.timeShifted === next) return;
+    this.timeShifted = next;
+    this.applyBufferConfig();
+  }
+
+  setLowLatencyMode(enabled){
+    this.lowLatencyMode = !!enabled;
+    if(this.lowLatencyMode){
+      this.timeShifted = false;
+    }
+    if(!this.hls || !this.hls.config) return;
+
+    this.applyBufferConfig();
     if(this.lowLatencyMode){
       const liveSyncPosition = Number(this.hls.liveSyncPosition);
       const currentTime = Number(this.video.currentTime);
@@ -82,6 +114,125 @@ export class Player {
         try{ this.video.currentTime = liveSyncPosition; }catch(e){ /* wait for the next live sync update */ }
       }
     }
+  }
+
+  getLiveSeekWindow(){
+    let minTime = NaN;
+    let maxTime = NaN;
+
+    const details = (this.hls && this.hls.latestLevelDetails) ||
+      (this.hls && Array.isArray(this.hls.levels) && this.hls.currentLevel >= 0 && this.hls.levels[this.hls.currentLevel]
+        ? this.hls.levels[this.hls.currentLevel].details
+        : null);
+    if(details && Array.isArray(details.fragments) && details.fragments.length > 0){
+      const first = details.fragments[0];
+      const last = details.fragments[details.fragments.length - 1];
+      const start = Number(first && first.start);
+      const end = Number(last && (last.end !== undefined ? last.end : (Number(last.start) + Number(last.duration || 0))));
+      if(Number.isFinite(start) && Number.isFinite(end) && end >= start){
+        minTime = start;
+        maxTime = end;
+      }
+    }
+
+    const seekable = this.video && this.video.seekable;
+    if(seekable && Number(seekable.length) > 0){
+      try{
+        const sStart = Number(seekable.start(0));
+        const sEnd = Number(seekable.end(seekable.length - 1));
+        if(Number.isFinite(sStart) && Number.isFinite(sEnd) && sEnd >= sStart){
+          minTime = Number.isFinite(minTime) ? Math.min(minTime, sStart) : sStart;
+          maxTime = Number.isFinite(maxTime) ? Math.max(maxTime, sEnd) : sEnd;
+        }
+      }catch(e){ /* ignore invalid TimeRanges index */ }
+    }
+
+    const buffered = this.video && this.video.buffered;
+    if(!Number.isFinite(minTime) && buffered && Number(buffered.length) > 0){
+      try{
+        const bStart = Number(buffered.start(0));
+        const bEnd = Number(buffered.end(buffered.length - 1));
+        if(Number.isFinite(bStart) && Number.isFinite(bEnd) && bEnd >= bStart){
+          minTime = bStart;
+          maxTime = bEnd;
+        }
+      }catch(e){ /* ignore invalid TimeRanges index */ }
+    }
+
+    const liveSync = Number(this.hls && this.hls.liveSyncPosition);
+    if(!Number.isFinite(minTime)){
+      minTime = 0;
+      maxTime = isPositiveFinite(liveSync)
+        ? liveSync
+        : Math.max(0, Number(this.video && this.video.currentTime) || 0);
+    } else if(isPositiveFinite(liveSync) && liveSync > maxTime){
+      maxTime = liveSync;
+    }
+
+    let liveEdge = maxTime;
+    if(isPositiveFinite(liveSync)){
+      liveEdge = Math.min(maxTime, Math.max(minTime, liveSync));
+    }
+
+    const currentTime = Math.max(0, Number(this.video && this.video.currentTime) || 0);
+    const windowSeconds = Math.max(0, liveEdge - minTime);
+    const rawBehind = liveEdge - currentTime;
+    const behindLiveSeconds = Number.isFinite(rawBehind)
+      ? Math.max(0, Math.min(windowSeconds > 0 ? windowSeconds : Math.max(0, rawBehind), rawBehind))
+      : 0;
+    const isLive = !this.timeShifted || behindLiveSeconds <= LIVE_EDGE_SNAP_SECONDS;
+
+    return {
+      minTime,
+      maxTime,
+      liveEdge,
+      currentTime,
+      windowSeconds,
+      behindLiveSeconds,
+      isLive,
+    };
+  }
+
+  emitTimeChange(){
+    if(this.video && typeof this.video.dispatchEvent === 'function' && typeof Event === 'function'){
+      try{ this.video.dispatchEvent(new Event('timeupdate')); }catch(e){ /* ignore */ }
+    }
+  }
+
+  seekToLive(){
+    const win = this.getLiveSeekWindow();
+    this.setTimeShifted(false);
+    if(this.video && Number.isFinite(win.liveEdge) && win.liveEdge >= 0){
+      try{ this.video.currentTime = win.liveEdge; }catch(e){ /* ignore */ }
+    }
+    this.emitTimeChange();
+    return win.liveEdge;
+  }
+
+  seekToLiveOffset(offsetSeconds){
+    const requested = Number(offsetSeconds);
+    if(!Number.isFinite(requested)) return this.getLiveSeekWindow();
+    const win = this.getLiveSeekWindow();
+    if(win.windowSeconds <= 0 || requested <= LIVE_EDGE_SNAP_SECONDS){
+      this.seekToLive();
+      return this.getLiveSeekWindow();
+    }
+    const clampedOffset = Math.min(win.windowSeconds, Math.max(0, requested));
+    const targetTime = Math.max(win.minTime, win.liveEdge - clampedOffset);
+    this.setTimeShifted(true);
+    if(this.video){
+      try{ this.video.currentTime = targetTime; }catch(e){ /* ignore */ }
+    }
+    this.emitTimeChange();
+    return this.getLiveSeekWindow();
+  }
+
+  seekBy(deltaSeconds){
+    const delta = Number(deltaSeconds);
+    if(!Number.isFinite(delta) || delta === 0) return this.getLiveSeekWindow();
+    const win = this.getLiveSeekWindow();
+    const nextOffset = win.behindLiveSeconds - delta;
+    return this.seekToLiveOffset(nextOffset);
   }
 
   recordFragmentBitrate(data){
@@ -199,6 +350,7 @@ export class Player {
 
   stop(){
     this.wantsPlayback = false;
+    this.timeShifted = false;
     this.currentUrl = '';
     this.usingNativeHls = false;
     this.nativeRecoveryAttempts = 0;

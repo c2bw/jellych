@@ -299,3 +299,60 @@ test('bandwidth estimate resets between playbacks', (t)=>{
   player.play('/live/second/index.m3u8');
   assert.ok(Number.isNaN(player.getBandwidthEstimate()));
 });
+
+test('time-shift seeking steps by -1s/+1s within server buffered segments and relaxes liveMaxLatencyDurationCount', (t)=>{
+  enableFakeHls(t);
+  const video = new NativeHLSVideo();
+  const player = new Player(video);
+  t.after(()=>player.stop());
+
+  player.play('/live/testchannel/index.m3u8');
+  player.hls.latestLevelDetails = {
+    fragments: [
+      { start: 100, duration: 2 },
+      { start: 102, duration: 2 },
+      { start: 128, duration: 2 },
+    ],
+  };
+  player.hls.liveSyncPosition = 126;
+  video.currentTime = 126;
+
+  const initialWin = player.getLiveSeekWindow();
+  assert.equal(initialWin.minTime, 100);
+  assert.equal(initialWin.maxTime, 130);
+  assert.equal(initialWin.liveEdge, 126);
+  assert.equal(initialWin.windowSeconds, 26);
+  assert.equal(initialWin.behindLiveSeconds, 0);
+  assert.equal(initialWin.isLive, true);
+  assert.equal(player.hls.config.liveMaxLatencyDurationCount, 8);
+
+  // Step back 1 second (-1s)
+  const afterBack1 = player.seekBy(-1);
+  assert.equal(video.currentTime, 125);
+  assert.equal(afterBack1.behindLiveSeconds, 1);
+  assert.equal(afterBack1.isLive, false);
+  assert.equal(player.isTimeShifted(), true);
+  assert.equal(player.hls.config.liveMaxLatencyDurationCount, Infinity);
+
+  // Step back another 1 second (-1s)
+  const afterBack2 = player.seekBy(-1);
+  assert.equal(video.currentTime, 124);
+  assert.equal(afterBack2.behindLiveSeconds, 2);
+
+  // Step forward 1 second (+1s)
+  const afterForward1 = player.seekBy(1);
+  assert.equal(video.currentTime, 125);
+  assert.equal(afterForward1.behindLiveSeconds, 1);
+  assert.equal(player.isTimeShifted(), true);
+
+  // Seek beyond buffered server window clamps to minTime (100)
+  const clamped = player.seekToLiveOffset(60);
+  assert.equal(video.currentTime, 100);
+  assert.equal(clamped.behindLiveSeconds, 26);
+
+  // Jump back to live edge restores standard liveMaxLatencyDurationCount
+  player.seekToLive();
+  assert.equal(video.currentTime, 126);
+  assert.equal(player.isTimeShifted(), false);
+  assert.equal(player.hls.config.liveMaxLatencyDurationCount, 8);
+});
