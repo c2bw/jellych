@@ -50,7 +50,7 @@ func TestBuildFFmpegHLSArgsUsesFastStartupInputOptions(t *testing.T) {
 	assertArgValue(t, args, "-fflags", "+discardcorrupt")
 	assertArgValue(t, args, "-probesize", "500000")
 	assertArgValue(t, args, "-analyzeduration", "500000")
-	assertArgValue(t, args, "-live_start_index", "-5")
+	assertArgValue(t, args, "-live_start_index", "-8")
 	assertArgValue(t, args, "-hls_flags", "delete_segments+independent_segments")
 }
 

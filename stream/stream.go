@@ -98,6 +98,66 @@ func countPlaylistSegments(playlist []byte) (int, error) {
 	return count, nil
 }
 
+func lastPlaylistSegment(playlist []byte) string {
+	if len(playlist) == 0 {
+		return ""
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(playlist)))
+	last := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		last = line
+	}
+	return last
+}
+
+// trimPlaylistSegments returns a view of playlist capped to the first
+// maxSegments media segments, the name of the last segment in that capped
+// playlist, and the total number of segments in the original playlist.
+func trimPlaylistSegments(playlist []byte, maxSegments int) ([]byte, string, int) {
+	if len(playlist) == 0 || maxSegments <= 0 {
+		count, _ := countPlaylistSegments(playlist)
+		return playlist, lastPlaylistSegment(playlist), count
+	}
+
+	raw := string(playlist)
+	total := 0
+	cutOffset := len(playlist)
+	lastKept := ""
+	offset := 0
+
+	for offset < len(raw) {
+		nextNewline := strings.IndexByte(raw[offset:], '\n')
+		var lineEnd int
+		if nextNewline < 0 {
+			lineEnd = len(raw)
+		} else {
+			lineEnd = offset + nextNewline + 1
+		}
+
+		line := strings.TrimSpace(raw[offset:lineEnd])
+		if line != "" && line[0] != '#' {
+			total++
+			if total <= maxSegments {
+				lastKept = line
+				if total == maxSegments {
+					cutOffset = lineEnd
+				}
+			}
+		}
+		offset = lineEnd
+	}
+
+	if total <= maxSegments {
+		return playlist, lastKept, total
+	}
+	return cloneBytes(playlist[:cutOffset]), lastKept, total
+}
+
 type manager struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -507,7 +567,7 @@ func buildFFmpegHLSArgsWithToken(inputURL, playlistURL, generation, token string
 		"-fflags", "+discardcorrupt",
 		"-probesize", "500000",
 		"-analyzeduration", "500000",
-		"-live_start_index", "-5",
+		"-live_start_index", "-8",
 		"-i", inputURL,
 		"-c", "copy",
 		"-f", "hls",
