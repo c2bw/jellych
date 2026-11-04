@@ -419,6 +419,7 @@ func (a *API) handleStartStream(w http.ResponseWriter, r *http.Request) {
 		writeMappedError(w, err, startStreamErrors, http.StatusInternalServerError, "failed to start: %v")
 		return
 	}
+	a.playback.TouchLiveActivity(channel, a.now())
 
 	writeText(w, http.StatusOK, "started")
 }

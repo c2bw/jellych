@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -161,6 +162,28 @@ func (p *PlaybackTracker) MarkJellyfinSession(channel, sessionID string) bool {
 	}
 	p.jellyfinSessions[channel][sessionID] = now
 	return true
+}
+
+// TouchLiveActivity refreshes the idle timer for channel when live playlist or
+// segment activity occurs so a stream is not stopped while a client (such as
+// Jellyfin during initial probing and buffering) is actively opening it.
+func (p *PlaybackTracker) TouchLiveActivity(channel string, now time.Time) {
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	if channel == "" {
+		return
+	}
+	p.idleMu.Lock()
+	if p.idleTimers == nil {
+		p.idleTimers = make(map[string]time.Time)
+	}
+	p.idleTimers[channel] = now
+	p.idleMu.Unlock()
+}
+
+// NoteLiveActivity records live playlist or segment read activity on this API
+// instance's playback tracker.
+func (a *API) NoteLiveActivity(channel string) {
+	a.playback.TouchLiveActivity(channel, a.now())
 }
 
 // StartIdleMonitor reconciles this API instance's playback sessions until ctx

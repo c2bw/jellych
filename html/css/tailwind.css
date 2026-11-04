@@ -492,7 +492,7 @@
   .player-stage video[src] + .player-idle, .player-stage.is-playing .player-idle { display: none; }
   .player-center-play { position: absolute; z-index: 7; top: 50%; left: 50%; display: grid; width: 62px; height: 62px; place-items: center; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 50%; color: white; background: rgba(13, 13, 17, 0.76); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.36), inset 0 1px rgba(255, 255, 255, 0.1); backdrop-filter: blur(14px); transform: translate(-50%, -50%); transition: transform 150ms ease, background 150ms ease, border-color 150ms ease; }
   .player-center-play:hover { border-color: rgba(182, 157, 255, 0.55); background: rgba(104, 70, 203, 0.82); transform: translate(-50%, -50%) scale(1.05); }
-  .player-center-play svg { width: 24px; height: 24px; margin-left: 3px; fill: currentColor; }
+  .player-center-play svg { width: 24px; height: 24px; fill: currentColor; }
   .player-controls { position: absolute; z-index: 8; right: 0; bottom: 0; left: 0; display: flex; min-height: 62px; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 20px 16px 12px; pointer-events: none; color: white; background: linear-gradient(to top, rgba(4, 4, 6, 0.94), rgba(4, 4, 6, 0.56) 55%, transparent); opacity: 0; transition: opacity 180ms ease; }
   .player-stage:hover .player-controls, .player-stage.has-keyboard-focus .player-controls { pointer-events: auto; opacity: 1; }
   .player-controls-left, .player-controls-right { display: flex; align-items: center; gap: 8px; }
