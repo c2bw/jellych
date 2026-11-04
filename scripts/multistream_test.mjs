@@ -559,7 +559,7 @@ test('initManager Multi mode adds tiles, supports layout/spotlight/reordering, a
   assert.equal(statsState.textContent, 'Idle');
 });
 
-test('initPlayerControls time-shift buttons (-1s / +1s), range slider, and live badge sync two streams independently', ()=>{
+test('initPlayerControls time-shift buttons (-0.5s / +0.5s), range slider, and live badge sync two streams independently', ()=>{
   const doc = new EventTarget();
   doc.pictureInPictureEnabled = true;
 
@@ -624,24 +624,24 @@ test('initPlayerControls time-shift buttons (-1s / +1s), range slider, and live 
   assert.equal(liveBadgeText1.textContent, 'Live');
   assert.equal(seekForward1.disabled, true);
 
-  // Click -1s twice on tile 1 to rewind by 2 seconds
+  // Click -0.5s twice on tile 1 to rewind by 1 second total
   seekBack1.dispatchEvent(new Event('click'));
-  assert.equal(tile1.video.currentTime, 99);
-  assert.equal(liveBadgeText1.textContent, '-1s · Live');
+  assert.equal(tile1.video.currentTime, 99.5);
+  assert.equal(liveBadgeText1.textContent, '-0.5s · Live');
   assert.equal(liveBadge1.classList.contains('is-behind-live'), true);
 
   seekBack1.dispatchEvent(new Event('click'));
-  assert.equal(tile1.video.currentTime, 98);
-  assert.equal(liveBadgeText1.textContent, '-2s · Live');
+  assert.equal(tile1.video.currentTime, 99);
+  assert.equal(liveBadgeText1.textContent, '-1s · Live');
 
   // Tile 2 is untouched at Live
   assert.equal(tile2.video.currentTime, 100);
   assert.equal(liveBadgeText2.textContent, 'Live');
 
-  // Click +1s once on tile 1 -> moves to -1s behind live
+  // Click +0.5s once on tile 1 -> moves to -0.5s behind live
   seekForward1.dispatchEvent(new Event('click'));
-  assert.equal(tile1.video.currentTime, 99);
-  assert.equal(liveBadgeText1.textContent, '-1s · Live');
+  assert.equal(tile1.video.currentTime, 99.5);
+  assert.equal(liveBadgeText1.textContent, '-0.5s · Live');
 
   // Drag range slider on tile 1 to -12s
   seekRange1.value = '-12';

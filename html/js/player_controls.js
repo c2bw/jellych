@@ -83,19 +83,20 @@ export function initPlayerControls({ video, stage, player }){
       ? player.getLiveSeekWindow()
       : { minTime: 0, maxTime: 0, liveEdge: 0, currentTime: 0, windowSeconds: 0, behindLiveSeconds: 0, isLive: true };
     const hasWindow = ready && win.windowSeconds > 0.5;
-    const behindSeconds = (ready && !win.isLive && win.behindLiveSeconds > 0.25)
-      ? Math.max(1, Math.round(win.behindLiveSeconds))
+    const roundedBehind = (ready && !win.isLive && win.behindLiveSeconds > 0.25)
+      ? Math.round(win.behindLiveSeconds * 2) / 2
       : 0;
-    const isBehindLive = behindSeconds > 0;
+    const isBehindLive = roundedBehind > 0;
+    const behindText = (roundedBehind % 1 === 0) ? String(roundedBehind) : roundedBehind.toFixed(1);
 
     if(liveBadge){
       if(liveBadge.classList) liveBadge.classList.toggle('is-behind-live', isBehindLive);
       liveBadge.disabled = !ready || !isBehindLive;
-      liveBadge.setAttribute('aria-label', isBehindLive ? `Behind live by ${behindSeconds} seconds. Jump to live edge` : 'Live edge');
+      liveBadge.setAttribute('aria-label', isBehindLive ? `Behind live by ${behindText} seconds. Jump to live edge` : 'Live edge');
       liveBadge.title = isBehindLive ? 'Jump to live edge' : 'At live edge';
     }
     if(liveBadgeText){
-      liveBadgeText.textContent = isBehindLive ? `-${behindSeconds}s · Live` : 'Live';
+      liveBadgeText.textContent = isBehindLive ? `-${behindText}s · Live` : 'Live';
     }
     if(seekBack){
       seekBack.disabled = !hasWindow || (win.behindLiveSeconds >= win.windowSeconds - 0.1);
@@ -193,7 +194,7 @@ export function initPlayerControls({ video, stage, player }){
   if(seekBack){
     seekBack.addEventListener('click', ()=>{
       if(player && typeof player.seekBy === 'function'){
-        player.seekBy(-1);
+        player.seekBy(-0.5);
         syncTimeShift();
       }
     });
@@ -201,7 +202,7 @@ export function initPlayerControls({ video, stage, player }){
   if(seekForward){
     seekForward.addEventListener('click', ()=>{
       if(player && typeof player.seekBy === 'function'){
-        player.seekBy(1);
+        player.seekBy(0.5);
         syncTimeShift();
       }
     });
@@ -246,13 +247,13 @@ export function initPlayerControls({ video, stage, player }){
       }else if(key === 'arrowleft' && isTimeControlsVisible()){
         event.preventDefault();
         if(player && typeof player.seekBy === 'function'){
-          player.seekBy(-1);
+          player.seekBy(-0.5);
           syncTimeShift();
         }
       }else if(key === 'arrowright' && isTimeControlsVisible()){
         event.preventDefault();
         if(player && typeof player.seekBy === 'function'){
-          player.seekBy(1);
+          player.seekBy(0.5);
           syncTimeShift();
         }
       }

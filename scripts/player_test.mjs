@@ -300,7 +300,7 @@ test('bandwidth estimate resets between playbacks', (t)=>{
   assert.ok(Number.isNaN(player.getBandwidthEstimate()));
 });
 
-test('time-shift seeking steps by -1s/+1s within server buffered segments and relaxes liveMaxLatencyDurationCount', (t)=>{
+test('time-shift seeking steps by -0.5s/+0.5s within server buffered segments and relaxes liveMaxLatencyDurationCount', (t)=>{
   enableFakeHls(t);
   const video = new NativeHLSVideo();
   const player = new Player(video);
@@ -326,23 +326,23 @@ test('time-shift seeking steps by -1s/+1s within server buffered segments and re
   assert.equal(initialWin.isLive, true);
   assert.equal(player.hls.config.liveMaxLatencyDurationCount, 8);
 
-  // Step back 1 second (-1s)
-  const afterBack1 = player.seekBy(-1);
-  assert.equal(video.currentTime, 125);
-  assert.equal(afterBack1.behindLiveSeconds, 1);
+  // Step back 0.5 seconds (-0.5s)
+  const afterBack1 = player.seekBy(-0.5);
+  assert.equal(video.currentTime, 125.5);
+  assert.equal(afterBack1.behindLiveSeconds, 0.5);
   assert.equal(afterBack1.isLive, false);
   assert.equal(player.isTimeShifted(), true);
   assert.equal(player.hls.config.liveMaxLatencyDurationCount, Infinity);
 
-  // Step back another 1 second (-1s)
-  const afterBack2 = player.seekBy(-1);
-  assert.equal(video.currentTime, 124);
-  assert.equal(afterBack2.behindLiveSeconds, 2);
-
-  // Step forward 1 second (+1s)
-  const afterForward1 = player.seekBy(1);
+  // Step back another 0.5 seconds (-0.5s) -> 1 second behind
+  const afterBack2 = player.seekBy(-0.5);
   assert.equal(video.currentTime, 125);
-  assert.equal(afterForward1.behindLiveSeconds, 1);
+  assert.equal(afterBack2.behindLiveSeconds, 1);
+
+  // Step forward 0.5 seconds (+0.5s) -> 0.5 seconds behind
+  const afterForward1 = player.seekBy(0.5);
+  assert.equal(video.currentTime, 125.5);
+  assert.equal(afterForward1.behindLiveSeconds, 0.5);
   assert.equal(player.isTimeShifted(), true);
 
   // Seek beyond buffered server window clamps to minTime (100)
