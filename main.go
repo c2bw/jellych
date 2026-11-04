@@ -113,7 +113,7 @@ func main() {
 	})
 	srv, err := server.StartWithAssets(*addr, webAssets, server.Handlers{
 		API:       appAPI.Handler(),
-		Live:      streamServices.LiveHandler(apiState.IsConfiguredChannel),
+		Live:      streamServices.LiveHandlerWithActivity(apiState.IsConfiguredChannel, appAPI.NoteLiveActivity),
 		LiveWrite: streamServices.LiveWriteHandler(),
 	})
 	if err != nil {

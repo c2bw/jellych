@@ -412,6 +412,80 @@ func TestLiveHandlerReturnsServiceUnavailableForActiveChannelWhenPlaylistMissing
 	}
 }
 
+func TestLiveHandlerWaitsForMinStartupSegments(t *testing.T) {
+	fixture := newLiveTestFixture()
+	fixture.store.ResetChannel("testchannel")
+	fixture.installWriter("testchannel", testLiveGeneration)
+	fixture.service.minStartupSegments = 3
+
+	origReady := livePlaylistReadyTimeout
+	origPoll := livePlaylistWaitPoll
+	livePlaylistReadyTimeout = time.Second
+	livePlaylistWaitPoll = 5 * time.Millisecond
+	t.Cleanup(func() {
+		livePlaylistReadyTimeout = origReady
+		livePlaylistWaitPoll = origPoll
+	})
+
+	var activityCount atomic.Int32
+	fixture.service.onActivity = func(channel string) {
+		if channel == "testchannel" {
+			activityCount.Add(1)
+		}
+	}
+
+	fixture.store.StoreObject("testchannel", "index.m3u8", []byte("#EXTM3U\n#EXTINF:1,\nseg0.ts\n"))
+	threeSegPlaylist := "#EXTM3U\n#EXTINF:1,\nseg0.ts\n#EXTINF:1,\nseg1.ts\n#EXTINF:1,\nseg2.ts\n"
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		fixture.store.StoreObject("testchannel", "index.m3u8", []byte(threeSegPlaylist))
+	}()
+
+	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
+	rec := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+	if got := rec.Body.String(); got != threeSegPlaylist {
+		t.Fatalf("expected 3-segment playlist %q, got %q", threeSegPlaylist, got)
+	}
+	if activityCount.Load() == 0 {
+		t.Fatal("expected live handler to report channel activity")
+	}
+}
+
+func TestLiveHandlerFallsBackToAvailablePlaylistWhenMinStartupSegmentsTimesOut(t *testing.T) {
+	fixture := newLiveTestFixture()
+	fixture.store.ResetChannel("testchannel")
+	fixture.installWriter("testchannel", testLiveGeneration)
+	fixture.service.minStartupSegments = 3
+
+	origReady := livePlaylistReadyTimeout
+	origPoll := livePlaylistWaitPoll
+	livePlaylistReadyTimeout = 20 * time.Millisecond
+	livePlaylistWaitPoll = 5 * time.Millisecond
+	t.Cleanup(func() {
+		livePlaylistReadyTimeout = origReady
+		livePlaylistWaitPoll = origPoll
+	})
+
+	oneSegPlaylist := "#EXTM3U\n#EXTINF:1,\nseg0.ts\n"
+	fixture.store.StoreObject("testchannel", "index.m3u8", []byte(oneSegPlaylist))
+
+	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
+	rec := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+	if got := rec.Body.String(); got != oneSegPlaylist {
+		t.Fatalf("expected fallback playlist %q, got %q", oneSegPlaylist, got)
+	}
+}
+
 func TestResolveLiveProxyPlaylistCachesUpstreamURLAndFetchesFreshPlaylist(t *testing.T) {
 	liveProxyURLCache.Lock()
 	liveProxyURLCache.entries = nil

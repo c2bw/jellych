@@ -23,6 +23,7 @@ var ErrAlreadyStarted = errors.New("stream already started")
 var ErrStreamsStopping = errors.New("streams are stopping")
 
 const defaultStreamStopTimeout = 5 * time.Second
+const liveStreamResolveTimeout = 15 * time.Second
 
 var channelNameRE = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
 
@@ -73,14 +74,18 @@ func (r *StreamRegistry) PlaylistSegmentCount(channel string) (int, error) {
 	}
 
 	playlist := r.getObject(channel, "index.m3u8")
-	if playlist == nil {
+	return countPlaylistSegments(playlist)
+}
+
+func countPlaylistSegments(playlist []byte) (int, error) {
+	if len(playlist) == 0 {
 		return 0, nil
 	}
 
 	scanner := bufio.NewScanner(strings.NewReader(string(playlist)))
 	count := 0
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" || line[0] == '#' {
 			continue
 		}
@@ -234,7 +239,9 @@ func (r *StreamRegistry) Start(channel string) error {
 	r.resetChannel(channel)
 	r.mu.Unlock()
 
-	inputURL, streamName, err := r.resolve(m.ctx, channel)
+	resolveCtx, resolveCancel := context.WithTimeout(m.ctx, liveStreamResolveTimeout)
+	inputURL, streamName, err := r.resolve(resolveCtx, channel)
+	resolveCancel()
 	if err != nil {
 		return r.abortStart(channel, m, err)
 	}
@@ -286,7 +293,7 @@ func newFFmpegCommandWithToken(inputURL, playlistURL, generation, token string) 
 }
 
 func resolveLiveStreamURL(ctx context.Context, channel string) (string, string, error) {
-	streams, err := twitch.NewClient(nil).Streams(ctx, "https://twitch.tv/"+channel)
+	streams, err := twitch.NewClient(liveProxyHTTPClient).Streams(ctx, "https://twitch.tv/"+channel)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to resolve stream URL: %w", err)
 	}
@@ -496,6 +503,11 @@ func (r *StreamRegistry) isCurrentLiveWriterLocked(channel, generation string) b
 
 func buildFFmpegHLSArgsWithToken(inputURL, playlistURL, generation, token string) []string {
 	args := []string{
+		"-rw_timeout", "10000000",
+		"-fflags", "+discardcorrupt",
+		"-probesize", "500000",
+		"-analyzeduration", "500000",
+		"-live_start_index", "-5",
 		"-i", inputURL,
 		"-c", "copy",
 		"-f", "hls",
@@ -507,7 +519,7 @@ func buildFFmpegHLSArgsWithToken(inputURL, playlistURL, generation, token string
 		"-hls_delete_threshold", "30",
 		"-hls_start_number_source", "epoch",
 		"-hls_allow_cache", "0",
-		"-hls_flags", "delete_segments",
+		"-hls_flags", "delete_segments+independent_segments",
 	}
 
 	// Keep segment URIs relative to the playlist. Clients may access Jellych

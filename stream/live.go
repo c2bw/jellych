@@ -28,10 +28,12 @@ const (
 )
 
 var (
-	livePlaylistWaitTimeout = 15 * time.Second
-	livePlaylistWaitPoll    = 200 * time.Millisecond
-	liveSegmentWaitTimeout  = 2 * time.Second
-	liveSegmentWaitPoll     = 50 * time.Millisecond
+	livePlaylistWaitTimeout  = 25 * time.Second
+	livePlaylistReadyTimeout = 6 * time.Second
+	livePlaylistWaitPoll     = 100 * time.Millisecond
+	livePlaylistMinSegments  = 3
+	liveSegmentWaitTimeout   = 4 * time.Second
+	liveSegmentWaitPoll      = 50 * time.Millisecond
 )
 
 func newLiveWriteToken() string {
@@ -270,11 +272,19 @@ func (s *LiveStore) deleteObjectLocked(channel, name string) {
 }
 
 type LiveService struct {
-	store        *LiveStore
-	registry     *StreamRegistry
-	start        func(string) error
-	canAutoStart func(string) bool
-	writeToken   string
+	store              *LiveStore
+	registry           *StreamRegistry
+	start              func(string) error
+	canAutoStart       func(string) bool
+	onActivity         func(string)
+	minStartupSegments int
+	writeToken         string
+}
+
+func (s *LiveService) noteActivity(channel string) {
+	if s.onActivity != nil {
+		s.onActivity(channel)
+	}
 }
 
 func (s *LiveService) LiveHandler() http.Handler {
@@ -299,17 +309,20 @@ func (s *LiveService) handleLive(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
 		data := s.store.GetObject(channel, objectName)
-		if data == nil && isLivePlaylist(objectName) {
-			if r.Method == http.MethodGet && s.isAutoStartAllowed(channel) && !s.registry.IsChannelActive(channel) {
+		if isLivePlaylist(objectName) {
+			if data == nil && r.Method == http.MethodGet && s.isAutoStartAllowed(channel) && !s.registry.IsChannelActive(channel) {
+				s.noteActivity(channel)
 				if err := s.start(channel); err != nil && !errors.Is(err, ErrAlreadyStarted) {
 					slog.Warn("failed to auto-start live stream for playlist request", "channel", channel, "error", err)
 				}
 			}
 			if s.registry.IsChannelActive(channel) {
-				data = s.waitForObject(r.Context(), channel, objectName, livePlaylistWaitTimeout, livePlaylistWaitPoll)
+				s.noteActivity(channel)
+				data = s.waitForPlaylist(r.Context(), channel, objectName, data)
 			}
 		}
 		if data == nil && isLiveSegment(objectName) && s.registry.IsChannelActive(channel) {
+			s.noteActivity(channel)
 			waitStarted := time.Now()
 			data = s.waitForObject(r.Context(), channel, objectName, liveSegmentWaitTimeout, liveSegmentWaitPoll)
 			if data != nil {
@@ -327,6 +340,7 @@ func (s *LiveService) handleLive(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
+		s.noteActivity(channel)
 		w.Header().Set("Content-Type", liveContentType(objectName))
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		if r.Method == http.MethodGet {
@@ -352,6 +366,51 @@ func isLiveSegment(objectName string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (s *LiveService) waitForPlaylist(ctx context.Context, channel, objectName string, initial []byte) []byte {
+	data := initial
+	if data == nil {
+		data = s.waitForObject(ctx, channel, objectName, livePlaylistWaitTimeout, livePlaylistWaitPoll)
+		if data == nil {
+			return nil
+		}
+	}
+
+	minSegments := s.minStartupSegments
+	if minSegments <= 1 {
+		return data
+	}
+	if count, err := countPlaylistSegments(data); err == nil && count >= minSegments {
+		return data
+	}
+
+	pollInterval := livePlaylistWaitPoll
+	if pollInterval <= 0 {
+		pollInterval = 100 * time.Millisecond
+	}
+	readyTimeout := livePlaylistReadyTimeout
+	if readyTimeout <= 0 {
+		return data
+	}
+
+	deadline := time.Now().Add(readyTimeout)
+	for {
+		if latest := s.store.GetObject(channel, objectName); latest != nil {
+			data = latest
+			if count, err := countPlaylistSegments(data); err == nil && count >= minSegments {
+				return data
+			}
+		}
+		if !s.registry.IsChannelActive(channel) || time.Now().After(deadline) {
+			return data
+		}
+		select {
+		case <-ctx.Done():
+			return data
+		case <-time.After(pollInterval):
+		}
 	}
 }
 

@@ -43,6 +43,17 @@ func TestBuildFFmpegHLSArgsUsesUniqueUncachedSegments(t *testing.T) {
 	assertArgValue(t, args, "-hls_allow_cache", "0")
 }
 
+func TestBuildFFmpegHLSArgsUsesFastStartupInputOptions(t *testing.T) {
+	args := buildFFmpegHLSArgsWithToken("https://example.test/upstream.m3u8", "http://127.0.0.1/_live-write/testchannel/index.m3u8", testLiveGeneration, "test-token")
+
+	assertArgValue(t, args, "-rw_timeout", "10000000")
+	assertArgValue(t, args, "-fflags", "+discardcorrupt")
+	assertArgValue(t, args, "-probesize", "500000")
+	assertArgValue(t, args, "-analyzeduration", "500000")
+	assertArgValue(t, args, "-live_start_index", "-5")
+	assertArgValue(t, args, "-hls_flags", "delete_segments+independent_segments")
+}
+
 func TestBuildFFmpegHLSArgsIncludesGenerationHeader(t *testing.T) {
 	args := buildFFmpegHLSArgsWithToken("https://example.test/upstream.m3u8", "http://127.0.0.1/_live-write/testchannel/index.m3u8", testLiveGeneration, "test-token")
 
