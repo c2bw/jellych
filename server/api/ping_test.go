@@ -840,3 +840,48 @@ func TestVodIDFromURL(t *testing.T) {
 		t.Fatalf("expected twitch vod id, got %q", got)
 	}
 }
+
+func TestLiveActivityPreventsPrematureIdleStreamStop(t *testing.T) {
+	fixture := newAPITestFixture(t)
+	now := time.Date(2026, time.November, 4, 2, 0, 0, 0, time.UTC)
+	fixture.api.now = func() time.Time { return now }
+	fixture.api.playback.now = fixture.api.now
+
+	active := true
+	stopped := 0
+	fixture.api.streams.ActiveChannels = func() []string {
+		if active {
+			return []string{"jankos"}
+		}
+		return nil
+	}
+	fixture.api.streams.StopChannel = func(channel string) error {
+		if channel == "jankos" {
+			stopped++
+			active = false
+		}
+		return nil
+	}
+
+	// Initial idle sweep starts the 30s countdown at t=0.
+	fixture.api.reconcileIdleStreams(now)
+
+	// At t=20s, Jellyfin is probing /live/jankos/index.m3u8 and refreshes activity.
+	now = now.Add(20 * time.Second)
+	fixture.api.NoteLiveActivity("jankos")
+
+	// At t=35s (35s after stream start, but only 15s after last live activity),
+	// the stream must NOT be stopped.
+	now = now.Add(15 * time.Second)
+	fixture.api.reconcileIdleStreams(now)
+	if stopped != 0 {
+		t.Fatalf("stream was stopped prematurely during startup probing (stopped=%d)", stopped)
+	}
+
+	// At t=50s (30s after the last live activity with no sessions), the stream stops.
+	now = now.Add(15 * time.Second)
+	fixture.api.reconcileIdleStreams(now)
+	if stopped != 1 {
+		t.Fatalf("expected idle stream to stop 30s after last activity, got stopped=%d", stopped)
+	}
+}

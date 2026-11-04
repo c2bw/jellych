@@ -28,10 +28,15 @@ const (
 )
 
 var (
-	livePlaylistWaitTimeout = 15 * time.Second
-	livePlaylistWaitPoll    = 200 * time.Millisecond
-	liveSegmentWaitTimeout  = 2 * time.Second
-	liveSegmentWaitPoll     = 50 * time.Millisecond
+	livePlaylistWaitTimeout          = 25 * time.Second
+	livePlaylistReadyTimeout         = 6 * time.Second
+	livePlaylistAdvanceTimeout       = 1500 * time.Millisecond
+	livePlaylistWaitPoll             = 50 * time.Millisecond
+	livePlaylistMinSegments          = 3
+	liveBurstTargetSegments          = 7
+	liveMaxProgressiveWindowSegments = 8
+	liveSegmentWaitTimeout           = 4 * time.Second
+	liveSegmentWaitPoll              = 50 * time.Millisecond
 )
 
 func newLiveWriteToken() string {
@@ -50,6 +55,9 @@ type LiveStore struct {
 	trackedBytes    bool
 	deleteAfter     map[string]map[string]time.Time
 	deleteGrace     time.Duration
+	servedSegments  map[string]map[string]struct{}
+	windowUnlockSeg map[string]string
+	windowUnlocked  map[string]bool
 	maxChannelBytes int
 	maxTotalBytes   int
 	now             func() time.Time
@@ -78,6 +86,9 @@ func newLiveStore(mu *sync.RWMutex, items *map[string]map[string][]byte, tracked
 		trackedBytes:    trackedBytes,
 		deleteAfter:     make(map[string]map[string]time.Time),
 		deleteGrace:     liveSegmentDeleteGrace,
+		servedSegments:  make(map[string]map[string]struct{}),
+		windowUnlockSeg: make(map[string]string),
+		windowUnlocked:  make(map[string]bool),
 		maxChannelBytes: maxLiveChannelBytes,
 		maxTotalBytes:   maxLiveStoreBytes,
 		now:             time.Now,
@@ -97,6 +108,9 @@ func (s *LiveStore) ResetChannel(channel string) {
 	s.releaseChannelBytesLocked(channel)
 	s.storeMap()[channel] = make(map[string][]byte)
 	delete(s.deleteAfter, channel)
+	delete(s.servedSegments, channel)
+	delete(s.windowUnlockSeg, channel)
+	delete(s.windowUnlocked, channel)
 	s.mu.Unlock()
 }
 
@@ -108,7 +122,68 @@ func (s *LiveStore) ClearChannel(channel string) {
 		delete(items, channel)
 	}
 	delete(s.deleteAfter, channel)
+	delete(s.servedSegments, channel)
+	delete(s.windowUnlockSeg, channel)
+	delete(s.windowUnlocked, channel)
 	s.mu.Unlock()
+}
+
+func (s *LiveStore) NoteSegmentServed(channel, name string) {
+	channel = normalizeLiveChannel(channel)
+	name = normalizeLiveObjectName(name)
+	if channel == "" || name == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.servedSegments == nil {
+		s.servedSegments = make(map[string]map[string]struct{})
+	}
+	if s.servedSegments[channel] == nil {
+		s.servedSegments[channel] = make(map[string]struct{})
+	}
+	s.servedSegments[channel][name] = struct{}{}
+	if unlockSeg := s.windowUnlockSeg[channel]; unlockSeg != "" && unlockSeg == name {
+		s.windowUnlocked[channel] = true
+	}
+}
+
+func (s *LiveStore) IsSegmentServed(channel, name string) bool {
+	channel = normalizeLiveChannel(channel)
+	name = normalizeLiveObjectName(name)
+	if channel == "" || name == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.servedSegments == nil || s.servedSegments[channel] == nil {
+		return false
+	}
+	_, ok := s.servedSegments[channel][name]
+	return ok
+}
+
+func (s *LiveStore) SetWindowUnlockSegment(channel, name string) {
+	channel = normalizeLiveChannel(channel)
+	name = normalizeLiveObjectName(name)
+	if channel == "" || name == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.windowUnlockSeg == nil {
+		s.windowUnlockSeg = make(map[string]string)
+	}
+	if s.windowUnlockSeg[channel] == "" {
+		s.windowUnlockSeg[channel] = name
+	}
+}
+
+func (s *LiveStore) IsWindowUnlocked(channel string) bool {
+	channel = normalizeLiveChannel(channel)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.windowUnlocked != nil && s.windowUnlocked[channel]
 }
 
 func (s *LiveStore) StoreObject(channel, name string, data []byte) bool {
@@ -270,11 +345,19 @@ func (s *LiveStore) deleteObjectLocked(channel, name string) {
 }
 
 type LiveService struct {
-	store        *LiveStore
-	registry     *StreamRegistry
-	start        func(string) error
-	canAutoStart func(string) bool
-	writeToken   string
+	store              *LiveStore
+	registry           *StreamRegistry
+	start              func(string) error
+	canAutoStart       func(string) bool
+	onActivity         func(string)
+	minStartupSegments int
+	writeToken         string
+}
+
+func (s *LiveService) noteActivity(channel string) {
+	if s.onActivity != nil {
+		s.onActivity(channel)
+	}
 }
 
 func (s *LiveService) LiveHandler() http.Handler {
@@ -299,17 +382,26 @@ func (s *LiveService) handleLive(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
 		data := s.store.GetObject(channel, objectName)
-		if data == nil && isLivePlaylist(objectName) {
-			if r.Method == http.MethodGet && s.isAutoStartAllowed(channel) && !s.registry.IsChannelActive(channel) {
+		if isLivePlaylist(objectName) {
+			autoStarted := false
+			if data == nil && r.Method == http.MethodGet && s.isAutoStartAllowed(channel) && !s.registry.IsChannelActive(channel) {
+				s.noteActivity(channel)
 				if err := s.start(channel); err != nil && !errors.Is(err, ErrAlreadyStarted) {
 					slog.Warn("failed to auto-start live stream for playlist request", "channel", channel, "error", err)
+				} else {
+					autoStarted = true
 				}
 			}
 			if s.registry.IsChannelActive(channel) {
-				data = s.waitForObject(r.Context(), channel, objectName, livePlaylistWaitTimeout, livePlaylistWaitPoll)
+				s.noteActivity(channel)
+				data = s.waitForPlaylist(r.Context(), channel, objectName, data, autoStarted)
+				if data != nil {
+					data = s.shapeStartupPlaylist(channel, data)
+				}
 			}
 		}
 		if data == nil && isLiveSegment(objectName) && s.registry.IsChannelActive(channel) {
+			s.noteActivity(channel)
 			waitStarted := time.Now()
 			data = s.waitForObject(r.Context(), channel, objectName, liveSegmentWaitTimeout, liveSegmentWaitPoll)
 			if data != nil {
@@ -327,6 +419,10 @@ func (s *LiveService) handleLive(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
+		if r.Method == http.MethodGet && isLiveSegment(objectName) {
+			s.store.NoteSegmentServed(channel, objectName)
+		}
+		s.noteActivity(channel)
 		w.Header().Set("Content-Type", liveContentType(objectName))
 		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 		if r.Method == http.MethodGet {
@@ -353,6 +449,106 @@ func isLiveSegment(objectName string) bool {
 	default:
 		return false
 	}
+}
+
+func (s *LiveService) waitForPlaylist(ctx context.Context, channel, objectName string, initial []byte, autoStarted bool) []byte {
+	data := initial
+	if data == nil {
+		data = s.waitForObject(ctx, channel, objectName, livePlaylistWaitTimeout, livePlaylistWaitPoll)
+		if data == nil {
+			return nil
+		}
+	}
+
+	// On the initial auto-start request (e.g. Jellyfin's ffprobe), return as
+	// soon as the first segment is published so probing finishes immediately
+	// while ffmpeg continues buffering subsequent segments in parallel.
+	if autoStarted {
+		return data
+	}
+
+	minSegments := s.minStartupSegments
+	if minSegments <= 1 {
+		return data
+	}
+
+	pollInterval := livePlaylistWaitPoll
+	if pollInterval <= 0 {
+		pollInterval = 50 * time.Millisecond
+	}
+
+	count, err := countPlaylistSegments(data)
+	if err != nil || count < minSegments {
+		readyTimeout := livePlaylistReadyTimeout
+		if readyTimeout <= 0 {
+			return data
+		}
+		deadline := time.Now().Add(readyTimeout)
+		for {
+			if latest := s.store.GetObject(channel, objectName); latest != nil {
+				data = latest
+				if c, cErr := countPlaylistSegments(data); cErr == nil {
+					count = c
+					if count >= minSegments {
+						break
+					}
+				}
+			}
+			if !s.registry.IsChannelActive(channel) || time.Now().After(deadline) {
+				return data
+			}
+			select {
+			case <-ctx.Done():
+				return data
+			case <-time.After(pollInterval):
+			}
+		}
+	}
+
+	// During the initial startup burst, if a client reloads the playlist right
+	// after reading the last segment currently listed in index.m3u8, wait
+	// briefly for the next segment to land rather than returning an unchanged
+	// playlist that triggers FFmpeg's 1-second HLS reload sleep.
+	if count >= minSegments && count < liveBurstTargetSegments && s.store.IsWindowUnlocked(channel) {
+		lastSeg := lastPlaylistSegment(data)
+		if lastSeg != "" && s.store.IsSegmentServed(channel, lastSeg) && livePlaylistAdvanceTimeout > 0 {
+			deadline := time.Now().Add(livePlaylistAdvanceTimeout)
+			for {
+				if latest := s.store.GetObject(channel, objectName); latest != nil {
+					data = latest
+					if nextLast := lastPlaylistSegment(data); nextLast != "" && nextLast != lastSeg {
+						return data
+					}
+				}
+				if !s.registry.IsChannelActive(channel) || time.Now().After(deadline) {
+					return data
+				}
+				select {
+				case <-ctx.Done():
+					return data
+				case <-time.After(pollInterval):
+				}
+			}
+		}
+	}
+
+	return data
+}
+
+func (s *LiveService) shapeStartupPlaylist(channel string, data []byte) []byte {
+	windowSize := s.minStartupSegments
+	if windowSize <= 1 || s.store.IsWindowUnlocked(channel) {
+		return data
+	}
+
+	trimmed, lastKept, total := trimPlaylistSegments(data, windowSize)
+	if total < windowSize || total > liveMaxProgressiveWindowSegments {
+		return data
+	}
+	if lastKept != "" {
+		s.store.SetWindowUnlockSegment(channel, lastKept)
+	}
+	return trimmed
 }
 
 func (s *LiveService) waitForObject(ctx context.Context, channel, objectName string, timeout, pollInterval time.Duration) []byte {

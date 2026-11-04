@@ -412,6 +412,191 @@ func TestLiveHandlerReturnsServiceUnavailableForActiveChannelWhenPlaylistMissing
 	}
 }
 
+func TestLiveHandlerWaitsForMinStartupSegments(t *testing.T) {
+	fixture := newLiveTestFixture()
+	fixture.store.ResetChannel("testchannel")
+	fixture.installWriter("testchannel", testLiveGeneration)
+	fixture.service.minStartupSegments = 3
+
+	origReady := livePlaylistReadyTimeout
+	origPoll := livePlaylistWaitPoll
+	livePlaylistReadyTimeout = time.Second
+	livePlaylistWaitPoll = 5 * time.Millisecond
+	t.Cleanup(func() {
+		livePlaylistReadyTimeout = origReady
+		livePlaylistWaitPoll = origPoll
+	})
+
+	var activityCount atomic.Int32
+	fixture.service.onActivity = func(channel string) {
+		if channel == "testchannel" {
+			activityCount.Add(1)
+		}
+	}
+
+	fixture.store.StoreObject("testchannel", "index.m3u8", []byte("#EXTM3U\n#EXTINF:1,\nseg0.ts\n"))
+	threeSegPlaylist := "#EXTM3U\n#EXTINF:1,\nseg0.ts\n#EXTINF:1,\nseg1.ts\n#EXTINF:1,\nseg2.ts\n"
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		fixture.store.StoreObject("testchannel", "index.m3u8", []byte(threeSegPlaylist))
+	}()
+
+	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
+	rec := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+	if got := rec.Body.String(); got != threeSegPlaylist {
+		t.Fatalf("expected 3-segment playlist %q, got %q", threeSegPlaylist, got)
+	}
+	if activityCount.Load() == 0 {
+		t.Fatal("expected live handler to report channel activity")
+	}
+}
+
+func TestLiveHandlerFallsBackToAvailablePlaylistWhenMinStartupSegmentsTimesOut(t *testing.T) {
+	fixture := newLiveTestFixture()
+	fixture.store.ResetChannel("testchannel")
+	fixture.installWriter("testchannel", testLiveGeneration)
+	fixture.service.minStartupSegments = 3
+
+	origReady := livePlaylistReadyTimeout
+	origPoll := livePlaylistWaitPoll
+	livePlaylistReadyTimeout = 20 * time.Millisecond
+	livePlaylistWaitPoll = 5 * time.Millisecond
+	t.Cleanup(func() {
+		livePlaylistReadyTimeout = origReady
+		livePlaylistWaitPoll = origPoll
+	})
+
+	oneSegPlaylist := "#EXTM3U\n#EXTINF:1,\nseg0.ts\n"
+	fixture.store.StoreObject("testchannel", "index.m3u8", []byte(oneSegPlaylist))
+
+	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
+	rec := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+	if got := rec.Body.String(); got != oneSegPlaylist {
+		t.Fatalf("expected fallback playlist %q, got %q", oneSegPlaylist, got)
+	}
+}
+
+func TestLiveHandlerAutoStartReturnsFirstSegmentImmediatelyAndProgressiveWindowUnlocks(t *testing.T) {
+	fixture := newLiveTestFixture()
+	fixture.service.minStartupSegments = 3
+	fixture.service.canAutoStart = func(channel string) bool { return channel == "testchannel" }
+
+	oneSegPlaylist := "#EXTM3U\n#EXTINF:2,\nseg0.ts\n"
+	fiveSegPlaylist := "#EXTM3U\n#EXTINF:2,\nseg0.ts\n#EXTINF:2,\nseg1.ts\n#EXTINF:2,\nseg2.ts\n#EXTINF:2,\nseg3.ts\n#EXTINF:2,\nseg4.ts\n"
+	threeSegWindow := "#EXTM3U\n#EXTINF:2,\nseg0.ts\n#EXTINF:2,\nseg1.ts\n#EXTINF:2,\nseg2.ts\n"
+
+	fixture.service.start = func(channel string) error {
+		fixture.store.ResetChannel(channel)
+		fixture.store.StoreObject(channel, "seg0.ts", []byte("s0"))
+		fixture.store.StoreObject(channel, "index.m3u8", []byte(oneSegPlaylist))
+		fixture.installWriter(channel, testLiveGeneration)
+		return nil
+	}
+
+	// 1. Initial auto-start request (e.g. ffprobe) returns immediately with 1 segment.
+	probeReq := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
+	probeRec := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(probeRec, probeReq)
+	if probeRec.Code != http.StatusOK || probeRec.Body.String() != oneSegPlaylist {
+		t.Fatalf("expected auto-start probe to get 1-segment playlist immediately, got status=%d body=%q", probeRec.Code, probeRec.Body.String())
+	}
+
+	// ffprobe reads only seg0.ts.
+	seg0Req := httptest.NewRequest(http.MethodGet, "/live/testchannel/seg0.ts", nil)
+	seg0Rec := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(seg0Rec, seg0Req)
+
+	// Meanwhile, Jellych's ffmpeg buffers 5 segments into LiveStore.
+	for i := 1; i < 5; i++ {
+		fixture.store.StoreObject("testchannel", fmt.Sprintf("seg%d.ts", i), []byte("data"))
+	}
+	fixture.store.StoreObject("testchannel", "index.m3u8", []byte(fiveSegPlaylist))
+
+	// 2. Jellyfin's ffmpeg opens index.m3u8 and receives the trimmed 3-segment window (seg0..seg2)
+	// so FFmpeg's -live_start_index -3 starts at seg0 instead of skipping seg0 and seg1.
+	ffmpegReq1 := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
+	ffmpegRec1 := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(ffmpegRec1, ffmpegReq1)
+	if got := ffmpegRec1.Body.String(); got != threeSegWindow {
+		t.Fatalf("expected trimmed 3-segment initial window %q, got %q", threeSegWindow, got)
+	}
+
+	// Jellyfin's ffmpeg reads seg0.ts, seg1.ts, seg2.ts; reading seg2.ts unlocks the full window.
+	for _, seg := range []string{"seg0.ts", "seg1.ts", "seg2.ts"} {
+		req := httptest.NewRequest(http.MethodGet, "/live/testchannel/"+seg, nil)
+		rec := httptest.NewRecorder()
+		fixture.service.LiveHandler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected segment %s to succeed, got %d", seg, rec.Code)
+		}
+	}
+
+	// 3. On the next playlist reload, the full 5-segment playlist is returned immediately.
+	ffmpegReq2 := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
+	ffmpegRec2 := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(ffmpegRec2, ffmpegReq2)
+	if got := ffmpegRec2.Body.String(); got != fiveSegPlaylist {
+		t.Fatalf("expected unlocked 5-segment playlist %q, got %q", fiveSegPlaylist, got)
+	}
+}
+
+func TestLiveHandlerWaitsForNextSegmentOnReloadDuringStartupBurst(t *testing.T) {
+	fixture := newLiveTestFixture()
+	fixture.store.ResetChannel("testchannel")
+	fixture.installWriter("testchannel", testLiveGeneration)
+	fixture.service.minStartupSegments = 3
+
+	origAdvance := livePlaylistAdvanceTimeout
+	origPoll := livePlaylistWaitPoll
+	livePlaylistAdvanceTimeout = time.Second
+	livePlaylistWaitPoll = 5 * time.Millisecond
+	t.Cleanup(func() {
+		livePlaylistAdvanceTimeout = origAdvance
+		livePlaylistWaitPoll = origPoll
+	})
+
+	threeSegPlaylist := "#EXTM3U\n#EXTINF:2,\nseg0.ts\n#EXTINF:2,\nseg1.ts\n#EXTINF:2,\nseg2.ts\n"
+	fourSegPlaylist := threeSegPlaylist + "#EXTINF:2,\nseg3.ts\n"
+	for i := 0; i < 3; i++ {
+		fixture.store.StoreObject("testchannel", fmt.Sprintf("seg%d.ts", i), []byte("data"))
+	}
+	fixture.store.StoreObject("testchannel", "index.m3u8", []byte(threeSegPlaylist))
+
+	// First playlist fetch sets unlock segment to seg2.ts.
+	req1 := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
+	rec1 := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(rec1, req1)
+
+	// Client reads seg2.ts, unlocking the window and marking seg2.ts as served.
+	segReq := httptest.NewRequest(http.MethodGet, "/live/testchannel/seg2.ts", nil)
+	segRec := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(segRec, segReq)
+
+	// Client reloads index.m3u8 while seg3.ts is arriving 20ms later.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		fixture.store.StoreObject("testchannel", "seg3.ts", []byte("data"))
+		fixture.store.StoreObject("testchannel", "index.m3u8", []byte(fourSegPlaylist))
+	}()
+
+	req2 := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
+	rec2 := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(rec2, req2)
+	if got := rec2.Body.String(); got != fourSegPlaylist {
+		t.Fatalf("expected reload to wait for 4th segment playlist %q, got %q", fourSegPlaylist, got)
+	}
+}
+
 func TestResolveLiveProxyPlaylistCachesUpstreamURLAndFetchesFreshPlaylist(t *testing.T) {
 	liveProxyURLCache.Lock()
 	liveProxyURLCache.entries = nil

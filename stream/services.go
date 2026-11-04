@@ -34,10 +34,11 @@ func NewServices(liveBaseURL string) *Services {
 		Streams:   registry,
 		Downloads: NewVODDownloader(),
 		live: &LiveService{
-			store:      store,
-			registry:   registry,
-			start:      registry.Start,
-			writeToken: token,
+			store:              store,
+			registry:           registry,
+			start:              registry.Start,
+			minStartupSegments: livePlaylistMinSegments,
+			writeToken:         token,
 		},
 	}
 }
@@ -45,8 +46,16 @@ func NewServices(liveBaseURL string) *Services {
 // LiveHandler serves live media and limits playlist-driven starts to channels
 // accepted by canAutoStart.
 func (s *Services) LiveHandler(canAutoStart func(string) bool) http.Handler {
+	return s.LiveHandlerWithActivity(canAutoStart, nil)
+}
+
+// LiveHandlerWithActivity serves live media, limits playlist-driven starts to
+// channels accepted by canAutoStart, and reports live playlist/segment activity
+// to onActivity.
+func (s *Services) LiveHandlerWithActivity(canAutoStart func(string) bool, onActivity func(string)) http.Handler {
 	service := *s.live
 	service.canAutoStart = canAutoStart
+	service.onActivity = onActivity
 	return service.LiveHandler()
 }
 
