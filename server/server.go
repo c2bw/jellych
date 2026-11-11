@@ -59,7 +59,8 @@ func newHandler(htmlFS fs.FS, handlers Handlers) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", handleHealth)
 	mux.Handle("/api/", handlers.API)
-	mux.Handle("/vod/", handlers.API)
+	mux.Handle("/api/live-proxy/", streamingHandler(handlers.API))
+	mux.Handle("/vod/", streamingHandler(handlers.API))
 	mux.HandleFunc("/watch", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFileFS(w, r, htmlFS, "watch.html")
 	})
@@ -79,7 +80,7 @@ func newHandler(htmlFS fs.FS, handlers Handlers) http.Handler {
 		http.ServeFileFS(w, r, htmlFS, "tools.html")
 	})
 	mux.Handle("/html/", http.StripPrefix("/html/", http.FileServerFS(htmlFS)))
-	mux.Handle("/live/", handlers.Live)
+	mux.Handle("/live/", streamingHandler(handlers.Live))
 	mux.Handle("/_live-write/", handlers.LiveWrite)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -90,6 +91,15 @@ func newHandler(htmlFS fs.FS, handlers Handlers) http.Handler {
 	})
 
 	return securityHeaders(mux)
+}
+
+// Media transfers and playlist startup can outlast the server's ordinary
+// response timeout. Read and idle timeouts still apply to these connections.
+func streamingHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+		next.ServeHTTP(w, r)
+	})
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {

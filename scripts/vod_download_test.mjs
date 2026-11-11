@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFile } from 'node:fs/promises';
 
 import {
   appendVODConversionControl,
@@ -12,6 +13,101 @@ import {
   vodPlaybackPath,
   vodPresetCommand,
 } from '../html/js/vod_download.js';
+
+let vodPageImport = 0;
+async function loadVODPage(t, respond){
+  function element(){
+    return {
+      value: 'all', children: [], listeners: {}, textContent: '',
+      classList: {add(){}, remove(){}, toggle(){}},
+      appendChild(child){ this.children.push(child); },
+      replaceChildren(...children){ this.children = children; },
+      get options(){ return this.children; },
+      add(child){ this.children.push(child); },
+      setAttribute(){},
+      addEventListener(event, callback){ this.listeners[event] = callback; },
+    };
+  }
+  const elements = new Map();
+  const timers = new Map();
+  const requests = [];
+  let timerID = 0;
+  const globals = {
+    document: {
+      getElementById(id){
+        if(!elements.has(id)) elements.set(id, element());
+        return elements.get(id);
+      },
+      createElement: element,
+      createDocumentFragment: element,
+    },
+    Option: function(text, value){ return {textContent: text, value}; },
+    window: {setTimeout(callback){ timers.set(++timerID, callback); return timerID; }},
+    clearTimeout(id){ timers.delete(id); },
+    fetch: async (url, options)=>{
+      requests.push({url, options});
+      return respond(url, options);
+    },
+  };
+  for(const [key, value] of Object.entries(globals)){
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, key, {value, configurable: true, writable: true});
+    t.after(()=>{
+      if(descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    });
+  }
+  await import('../html/js/vods.js?test=' + ++vodPageImport);
+  await new Promise(resolve=>setImmediate(resolve));
+  return {elements, timers, requests};
+}
+
+test('VOD progress polling recovers from an outage and stops when downloads finish', async (t)=>{
+  let polls = 0;
+  const page = await loadVODPage(t, (url)=>{
+    if(url !== '/api/vods') return Response.json({});
+    polls++;
+    if(polls === 2) throw new Error('temporary outage');
+    return Response.json(polls === 1 ? [{id: '123456789', downloadActive: true}] : []);
+  });
+  async function poll(){
+    assert.equal(page.timers.size, 1);
+    const [id, callback] = page.timers.entries().next().value;
+    page.timers.delete(id);
+    await callback();
+  }
+  await poll();
+  assert.match(page.elements.get('vodList').textContent, /temporary outage/);
+  assert.equal(page.timers.size, 1, 'an outage must leave a retry scheduled');
+  await poll();
+  assert.equal(polls, 3);
+  assert.equal(page.timers.size, 0, 'completed downloads should stop polling');
+});
+
+test('VOD form submits numeric IDs of different lengths and rejects invalid IDs', async (t)=>{
+  const page = await loadVODPage(t, (url, options)=>Response.json(
+    url === '/api/vods' ? (options.method === 'POST' ? {} : []) : {},
+  ));
+  const submit = page.elements.get('vodForm').listeners.submit;
+  const input = page.elements.get('vodId');
+  const html = await readFile(new URL('../html/vods.html', import.meta.url), 'utf8');
+  const inputHTML = html.match(/<input id="vodId"[^>]+>/)[0];
+  const pattern = new RegExp('^(?:' + inputHTML.match(/pattern="([^"]+)"/)[1] + ')$');
+  for(const id of ['123456789', '1234567890', '12345678901']){
+    assert.match(id, pattern, 'native form validation must accept this ID');
+    assert.ok(Number(inputHTML.match(/maxlength="(\d+)"/)[1]) >= id.length);
+    input.value = id;
+    await submit({preventDefault(){}});
+    const posted = page.requests.filter(r=>r.options.method === 'POST');
+    assert.equal(JSON.parse(posted.at(-1).options.body).id, id);
+  }
+  const requestsBefore = page.requests.length;
+  for(const id of ['', 'not-an-id', '123/456', '1'.repeat(65)]){
+    input.value = id;
+    await submit({preventDefault(){}});
+  }
+  assert.equal(page.requests.length, requestsBefore, 'invalid IDs must not reach the API');
+});
 
 function renderBadge(status){
   const container = {children: [], appendChild(child){ this.children.push(child); }};
