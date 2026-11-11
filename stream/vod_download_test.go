@@ -1154,3 +1154,49 @@ func TestResolveVODDownloadURLTimesOut(t *testing.T) {
 		t.Fatalf("expected resolver timeout promptly, took %v", elapsed)
 	}
 }
+
+func TestConvertedVODRefreshesFullMetadata(t *testing.T) {
+	dir := t.TempDir()
+	downloader := NewVODDownloader()
+	downloader.SetDir(dir)
+	if err := os.MkdirAll(vodPartialDir(dir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	output := vodDownloadPath(dir, "123")
+	partial := filepath.Join(vodPartialDir(dir), "123-conversion.part")
+	for path, contents := range map[string]string{output: "original media", partial: "converted media"} {
+		if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	originalProbe := probeVODDownloadMetadata
+	t.Cleanup(func() { probeVODDownloadMetadata = originalProbe })
+	calls := 0
+	probeVODDownloadMetadata = func(path string) (vodDownloadMetadata, error) {
+		calls++
+		if path != output {
+			t.Fatalf("probe path = %q; want %q", path, output)
+		}
+		return vodDownloadMetadata{Preset: VODDownloadPresetHEVC, OriginalSize: 14,
+			DurationSeconds: 10, VideoCodec: "hevc", VideoWidth: 1920, VideoHeight: 1080}, nil
+	}
+	download := newVODDownload()
+	download.progress.Preset = "hevc"
+	download.progress.OriginalSize = 14
+	downloader.active = map[string]*vodDownload{"123": download}
+	downloader.finishConversion("123", download, partial, output, time.Now(), nil)
+	for i := 0; i < 2; i++ {
+		progress, err := downloader.Progress("123")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !progress.Downloaded || progress.Preset != "hevc" || progress.OriginalSize != 14 ||
+			progress.VideoCodec != "hevc" || progress.VideoWidth != 1920 || progress.VideoHeight != 1080 ||
+			progress.DurationSeconds != 10 || progress.TotalBitrate != 12 {
+			t.Fatalf("incomplete converted metadata: %+v", progress)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("metadata probes = %d; want 1", calls)
+	}
+}

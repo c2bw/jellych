@@ -885,3 +885,41 @@ func TestLiveActivityPreventsPrematureIdleStreamStop(t *testing.T) {
 		t.Fatalf("expected idle stream to stop 30s after last activity, got stopped=%d", stopped)
 	}
 }
+
+func TestIdleSweepPreservesPlaybackResumedAfterSnapshot(t *testing.T) {
+	fixture := newAPITestFixture(t)
+	now := time.Now()
+	fixture.api.playback.TouchLiveActivity("jankos", now.Add(-idleStopTTL))
+	fixture.api.streams.ActiveChannels = func() []string {
+		// A heartbeat arrives after GetPlayingCounts took its snapshot.
+		fixture.api.playback.RecordPlaying("jankos", "resumed", now)
+		return []string{"jankos"}
+	}
+	fixture.api.streams.StopChannel = func(string) error {
+		t.Fatal("stopped a stream after playback resumed")
+		return nil
+	}
+	fixture.api.reconcileIdleStreams(now)
+}
+
+func TestIdleStopRechecksActivityAfterCandidateSelection(t *testing.T) {
+	for _, activity := range []string{"heartbeat", "media"} {
+		t.Run(activity, func(t *testing.T) {
+			now := time.Now()
+			p := newPlaybackTracker(func() time.Time { return now })
+			p.TouchLiveActivity("jankos", now.Add(-idleStopTTL))
+			// The stream was selected for stopping before new activity arrived.
+			if activity == "heartbeat" {
+				p.RecordPlaying("jankos", "resumed", now)
+			} else {
+				p.TouchLiveActivity("jankos", now)
+			}
+			if err := p.stopIfStillIdle("jankos", now, func(string) error {
+				t.Fatal("stopped a stream with new activity")
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

@@ -1113,6 +1113,7 @@ export function initManager({
   }
 
   let hasInitializedChannelFocus = false;
+  let hasLoadedChannels = false;
 
   async function fetchChannels(){
     try{
@@ -1121,18 +1122,21 @@ export function initManager({
       const payload = await response.json();
       const channelList = toChannelList(payload);
       const rows = renderChannelList(channelList);
+      hasLoadedChannels = true;
       await Promise.all([refreshStatus(), refreshPlayCounts(), refreshStreams()]);
-      startPolling();
       if(!hasInitializedChannelFocus && rows.length){
         rows[0].focus();
         hasInitializedChannelFocus = true;
       }
     }catch(err){ listEl.textContent = 'Could not load channels.json - ' + err.message; }
+    finally{ startPolling(); }
   }
 
   // Wait five seconds after each completed refresh before polling again.
   const startPolling = createPollingLoop(
-    ()=>Promise.all([refreshStreams(), refreshStatus(), refreshPlayCounts()]),
+    ()=>hasLoadedChannels
+      ? Promise.all([refreshStreams(), refreshStatus(), refreshPlayCounts()])
+      : fetchChannels(),
     { delayMs: 5000, onError: (error)=>console.error('poll error', error) },
   );
 

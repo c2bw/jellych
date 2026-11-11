@@ -849,3 +849,33 @@ test('initPlayerControls time-shift buttons (-0.5s / +0.5s), range slider, and l
   ctrl1.destroy();
   ctrl2.destroy();
 });
+
+test('initial channel failures retry until recovery and then resume status polling', async (t)=>{
+  const fixture = playbackFixture(t);
+  const timers = [];
+  t.mock.method(globalThis, 'setTimeout', callback=>{ timers.push(callback); return timers.length; });
+  const normalFetch = globalThis.fetch;
+  let attempts = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options)=>{
+    if(url === '/api/channels' && ++attempts <= 2){
+      if(attempts === 1) throw new Error('temporary network failure');
+      return new Response('temporary server failure', {status: 503});
+    }
+    return normalFetch(url, options);
+  });
+  const page = await fixture.createPage();
+  assert.equal(timers.length, 1);
+  assert.equal(page.row('alpha'), undefined);
+  await timers.shift()();
+  assert.equal(attempts, 2);
+  assert.equal(timers.length, 1);
+  await timers.shift()();
+  assert.ok(page.row('alpha'));
+  assert.equal(attempts, 3);
+  assert.equal(timers.length, 1, 'recovery must not start a duplicate polling loop');
+  const statusRequests = fixture.requests.filter(r=>r.url === '/api/status').length;
+  await timers.shift()();
+  assert.equal(attempts, 3, 'successful load switches to normal status polling');
+  assert.equal(fixture.requests.filter(r=>r.url === '/api/status').length, statusRequests + 1);
+  assert.equal(timers.length, 1);
+});
