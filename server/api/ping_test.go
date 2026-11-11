@@ -62,6 +62,28 @@ func newAPITestFixture(t *testing.T) *apiTestFixture {
 	return &apiTestFixture{state: state, api: newAPI(state, Dependencies{})}
 }
 
+func TestActiveStreamsReturnsEmptyArrayAfterLastStreamStops(t *testing.T) {
+	fixture := newAPITestFixture(t)
+	active := []string{"alpha"}
+	fixture.api.streams.ActiveChannels = func() []string { return active }
+	handler := fixture.api.Handler()
+	for _, wantCount := range []int{1, 0} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/streams", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+		}
+		var got []string
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || len(got) != wantCount {
+			t.Fatalf("active streams = %s; want an array of length %d", rec.Body.String(), wantCount)
+		}
+		active = nil
+	}
+}
+
 func TestAddVODReturnsPersistedRecord(t *testing.T) {
 	fixture := newAPITestFixture(t)
 	fixture.state.SetVODStore(&enrichingVODStore{})

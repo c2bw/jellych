@@ -1,15 +1,18 @@
 const secretStorageKey = 'jellych_api_secret';
 let secretPrompt = null;
+let memorySecret = '';
 
 export function getControlSecret(){
   try{
-    return sessionStorage.getItem(secretStorageKey) || '';
+    return sessionStorage.getItem(secretStorageKey) || memorySecret;
   }catch(_){
-    return '';
+    // Keep authenticating this page when browser storage is blocked.
   }
+  return memorySecret;
 }
 
 function setControlSecret(secret){
+  memorySecret = secret;
   try{
     sessionStorage.setItem(secretStorageKey, secret);
   }catch(_){

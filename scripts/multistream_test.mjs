@@ -320,6 +320,27 @@ function playbackFixture(t, {readiness = ()=>Response.json({ready: true}), start
 
 const settlePlayback = ()=>new Promise(resolve=>setImmediate(resolve));
 
+test('polling clears Stop buttons after the last backend stream exits', async t=>{
+  const fixture = playbackFixture(t);
+  const timers = [];
+  t.mock.method(globalThis, 'setTimeout', callback=>{ timers.push(callback); return timers.length; });
+  const page = await fixture.createPage();
+  assert.equal(page.row('alpha').children.at(-2).textContent, 'Stop');
+  const normalFetch = globalThis.fetch;
+  let fail = true;
+  t.mock.method(globalThis, 'fetch', async (url, options)=>{
+    if(url === '/api/streams') return fail ? new Response('unavailable', {status: 503}) : Response.json([]);
+    return normalFetch(url, options);
+  });
+  await timers.shift()();
+  assert.equal(page.row('alpha').children.at(-2).textContent, 'Stop', 'failed polls must preserve known state');
+  fail = false;
+  await timers.shift()();
+  for(const channel of ['alpha', 'bravo']){
+    assert.equal(page.row(channel).children.at(-2).textContent, 'Start');
+  }
+});
+
 test('late Play and Start readiness responses cannot replace a newer selection', async (t)=>{
   for(const action of ['play', 'start']){
     await t.test(action, async (t)=>{
