@@ -35,8 +35,36 @@ type vodMediaTarget struct {
 
 type vodMediaRegistry struct {
 	sync.Mutex
-	byToken map[string]vodMediaTarget
-	byURL   map[string]string
+	byToken  map[string]vodMediaTarget
+	byURL    map[string]string
+	tokenTTL time.Duration
+	// VOD playback renews the whole playlist, including segments not read yet.
+	keepVODAlive bool
+	vodExpiresAt map[string]time.Time
+}
+
+func (r *vodMediaRegistry) ttl() time.Duration {
+	if r.tokenTTL > 0 {
+		return r.tokenTTL
+	}
+	return vodMediaTokenTTL
+}
+
+func (r *vodMediaRegistry) expiresAtLocked(target vodMediaTarget) time.Time {
+	if r.keepVODAlive && r.vodExpiresAt[target.vodID].After(target.expiresAt) {
+		return r.vodExpiresAt[target.vodID]
+	}
+	return target.expiresAt
+}
+
+func (r *vodMediaRegistry) touchVODLocked(vodID string, now time.Time) {
+	if !r.keepVODAlive {
+		return
+	}
+	if r.vodExpiresAt == nil {
+		r.vodExpiresAt = make(map[string]time.Time)
+	}
+	r.vodExpiresAt[vodID] = now.Add(r.ttl())
 }
 
 func (r *vodMediaRegistry) register(vodID, rawURL string, now time.Time) (string, error) {
@@ -50,9 +78,10 @@ func (r *vodMediaRegistry) register(vodID, rawURL string, now time.Time) (string
 	defer r.Unlock()
 	if token := r.byURL[key]; token != "" {
 		target, ok := r.byToken[token]
-		if ok && now.Before(target.expiresAt) {
-			target.expiresAt = now.Add(vodMediaTokenTTL)
+		if ok && now.Before(r.expiresAtLocked(target)) {
+			target.expiresAt = now.Add(r.ttl())
 			r.byToken[token] = target
+			r.touchVODLocked(vodID, now)
 			return token, nil
 		}
 		delete(r.byToken, token)
@@ -76,8 +105,9 @@ func (r *vodMediaRegistry) register(vodID, rawURL string, now time.Time) (string
 			token = candidate
 		}
 	}
-	r.byToken[token] = vodMediaTarget{vodID: vodID, url: parsed.String(), expiresAt: now.Add(vodMediaTokenTTL)}
+	r.byToken[token] = vodMediaTarget{vodID: vodID, url: parsed.String(), expiresAt: now.Add(r.ttl())}
 	r.byURL[key] = token
+	r.touchVODLocked(vodID, now)
 	return token, nil
 }
 
@@ -88,15 +118,16 @@ func (r *vodMediaRegistry) lookup(vodID, token string, now time.Time) (string, b
 	if !ok {
 		return "", false
 	}
-	if !now.Before(target.expiresAt) {
+	if !now.Before(r.expiresAtLocked(target)) {
 		r.deleteTokenLocked(token, target)
 		return "", false
 	}
 	if target.vodID != vodID {
 		return "", false
 	}
-	target.expiresAt = now.Add(vodMediaTokenTTL)
+	target.expiresAt = now.Add(r.ttl())
 	r.byToken[token] = target
+	r.touchVODLocked(vodID, now)
 	return target.url, true
 }
 
@@ -108,10 +139,15 @@ func (r *vodMediaRegistry) prune(now time.Time) {
 
 func (r *vodMediaRegistry) pruneLocked(now time.Time) {
 	for token, target := range r.byToken {
-		if now.Before(target.expiresAt) {
+		if now.Before(r.expiresAtLocked(target)) {
 			continue
 		}
 		r.deleteTokenLocked(token, target)
+	}
+	for vodID, expiresAt := range r.vodExpiresAt {
+		if !now.Before(expiresAt) {
+			delete(r.vodExpiresAt, vodID)
+		}
 	}
 }
 

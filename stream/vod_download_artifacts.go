@@ -155,14 +155,16 @@ func (d *VODDownloader) RemoveMetadataIfNoDownload(id string, removeMetadata fun
 		return ErrVODDownloadProtected
 	}
 	if d.dir != "" {
-		info, err := os.Stat(vodDownloadPath(d.dir, id))
-		if err == nil && info.Mode().IsRegular() && info.Size() > 0 {
-			d.Unlock()
-			return ErrVODDownloadProtected
-		}
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			d.Unlock()
-			return fmt.Errorf("failed to inspect vod download: %w", err)
+		for _, path := range []string{vodDownloadPath(d.dir, id), vodConversionBackupPath(d.dir, id)} {
+			info, err := os.Stat(path)
+			if err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+				d.Unlock()
+				return ErrVODDownloadProtected
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				d.Unlock()
+				return fmt.Errorf("failed to inspect vod download: %w", err)
+			}
 		}
 	}
 	d.removing[id] = struct{}{}

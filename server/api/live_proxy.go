@@ -14,6 +14,9 @@ import (
 	"github.com/c2bw/jellych/stream"
 )
 
+// Retain a short retry/buffering window rather than twelve hours of live media.
+const liveMediaTokenTTL = 5 * time.Minute
+
 var liveProxyPlaylistErrors = []handlerError{
 	{err: stream.ErrLiveStreamOffline, status: http.StatusNotFound, message: "stream is offline or unavailable"},
 }

@@ -11,6 +11,19 @@ import (
 	"time"
 )
 
+// RecoverInterruptedDownloads restores conversion backups and removes abandoned
+// partials before metadata synchronization can prune recordings.
+func (d *VODDownloader) RecoverInterruptedDownloads() error {
+	d.Lock()
+	dir := d.dir
+	d.Unlock()
+	if dir == "" {
+		return nil
+	}
+	_, err := d.cleanupInterruptedPartials(dir)
+	return err
+}
+
 // StartCleanup removes expired downloads immediately and once per hour.
 func (d *VODDownloader) StartCleanup(ctx context.Context) {
 	d.runCleanup(time.Now())
@@ -164,6 +177,9 @@ func (d *VODDownloader) recoverInterruptedConversion(dir, id string) (bool, erro
 	d.Lock()
 	defer d.Unlock()
 	if d.dir != dir {
+		return false, nil
+	}
+	if _, removing := d.removing[id]; removing {
 		return false, nil
 	}
 	if d.active != nil {
