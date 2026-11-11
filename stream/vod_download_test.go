@@ -558,7 +558,7 @@ func TestRemoveExpiredVODDownloadRechecksActiveState(t *testing.T) {
 	download := &vodDownload{}
 	downloader.active = map[string]*vodDownload{"active": download}
 
-	removed, err := downloader.removeExpired(dir, "active", path)
+	removed, err := downloader.removeExpired(dir, "active", path, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("expected active download recheck to succeed, got %v", err)
 	}
@@ -566,6 +566,42 @@ func TestRemoveExpiredVODDownloadRechecksActiveState(t *testing.T) {
 		t.Fatal("expected active download to be preserved")
 	}
 	assertVODDownloadTestFileExists(t, path, true)
+}
+
+func TestRemoveExpiredVODDownloadPreservesCompletedConversion(t *testing.T) {
+	dir := t.TempDir()
+	downloader := NewVODDownloader()
+	downloader.SetDir(dir)
+	now := time.Now()
+	cutoff := now.Add(-downloader.retention)
+	writeVODDownloadTestFile(t, dir, "123.mkv", cutoff.Add(-time.Hour))
+	path := vodDownloadPath(dir, "123")
+	candidate, err := os.Stat(path)
+	if err != nil || !candidate.ModTime().Before(cutoff) {
+		t.Fatalf("expected an expired cleanup candidate, got %v", err)
+	}
+
+	// Finish a conversion after the directory scan but before its removal.
+	if err := os.MkdirAll(vodPartialDir(dir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	partial := filepath.Join(vodPartialDir(dir), "converted.part")
+	if err := os.WriteFile(partial, []byte("fresh conversion"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	download := newVODDownload()
+	download.progress.Preset = "h264"
+	downloader.active = map[string]*vodDownload{"123": download}
+	downloader.finishConversion("123", download, partial, path, now, nil)
+
+	removed, err := downloader.removeExpired(dir, "123", path, cutoff)
+	if err != nil || removed {
+		t.Fatalf("fresh conversion removed=%v, error=%v", removed, err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil || string(contents) != "fresh conversion" {
+		t.Fatalf("converted file = %q, error=%v", contents, err)
+	}
 }
 
 func TestCleanupExpiredVODDownloadsToleratesMissingDirectory(t *testing.T) {

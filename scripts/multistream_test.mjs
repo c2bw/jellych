@@ -73,6 +73,8 @@ class FakeElement extends EventTarget {
     return this.children[0] || null;
   }
 
+  focus(){}
+
   setAttribute(name, val){
     this.attributes.set(name, String(val));
     if(name.startsWith('data-')){
@@ -250,6 +252,195 @@ function buildStageDOM(doc){
 
   return { stage, video, titleBar };
 }
+
+function playbackFixture(t, {readiness = ()=>Response.json({ready: true}), start = ()=>new Response('started')} = {}){
+  const intervals = new Map();
+  const requests = [];
+  const pages = [];
+  let timerID = 0;
+  t.mock.method(globalThis, 'setTimeout', ()=>++timerID);
+  t.mock.method(globalThis, 'clearTimeout', ()=>{});
+  t.mock.method(globalThis, 'setInterval', callback=>{
+    intervals.set(++timerID, callback);
+    return timerID;
+  });
+  t.mock.method(globalThis, 'clearInterval', id=>intervals.delete(id));
+  const previousDocument = globalThis.document;
+  const previousStorage = globalThis.localStorage;
+  globalThis.localStorage = window.localStorage;
+  const doc = {
+    createElement: tag=>new FakeElement(tag),
+    createDocumentFragment: ()=>({isFragment: true, children: [], appendChild(child){ this.children.push(child); }}),
+    getElementById: ()=>null,
+  };
+  globalThis.document = doc;
+  t.after(()=>{
+    for(const page of pages) page.manager.stopAllPlayback(true);
+    globalThis.document = previousDocument;
+    if(previousStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = previousStorage;
+  });
+  t.mock.method(globalThis, 'fetch', async (url, options = {})=>{
+    requests.push({url, options});
+    if(url === '/api/channels') return Response.json([{name: 'alpha'}, {name: 'bravo'}]);
+    if(url === '/api/status') return Response.json([]);
+    if(url === '/api/playing') return Response.json({});
+    if(url === '/api/streams') return Response.json(['alpha', 'bravo']);
+    if(url.startsWith('/api/stream-ready/')) return readiness(url.split('/').at(-1).split('?')[0], options);
+    if(url.startsWith('/api/stream/')) return start(url.split('/').at(-1), options);
+    if(url.startsWith('/api/playing/') || url.startsWith('/api/stop/')) return new Response('ok');
+    throw new Error('Unexpected request: ' + url);
+  });
+  async function createPage(){
+    const primary = buildStageDOM(doc);
+    const list = new FakeElement();
+    const grid = new FakeElement();
+    grid.ownerDocument = doc;
+    grid.appendChild(primary.stage);
+    const createPlayer = video=>({
+      video,
+      play(url){ video.src = url; video.paused = false; },
+      stop(){ video.src = ''; video.paused = true; },
+    });
+    const manager = initManager({
+      listEl: list,
+      removeSelect: new FakeElement(), addBtn: new FakeElement(), newNameEl: new FakeElement(),
+      removeBtn: new FakeElement(), managerMsgEl: new FakeElement(),
+      player: createPlayer(primary.video), stats: {update(){}, start(){}, stop(){}, clear(){}},
+      playerTitleEl: primary.titleBar, playerStageEl: primary.stage, playerGridEl: grid,
+      createPlayer, setupPlayerControls: ()=>({destroy(){}}),
+    });
+    const page = {manager, primary, row: channel=>list.children.find(row=>row.dataset.channel === channel)};
+    pages.push(page);
+    await manager.fetchChannels();
+    return page;
+  }
+  return {createPage, intervals, requests};
+}
+
+const settlePlayback = ()=>new Promise(resolve=>setImmediate(resolve));
+
+test('late Play and Start readiness responses cannot replace a newer selection', async (t)=>{
+  for(const action of ['play', 'start']){
+    await t.test(action, async (t)=>{
+      let resolveAlpha;
+      let alphaSignal;
+      const waiting = new Promise(resolve=>{ resolveAlpha = resolve; });
+      const fixture = playbackFixture(t, {readiness(channel, {signal}){
+        if(channel === 'alpha'){ alphaSignal = signal; return waiting; }
+        return Response.json({ready: true});
+      }});
+      const page = await fixture.createPage();
+      const alphaPlay = page.row('alpha').children.at(-1);
+      if(action === 'start'){
+        const startButton = page.row('alpha').children.at(-2);
+        startButton.textContent = 'Start';
+        startButton.onclick();
+      } else alphaPlay.onclick();
+      await settlePlayback();
+      page.row('bravo').children.at(-1).onclick();
+      await settlePlayback();
+      assert.equal(alphaSignal.aborted, true);
+      assert.equal(alphaPlay.textContent, 'Play');
+      assert.equal(alphaPlay.disabled, false);
+      resolveAlpha(Response.json({ready: true}));
+      await settlePlayback();
+      assert.deepEqual(page.manager.getActiveStreams().map(stream=>stream.channel), ['bravo']);
+    });
+  }
+});
+
+test('pending backend startup cannot replace a later stream selection', async (t)=>{
+  let resolveStart;
+  const fixture = playbackFixture(t, {start: ()=>new Promise(resolve=>{ resolveStart = resolve; })});
+  const page = await fixture.createPage();
+  const startButton = page.row('alpha').children.at(-2);
+  startButton.textContent = 'Start';
+  startButton.onclick();
+  await settlePlayback();
+  page.row('bravo').children.at(-1).onclick();
+  await settlePlayback();
+  resolveStart(new Response('started'));
+  await settlePlayback();
+  assert.deepEqual(page.manager.getActiveStreams().map(stream=>stream.channel), ['bravo']);
+  assert.ok(!fixture.requests.some(request=>request.url.startsWith('/api/stream-ready/alpha')));
+});
+
+test('stopping, direct playback, and mode changes cancel pending playback', async (t)=>{
+  for(const action of ['stop', 'stop-all', 'direct', 'mode-change']){
+    await t.test(action, async (t)=>{
+      let resolveReady;
+      let readinessSignal;
+      const fixture = playbackFixture(t, {readiness(_channel, {signal}){
+        readinessSignal = signal;
+        return new Promise(resolve=>{ resolveReady = resolve; });
+      }});
+      const page = await fixture.createPage();
+      page.row('alpha').children.at(-1).onclick();
+      await settlePlayback();
+      if(action === 'stop') page.row('alpha').children.at(-2).onclick();
+      if(action === 'stop-all') page.manager.stopAllPlayback(true);
+      if(action === 'direct') page.manager.playDirectChannel('bravo');
+      if(action === 'mode-change') page.manager.setMultiMode(true);
+      await settlePlayback();
+      assert.equal(readinessSignal.aborted, true);
+      resolveReady(Response.json({ready: true}));
+      await settlePlayback();
+      assert.deepEqual(page.manager.getActiveStreams().map(stream=>stream.channel), action === 'direct' ? ['bravo'] : []);
+    });
+  }
+});
+
+test('Multi mode retains independent pending selections', async (t)=>{
+  const resolvers = new Map();
+  const fixture = playbackFixture(t, {readiness(channel){
+    return new Promise(resolve=>resolvers.set(channel, resolve));
+  }});
+  const page = await fixture.createPage();
+  // Dynamic tiles use the same stage fixture as the existing multistream tests.
+  const originalCreate = document.createElement;
+  document.createElement = tag=>tag === 'div' ? buildStageDOM(document).stage : originalCreate(tag);
+  page.manager.setMultiMode(true);
+  page.row('alpha').children.at(-1).onclick();
+  page.row('bravo').children.at(-1).onclick();
+  resolvers.get('bravo')(Response.json({ready: true}));
+  await settlePlayback();
+  resolvers.get('alpha')(Response.json({ready: true}));
+  await settlePlayback();
+  assert.deepEqual(page.manager.getActiveStreams().map(stream=>stream.channel), ['bravo', 'alpha']);
+});
+
+test('playback IDs are distinct per page and stable across heartbeats without storage', async (t)=>{
+  for(const unavailable of [false, true]){
+    await t.test(unavailable ? 'storage unavailable' : 'shared storage', async (t)=>{
+      const fixture = playbackFixture(t);
+      if(unavailable){
+        t.mock.method(window.localStorage, 'getItem', ()=>{ throw new Error('storage unavailable'); });
+        t.mock.method(window.localStorage, 'setItem', ()=>{ throw new Error('storage unavailable'); });
+      }
+      const first = await fixture.createPage();
+      const second = await fixture.createPage();
+      for(const page of [first, second]){
+        page.row('alpha').children.at(-1).onclick();
+        await settlePlayback();
+        page.primary.video.dispatchEvent(new Event('playing'));
+      }
+      for(const heartbeat of fixture.intervals.values()) heartbeat();
+      await settlePlayback();
+      const pings = fixture.requests.filter(request=>request.url === '/api/playing/alpha')
+        .map(request=>JSON.parse(request.options.body));
+      assert.deepEqual(pings.map(ping=>ping.action), ['start', 'start', 'ping', 'ping']);
+      assert.notEqual(pings[0].sessionId, pings[1].sessionId);
+      assert.equal(pings[0].sessionId, pings[2].sessionId);
+      assert.equal(pings[1].sessionId, pings[3].sessionId);
+      first.manager.stopAllPlayback(true);
+      await settlePlayback();
+      const stop = fixture.requests.filter(request=>request.url === '/api/playing/alpha').at(-1);
+      assert.deepEqual(JSON.parse(stop.options.body), {action: 'stop', sessionId: pings[0].sessionId});
+      assert.deepEqual(second.manager.getActiveStreams().map(stream=>stream.channel), ['alpha']);
+    });
+  }
+});
 
 test('aggregateStreamStats returns Idle when no streams are active', ()=>{
   const res = aggregateStreamStats([]);

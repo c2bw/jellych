@@ -99,7 +99,7 @@ func (d *VODDownloader) cleanupExpired(now time.Time) (int, error) {
 		}
 
 		path := filepath.Join(dir, name)
-		removed, err := d.removeExpired(dir, id, path)
+		removed, err := d.removeExpired(dir, id, path, cutoff)
 		if err != nil {
 			cleanupErrs = append(cleanupErrs, fmt.Errorf("failed to delete %q: %w", name, err))
 			continue
@@ -212,7 +212,7 @@ func (d *VODDownloader) removeInterruptedPartial(dir, path string) (bool, error)
 	return true, nil
 }
 
-func (d *VODDownloader) removeExpired(dir, id, path string) (bool, error) {
+func (d *VODDownloader) removeExpired(dir, id, path string, cutoff time.Time) (bool, error) {
 	d.Lock()
 	defer d.Unlock()
 
@@ -223,6 +223,18 @@ func (d *VODDownloader) removeExpired(dir, id, path string) (bool, error) {
 		if _, ok := d.active[id]; ok {
 			return false, nil
 		}
+	}
+	// A download or conversion may have replaced the candidate since the
+	// directory scan. Check the current file while holding the lifecycle lock.
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() || (info.Size() > 0 && !info.ModTime().Before(cutoff)) {
+		return false, nil
 	}
 	if err := os.Remove(vodConversionBackupPath(dir, id)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, err

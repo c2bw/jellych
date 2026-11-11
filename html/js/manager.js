@@ -103,6 +103,8 @@ export function initManager({
   const channelEls = new Map();
   const activeTiles = new Map();
   const playHeartbeats = new Map();
+  const pendingPlayback = new Map();
+  let playbackSessionId = '';
   let tileOrder = [];
   let primaryStageOwner = null;
   let focusedChannel = null;
@@ -122,7 +124,7 @@ export function initManager({
 
   function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
-  async function waitForSegments(url, getMinSegments){
+  async function waitForSegments(url, getMinSegments, signal){
     const start = Date.now();
     let channel = '';
     try{
@@ -133,19 +135,46 @@ export function initManager({
 
     if(!channel) return false;
 
-    while(Date.now() - start < MAX_WAIT_MS){
+    while(!signal.aborted && Date.now() - start < MAX_WAIT_MS){
       const minSegments = typeof getMinSegments === 'function' ? getMinSegments() : getMinSegments;
       const readyUrl = '/api/stream-ready/' + encodeURIComponent(channel) + '?minSegments=' + encodeURIComponent(String(minSegments));
       try{
-        const check = await fetch(readyUrl, { cache: 'no-store' });
+        const check = await fetch(readyUrl, { cache: 'no-store', signal });
         if(check.ok){
           const payload = await check.json();
-          if(payload && payload.ready === true) return true;
+          if(!signal.aborted && payload && payload.ready === true) return true;
         }
       }catch(e){ /* ignore */ }
+      if(signal.aborted) return false;
       await sleep(POLL_MS);
     }
     return false;
+  }
+
+  function cancelPendingPlayback(channel){
+    const request = pendingPlayback.get(channel);
+    if(!request) return;
+    pendingPlayback.delete(channel);
+    request.controller.abort();
+    setPlayButtonState(request.playButton, activeTiles.has(channel));
+    request.playButton.disabled = request.playDisabled;
+    if(request.startButton) request.startButton.disabled = false;
+  }
+
+  function cancelAllPendingPlayback(){
+    for(const channel of pendingPlayback.keys()) cancelPendingPlayback(channel);
+  }
+
+  function requestPlayback(channel, playButton, startButton = null){
+    if(!multiMode) cancelAllPendingPlayback();
+    else cancelPendingPlayback(channel);
+    const request = {controller: new AbortController(), playButton, startButton, playDisabled: playButton.disabled};
+    pendingPlayback.set(channel, request);
+    return request;
+  }
+
+  function finishPlaybackRequest(channel, request){
+    if(pendingPlayback.get(channel) === request) pendingPlayback.delete(channel);
   }
 
   function minSegmentsToPlay(){
@@ -541,6 +570,7 @@ export function initManager({
   }
 
   function stopChannelPlayback(channelName, clearStatsIfEmpty = false){
+    cancelPendingPlayback(channelName);
     const tile = activeTiles.get(channelName);
     if(!tile) return;
     tile.suppressPause = true;
@@ -590,6 +620,7 @@ export function initManager({
   }
 
   function stopAllPlayback(clearStats){
+    cancelAllPendingPlayback();
     const channels = Array.from(activeTiles.keys());
     if(!channels.length){
       stats.stop();
@@ -634,6 +665,8 @@ export function initManager({
   function playDirectChannel(channelName){
     const channelKey = normalizeChannelKey(channelName);
     if(!channelKey) return false;
+    if(!multiMode) cancelAllPendingPlayback();
+    else cancelPendingPlayback(channelKey);
     const url = '/api/live-proxy/' + encodeURIComponent(channelKey) + '/index.m3u8';
     beginPlayback(channelKey, url, null, true);
     return true;
@@ -651,6 +684,7 @@ export function initManager({
   function setMultiMode(enabled){
     const next = !!enabled;
     if(multiMode === next) return;
+    cancelAllPendingPlayback();
     multiMode = next;
     if(resolvedMultiToggle){
       resolvedMultiToggle.setAttribute('aria-pressed', multiMode ? 'true' : 'false');
@@ -709,15 +743,11 @@ export function initManager({
   }
 
   function getSessionId(){
-    const key = 'jellych_session_id';
-    let id = '';
-    try{ id = localStorage.getItem(key) || ''; }catch(e){ /* ignore */ }
-    if(!id){
-      if(window.crypto && crypto.randomUUID){ id = crypto.randomUUID(); }
-      else { id = Math.random().toString(36).slice(2) + Date.now().toString(36); }
-      try{ localStorage.setItem(key, id); }catch(e){ /* ignore */ }
+    if(!playbackSessionId){
+      if(window.crypto && window.crypto.randomUUID){ playbackSessionId = window.crypto.randomUUID(); }
+      else { playbackSessionId = Math.random().toString(36).slice(2) + Date.now().toString(36); }
     }
-    return id;
+    return playbackSessionId;
   }
 
   function sendPlayPing(channel, action){
@@ -973,15 +1003,19 @@ export function initManager({
 
   async function startChannel(channelName, startBtn, playPauseBtn){
     const url = '/live/' + encodeURIComponent(channelName) + '/index.m3u8';
+    const request = requestPlayback(channelName, playPauseBtn, startBtn);
     setControlsDisabled(startBtn, playPauseBtn, true);
     try{
       const res = await apiFetch('/api/stream/' + encodeURIComponent(channelName), { method: 'POST' });
+      if(request.controller.signal.aborted) return;
       if(res.ok || res.status === 409){
         setStartState(channelName, true);
         setControlsDisabled(startBtn, null, false);
         playPauseBtn.textContent = 'Buffering...';
+        request.playDisabled = false;
 
-        const ready = await waitForSegments(url, minSegmentsToPlay);
+        const ready = await waitForSegments(url, minSegmentsToPlay, request.controller.signal);
+        if(request.controller.signal.aborted) return;
         playPauseBtn.disabled = false;
         if(ready){
           beginPlayback(channelName, url, playPauseBtn);
@@ -994,6 +1028,7 @@ export function initManager({
       const text = await res.text();
       throw new Error(text || res.statusText);
     }catch(err){
+      if(request.controller.signal.aborted) return;
       setControlsDisabled(startBtn, playPauseBtn, false);
       console.error('start error', err);
       if(String(err).includes('already started')){
@@ -1002,23 +1037,32 @@ export function initManager({
         return;
       }
       alert('Failed to start stream: ' + err);
+    }finally{
+      finishPlaybackRequest(channelName, request);
     }
   }
 
   async function playWhenReady(channelName, url, playPauseBtn){
+    const request = requestPlayback(channelName, playPauseBtn);
     playPauseBtn.disabled = true;
     playPauseBtn.textContent = 'Buffering...';
-    const ready = await waitForSegments(url, minSegmentsToPlay);
-    playPauseBtn.disabled = false;
-    if(!ready){
-      playPauseBtn.textContent = 'Play';
-      showManagerMsg('Not enough segments yet. Try again in a moment.', false);
-      return;
+    try{
+      const ready = await waitForSegments(url, minSegmentsToPlay, request.controller.signal);
+      if(request.controller.signal.aborted) return;
+      playPauseBtn.disabled = false;
+      if(!ready){
+        playPauseBtn.textContent = 'Play';
+        showManagerMsg('Not enough segments yet. Try again in a moment.', false);
+        return;
+      }
+      beginPlayback(channelName, url, playPauseBtn);
+    }finally{
+      finishPlaybackRequest(channelName, request);
     }
-    beginPlayback(channelName, url, playPauseBtn);
   }
 
   async function stopChannel(channelName, startBtn, playPauseBtn){
+    cancelPendingPlayback(channelName);
     setControlsDisabled(startBtn, null, true);
     try{
       const res = await apiFetch('/api/stop/' + encodeURIComponent(channelName), { method: 'POST' });
