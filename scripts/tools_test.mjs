@@ -28,3 +28,10 @@ test('parseTwitchChannelInput rejects VODs, clips, and invalid inputs', ()=>{
   assert.equal(parseTwitchChannelInput('invalid channel name'), '');
   assert.equal(parseTwitchChannelInput('videos'), '');
 });
+
+test('parseTwitchChannelInput rejects malformed URL escapes without throwing', ()=>{
+  for(const path of ['%', '%GG', '%E0%A4%A', '%FF']){
+    assert.equal(parseTwitchChannelInput('https://twitch.tv/' + path), '');
+  }
+  assert.equal(parseTwitchChannelInput('https://twitch.tv/%43aedrel'), 'caedrel');
+});

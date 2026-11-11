@@ -17,6 +17,7 @@ const downloadPresetCommandEl = document.getElementById('downloadPresetCommand')
 let currentVODs = [];
 let currentPage = 1;
 let progressPollTimer = 0;
+let vodLoadFailed = false;
 let resolvedVODPresetCommands = null;
 const vodsPerPage = 15;
 
@@ -397,7 +398,9 @@ async function loadVODs(){
     currentVODs = await fetchJSON('/api/vods');
     updateChannelFilter();
     applyVODFilter();
+    vodLoadFailed = false;
   }catch(err){
+    vodLoadFailed = true;
     listEl.textContent = 'Could not load VODs: ' + err.message;
   }finally{
     scheduleProgressPolling();
@@ -409,7 +412,7 @@ function scheduleProgressPolling(){
     clearTimeout(progressPollTimer);
     progressPollTimer = 0;
   }
-  if(!currentVODs.some(vodDownloadActive)) return;
+  if(!vodLoadFailed && !currentVODs.some(vodDownloadActive)) return;
   progressPollTimer = window.setTimeout(async ()=>{
     progressPollTimer = 0;
     await loadVODs();

@@ -34,7 +34,12 @@ export function parseTwitchChannelInput(raw){
 
     const segments = parsed.pathname.split('/').filter(Boolean);
     if(segments.length !== 1) return '';
-    const candidate = decodeURIComponent(segments[0]).trim().replace(/^[@#]/, '').toLowerCase();
+    let candidate;
+    try{
+      candidate = decodeURIComponent(segments[0]).trim().replace(/^[@#]/, '').toLowerCase();
+    }catch{
+      return '';
+    }
     if(RESERVED_TWITCH_PATHS.has(candidate)) return '';
     return CHANNEL_NAME_PATTERN.test(candidate) ? candidate : '';
   }

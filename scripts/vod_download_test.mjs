@@ -19,6 +19,7 @@ async function loadVODPage(t, respond){
   function element(){
     return {
       value: 'all', children: [], listeners: {}, textContent: '',
+      set innerHTML(value){ this.textContent = value; this.children = []; },
       classList: {add(){}, remove(){}, toggle(){}},
       appendChild(child){ this.children.push(child); },
       replaceChildren(...children){ this.children = children; },
@@ -61,6 +62,28 @@ async function loadVODPage(t, respond){
   await new Promise(resolve=>setImmediate(resolve));
   return {elements, timers, requests};
 }
+
+test('initial VOD load retries network and HTTP failures until recovery', async t=>{
+  let attempts = 0;
+  const page = await loadVODPage(t, url=>{
+    if(url !== '/api/vods') return Response.json({});
+    attempts++;
+    if(attempts === 1) throw new Error('temporary network failure');
+    if(attempts === 2) return new Response('temporary server failure', {status: 503});
+    return Response.json([]);
+  });
+  assert.match(page.elements.get('vodList').textContent, /temporary network failure/);
+  for(const expectedAttempt of [2, 3]){
+    assert.equal(page.timers.size, 1, 'failed loads must leave exactly one retry scheduled');
+    const [id, callback] = page.timers.entries().next().value;
+    page.timers.delete(id);
+    await callback();
+    assert.equal(attempts, expectedAttempt);
+    if(expectedAttempt === 2) assert.match(page.elements.get('vodList').textContent, /temporary server failure/);
+  }
+  assert.equal(page.timers.size, 0, 'successful loads without active downloads should stop polling');
+  assert.doesNotMatch(page.elements.get('vodList').textContent, /Could not load/);
+});
 
 test('VOD progress polling recovers from an outage and stops when downloads finish', async (t)=>{
   let polls = 0;
