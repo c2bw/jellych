@@ -580,9 +580,10 @@ func (a *API) handleJellyfinWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var payload struct {
-		Action    string `json:"action"`
-		Channel   string `json:"channel"`
-		SessionID string `json:"sessionId"`
+		Action       string `json:"action"`
+		Channel      string `json:"channel"`
+		SessionID    string `json:"sessionId"`
+		PlaybackMode string `json:"playbackMode"`
 	}
 	if !decodeJSONBody(w, r, &payload) {
 		slog.Warn("jellyfin webhook: failed to parse JSON")
@@ -606,6 +607,10 @@ func (a *API) handleJellyfinWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if payload.PlaybackMode != "" && payload.PlaybackMode != "remux" && payload.PlaybackMode != "proxy" {
+		http.Error(w, "invalid playbackMode", http.StatusBadRequest)
+		return
+	}
 	act := strings.ToLower(strings.TrimSpace(payload.Action))
 	switch act {
 	case "stop", "stopped", "end":
@@ -613,11 +618,13 @@ func (a *API) handleJellyfinWebhook(w http.ResponseWriter, r *http.Request) {
 		a.playback.StopPlaying(channel, payload.SessionID)
 	case "start", "started", "play", "playing":
 		slog.Info("jellyfin webhook: playback started", "channel", channel, "sessionId", payload.SessionID)
-		// Start stream if not already running
-		if err := a.streams.Start(channel); err != nil && !errors.Is(err, stream.ErrAlreadyStarted) {
-			slog.Error("jellyfin webhook: failed to start stream", "channel", channel, "error", err)
-			writeErrorf(w, http.StatusInternalServerError, "failed to start stream: %v", err)
-			return
+		// Proxy playback reads Twitch directly and does not need a local remux.
+		if payload.PlaybackMode != "proxy" {
+			if err := a.streams.Start(channel); err != nil && !errors.Is(err, stream.ErrAlreadyStarted) {
+				slog.Error("jellyfin webhook: failed to start stream", "channel", channel, "error", err)
+				writeErrorf(w, http.StatusInternalServerError, "failed to start stream: %v", err)
+				return
+			}
 		}
 		// Mark this session as originating from Jellyfin so it isn't
 		// auto-removed when web/manager heartbeats are missing.
@@ -686,10 +693,16 @@ func (a *API) handleStreamReady(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetM3U returns a generated M3U playlist containing configured channels
-// that are currently online. Entries point to the HLS playlists served under
-// /live/<channel>/index.m3u8.
+// that are currently online. Local remux playback is the default;
+// playback=proxy selects the upstream HLS proxy for Jellyfin trials.
 func (a *API) handleGetM3U(w http.ResponseWriter, r *http.Request) {
-	playlist := a.state.BuildM3U(a.state.GetChannels(), a.state.GetChannelStatus(), a.state.GetChannelLogos())
+	mode := r.URL.Query().Get("playback")
+	if mode != "" && mode != "remux" && mode != "proxy" {
+		http.Error(w, "playback must be remux or proxy", http.StatusBadRequest)
+		return
+	}
+	playlist := a.state.buildM3U(a.state.GetChannels(), a.state.GetChannelStatus(), a.state.GetChannelLogos(), mode == "proxy")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(playlist))
 }

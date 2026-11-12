@@ -1,6 +1,9 @@
 package stream
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 type liveTestFixture struct {
 	store      *LiveStore
@@ -38,7 +41,10 @@ func newLiveTestFixture() *liveTestFixture {
 
 func (f *liveTestFixture) installWriter(channel, generation string) {
 	f.registry.mu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
 	f.managers[channel] = &manager{
+		ctx:        ctx,
+		cancel:     cancel,
 		state:      streamRunning,
 		generation: generation,
 		done:       make(chan struct{}),

@@ -102,3 +102,13 @@ For example, a deployment using `SERVER_URL=https://example.com` must register `
 ### Log in to Twitch
 
 Once the redirect URL is registered, you can log in to Twitch in the Web-UI by clicking **Log in** in the chat panel. The server will request the `chat:read` and `chat:edit` scopes to allow sending messages as your Twitch account.
+
+### Faster live playback (experimental)
+
+The default tuner URL, `/api/twitch.m3u`, uses Jellych's local FFmpeg remux.
+To try playback without that extra remux, update both Jellych and the Jellyfin
+plugin, then change the M3U tuner URL to:
+
+```text
+http://your-jellych-server:8080/api/twitch.m3u?playback=proxy
+```
