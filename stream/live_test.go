@@ -16,6 +16,43 @@ import (
 
 const testLiveGeneration = "test-generation"
 
+func TestLiveStoreReleasesServedMarkersWithSegments(t *testing.T) {
+	for _, tracked := range []bool{false, true} {
+		for _, grace := range []time.Duration{0, time.Second} {
+			t.Run(fmt.Sprintf("tracked=%v/grace=%v", tracked, grace), func(t *testing.T) {
+				var mu sync.RWMutex
+				items := make(map[string]map[string][]byte)
+				store := newLiveStore(&mu, &items, tracked)
+				now := time.Now()
+				store.now = func() time.Time { return now }
+				store.deleteGrace = grace
+				store.StoreObject("channel", "old.ts", []byte("old"))
+				store.SetWindowUnlockSegment("channel", "old.ts")
+				store.NoteSegmentServed("channel", "old.ts")
+				if !store.IsSegmentServed("channel", "old.ts") || !store.IsWindowUnlocked("channel") {
+					t.Fatal("serving the startup segment should unlock the window")
+				}
+				store.DeleteObject("channel", "old.ts")
+				if grace > 0 && !store.IsSegmentServed("channel", "old.ts") {
+					t.Fatal("marker should remain while the segment is in its grace period")
+				}
+				now = now.Add(grace)
+				store.StoreObject("channel", "next.ts", []byte("next"))
+				if store.GetObject("channel", "old.ts") != nil || store.IsSegmentServed("channel", "old.ts") {
+					t.Fatal("purged segments must release their served markers")
+				}
+				store.NoteSegmentServed("channel", "old.ts")
+				if len(store.servedSegments) != 0 {
+					t.Fatal("a delayed read notification must not recreate a purged marker")
+				}
+				if !store.IsWindowUnlocked("channel") {
+					t.Fatal("purging an old segment must not relock the startup window")
+				}
+			})
+		}
+	}
+}
+
 func TestLiveStoreEnforcesCapacity(t *testing.T) {
 	store := NewIsolatedLiveStore()
 	store.maxChannelBytes = 5
@@ -412,77 +449,56 @@ func TestLiveHandlerReturnsServiceUnavailableForActiveChannelWhenPlaylistMissing
 	}
 }
 
-func TestLiveHandlerWaitsForMinStartupSegments(t *testing.T) {
+func TestLiveHandlerReturnsAvailablePlaylistImmediately(t *testing.T) {
 	fixture := newLiveTestFixture()
-	fixture.store.ResetChannel("testchannel")
 	fixture.installWriter("testchannel", testLiveGeneration)
 	fixture.service.minStartupSegments = 3
-
-	origReady := livePlaylistReadyTimeout
-	origPoll := livePlaylistWaitPoll
-	livePlaylistReadyTimeout = time.Second
-	livePlaylistWaitPoll = 5 * time.Millisecond
-	t.Cleanup(func() {
-		livePlaylistReadyTimeout = origReady
-		livePlaylistWaitPoll = origPoll
-	})
-
-	var activityCount atomic.Int32
-	fixture.service.onActivity = func(channel string) {
-		if channel == "testchannel" {
-			activityCount.Add(1)
-		}
-	}
-
-	fixture.store.StoreObject("testchannel", "index.m3u8", []byte("#EXTM3U\n#EXTINF:1,\nseg0.ts\n"))
-	threeSegPlaylist := "#EXTM3U\n#EXTINF:1,\nseg0.ts\n#EXTINF:1,\nseg1.ts\n#EXTINF:1,\nseg2.ts\n"
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		fixture.store.StoreObject("testchannel", "index.m3u8", []byte(threeSegPlaylist))
-	}()
-
-	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
+	playlist := "#EXTM3U\n#EXTINF:2,\nseg0.ts\n"
+	fixture.store.StoreObject("testchannel", "index.m3u8", []byte(playlist))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
 	rec := httptest.NewRecorder()
-	fixture.service.LiveHandler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
-	}
-	if got := rec.Body.String(); got != threeSegPlaylist {
-		t.Fatalf("expected 3-segment playlist %q, got %q", threeSegPlaylist, got)
-	}
-	if activityCount.Load() == 0 {
-		t.Fatal("expected live handler to report channel activity")
+	fixture.service.LiveHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil).WithContext(ctx))
+	if ctx.Err() != nil || rec.Code != http.StatusOK || rec.Body.String() != playlist {
+		t.Fatalf("available playlist was delayed or changed: context=%v status=%d body=%q", ctx.Err(), rec.Code, rec.Body.String())
 	}
 }
 
-func TestLiveHandlerFallsBackToAvailablePlaylistWhenMinStartupSegmentsTimesOut(t *testing.T) {
+func TestLiveHandlerStopsWaitingWhenProducerExits(t *testing.T) {
 	fixture := newLiveTestFixture()
-	fixture.store.ResetChannel("testchannel")
 	fixture.installWriter("testchannel", testLiveGeneration)
-	fixture.service.minStartupSegments = 3
-
-	origReady := livePlaylistReadyTimeout
-	origPoll := livePlaylistWaitPoll
-	livePlaylistReadyTimeout = 20 * time.Millisecond
-	livePlaylistWaitPoll = 5 * time.Millisecond
-	t.Cleanup(func() {
-		livePlaylistReadyTimeout = origReady
-		livePlaylistWaitPoll = origPoll
-	})
-
-	oneSegPlaylist := "#EXTM3U\n#EXTINF:1,\nseg0.ts\n"
-	fixture.store.StoreObject("testchannel", "index.m3u8", []byte(oneSegPlaylist))
-
-	req := httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil)
-	rec := httptest.NewRecorder()
-	fixture.service.LiveHandler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := make(chan struct{})
+	fixture.service.onActivity = func(string) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
 	}
-	if got := rec.Body.String(); got != oneSegPlaylist {
-		t.Fatalf("expected fallback playlist %q, got %q", oneSegPlaylist, got)
+	go func() {
+		<-started
+		fixture.registry.mu.Lock()
+		m := fixture.managers["testchannel"]
+		fixture.registry.mu.Unlock()
+		fixture.registry.finishManager("testchannel", m)
+	}()
+	rec := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil).WithContext(ctx))
+	if ctx.Err() != nil || rec.Code != http.StatusBadGateway {
+		t.Fatalf("producer exit did not fail promptly: context=%v status=%d body=%q", ctx.Err(), rec.Code, rec.Body.String())
+	}
+}
+
+func TestLiveHandlerReportsStartupFailure(t *testing.T) {
+	fixture := newLiveTestFixture()
+	fixture.service.canAutoStart = func(string) bool { return true }
+	fixture.service.start = func(string) error { return errors.New("temporary resolver failure") }
+	rec := httptest.NewRecorder()
+	fixture.service.LiveHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/live/testchannel/index.m3u8", nil))
+	if rec.Code != http.StatusBadGateway || rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("startup failure: status=%d headers=%v", rec.Code, rec.Header())
 	}
 }
 

@@ -558,7 +558,7 @@ func TestRemoveExpiredVODDownloadRechecksActiveState(t *testing.T) {
 	download := &vodDownload{}
 	downloader.active = map[string]*vodDownload{"active": download}
 
-	removed, err := downloader.removeExpired(dir, "active", path)
+	removed, err := downloader.removeExpired(dir, "active", path, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("expected active download recheck to succeed, got %v", err)
 	}
@@ -566,6 +566,42 @@ func TestRemoveExpiredVODDownloadRechecksActiveState(t *testing.T) {
 		t.Fatal("expected active download to be preserved")
 	}
 	assertVODDownloadTestFileExists(t, path, true)
+}
+
+func TestRemoveExpiredVODDownloadPreservesCompletedConversion(t *testing.T) {
+	dir := t.TempDir()
+	downloader := NewVODDownloader()
+	downloader.SetDir(dir)
+	now := time.Now()
+	cutoff := now.Add(-downloader.retention)
+	writeVODDownloadTestFile(t, dir, "123.mkv", cutoff.Add(-time.Hour))
+	path := vodDownloadPath(dir, "123")
+	candidate, err := os.Stat(path)
+	if err != nil || !candidate.ModTime().Before(cutoff) {
+		t.Fatalf("expected an expired cleanup candidate, got %v", err)
+	}
+
+	// Finish a conversion after the directory scan but before its removal.
+	if err := os.MkdirAll(vodPartialDir(dir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	partial := filepath.Join(vodPartialDir(dir), "converted.part")
+	if err := os.WriteFile(partial, []byte("fresh conversion"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	download := newVODDownload()
+	download.progress.Preset = "h264"
+	downloader.active = map[string]*vodDownload{"123": download}
+	downloader.finishConversion("123", download, partial, path, now, nil)
+
+	removed, err := downloader.removeExpired(dir, "123", path, cutoff)
+	if err != nil || removed {
+		t.Fatalf("fresh conversion removed=%v, error=%v", removed, err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil || string(contents) != "fresh conversion" {
+		t.Fatalf("converted file = %q, error=%v", contents, err)
+	}
 }
 
 func TestCleanupExpiredVODDownloadsToleratesMissingDirectory(t *testing.T) {
@@ -1116,5 +1152,51 @@ func TestResolveVODDownloadURLTimesOut(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("expected resolver timeout promptly, took %v", elapsed)
+	}
+}
+
+func TestConvertedVODRefreshesFullMetadata(t *testing.T) {
+	dir := t.TempDir()
+	downloader := NewVODDownloader()
+	downloader.SetDir(dir)
+	if err := os.MkdirAll(vodPartialDir(dir), 0755); err != nil {
+		t.Fatal(err)
+	}
+	output := vodDownloadPath(dir, "123")
+	partial := filepath.Join(vodPartialDir(dir), "123-conversion.part")
+	for path, contents := range map[string]string{output: "original media", partial: "converted media"} {
+		if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	originalProbe := probeVODDownloadMetadata
+	t.Cleanup(func() { probeVODDownloadMetadata = originalProbe })
+	calls := 0
+	probeVODDownloadMetadata = func(path string) (vodDownloadMetadata, error) {
+		calls++
+		if path != output {
+			t.Fatalf("probe path = %q; want %q", path, output)
+		}
+		return vodDownloadMetadata{Preset: VODDownloadPresetHEVC, OriginalSize: 14,
+			DurationSeconds: 10, VideoCodec: "hevc", VideoWidth: 1920, VideoHeight: 1080}, nil
+	}
+	download := newVODDownload()
+	download.progress.Preset = "hevc"
+	download.progress.OriginalSize = 14
+	downloader.active = map[string]*vodDownload{"123": download}
+	downloader.finishConversion("123", download, partial, output, time.Now(), nil)
+	for i := 0; i < 2; i++ {
+		progress, err := downloader.Progress("123")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !progress.Downloaded || progress.Preset != "hevc" || progress.OriginalSize != 14 ||
+			progress.VideoCodec != "hevc" || progress.VideoWidth != 1920 || progress.VideoHeight != 1080 ||
+			progress.DurationSeconds != 10 || progress.TotalBitrate != 12 {
+			t.Fatalf("incomplete converted metadata: %+v", progress)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("metadata probes = %d; want 1", calls)
 	}
 }

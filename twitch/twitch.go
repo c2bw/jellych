@@ -3,6 +3,7 @@ package twitch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/c2bw/jellych/server/api"
@@ -21,6 +22,9 @@ func StartContext(parent context.Context, c *client.TwitchClient, configPath str
 	}
 	if downloads == nil {
 		return nil, errors.New("vod downloader is required")
+	}
+	if err := downloads.RecoverInterruptedDownloads(); err != nil {
+		return nil, fmt.Errorf("failed to recover interrupted VOD downloads: %w", err)
 	}
 	m, err := manager.StartWithState(configPath, state)
 	if err != nil {

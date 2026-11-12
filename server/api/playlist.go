@@ -24,6 +24,10 @@ func (s *APIState) playlistBaseURL() string {
 // BuildM3U builds a live-channel M3U playlist containing configured channels
 // that are currently online.
 func (s *APIState) BuildM3U(channels []string, statuses []Status, logos map[string]string) string {
+	return s.buildM3U(channels, statuses, logos, false)
+}
+
+func (s *APIState) buildM3U(channels []string, statuses []Status, logos map[string]string, proxy bool) string {
 	statusByName := make(map[string]Status, len(statuses))
 	for _, s := range statuses {
 		statusByName[strings.ToLower(s.Name)] = s
@@ -46,7 +50,11 @@ func (s *APIState) BuildM3U(channels []string, statuses []Status, logos map[stri
 			meta += fmt.Sprintf(" tvg-logo=\"%s\"", m3uAttr(logo))
 		}
 		b.WriteString(fmt.Sprintf("#EXTINF:-1 %s,%s\n", meta, ch))
-		b.WriteString(s.playlistChannelURL(ch) + "\n")
+		playbackURL := s.playlistChannelURL(ch)
+		if proxy {
+			playbackURL = s.playlistBaseURL() + "/api/live-proxy/" + url.PathEscape(ch) + "/index.m3u8"
+		}
+		b.WriteString(playbackURL + "\n")
 	}
 
 	return b.String()

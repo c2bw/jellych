@@ -66,6 +66,16 @@ func (r *StreamRegistry) IsChannelActive(channel string) bool {
 	return ok && m != nil
 }
 
+// channelDone identifies the current producer so media waiters wake on exit.
+func (r *StreamRegistry) channelDone(channel string) (<-chan struct{}, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if m := (*r.managers)[channel]; m != nil {
+		return m.done, true
+	}
+	return nil, false
+}
+
 // PlaylistSegmentCount returns the current number of media segment entries
 // in the channel's index.m3u8 playlist.
 func (r *StreamRegistry) PlaylistSegmentCount(channel string) (int, error) {

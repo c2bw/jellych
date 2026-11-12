@@ -62,6 +62,28 @@ func newAPITestFixture(t *testing.T) *apiTestFixture {
 	return &apiTestFixture{state: state, api: newAPI(state, Dependencies{})}
 }
 
+func TestActiveStreamsReturnsEmptyArrayAfterLastStreamStops(t *testing.T) {
+	fixture := newAPITestFixture(t)
+	active := []string{"alpha"}
+	fixture.api.streams.ActiveChannels = func() []string { return active }
+	handler := fixture.api.Handler()
+	for _, wantCount := range []int{1, 0} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/streams", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+		}
+		var got []string
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || len(got) != wantCount {
+			t.Fatalf("active streams = %s; want an array of length %d", rec.Body.String(), wantCount)
+		}
+		active = nil
+	}
+}
+
 func TestAddVODReturnsPersistedRecord(t *testing.T) {
 	fixture := newAPITestFixture(t)
 	fixture.state.SetVODStore(&enrichingVODStore{})
@@ -883,5 +905,43 @@ func TestLiveActivityPreventsPrematureIdleStreamStop(t *testing.T) {
 	fixture.api.reconcileIdleStreams(now)
 	if stopped != 1 {
 		t.Fatalf("expected idle stream to stop 30s after last activity, got stopped=%d", stopped)
+	}
+}
+
+func TestIdleSweepPreservesPlaybackResumedAfterSnapshot(t *testing.T) {
+	fixture := newAPITestFixture(t)
+	now := time.Now()
+	fixture.api.playback.TouchLiveActivity("jankos", now.Add(-idleStopTTL))
+	fixture.api.streams.ActiveChannels = func() []string {
+		// A heartbeat arrives after GetPlayingCounts took its snapshot.
+		fixture.api.playback.RecordPlaying("jankos", "resumed", now)
+		return []string{"jankos"}
+	}
+	fixture.api.streams.StopChannel = func(string) error {
+		t.Fatal("stopped a stream after playback resumed")
+		return nil
+	}
+	fixture.api.reconcileIdleStreams(now)
+}
+
+func TestIdleStopRechecksActivityAfterCandidateSelection(t *testing.T) {
+	for _, activity := range []string{"heartbeat", "media"} {
+		t.Run(activity, func(t *testing.T) {
+			now := time.Now()
+			p := newPlaybackTracker(func() time.Time { return now })
+			p.TouchLiveActivity("jankos", now.Add(-idleStopTTL))
+			// The stream was selected for stopping before new activity arrived.
+			if activity == "heartbeat" {
+				p.RecordPlaying("jankos", "resumed", now)
+			} else {
+				p.TouchLiveActivity("jankos", now)
+			}
+			if err := p.stopIfStillIdle("jankos", now, func(string) error {
+				t.Fatal("stopped a stream with new activity")
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

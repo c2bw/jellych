@@ -7,12 +7,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/c2bw/jellych/stream"
 )
+
+// Retain a short retry/buffering window rather than twelve hours of live media.
+const liveMediaTokenTTL = 5 * time.Minute
 
 var liveProxyPlaylistErrors = []handlerError{
 	{err: stream.ErrLiveStreamOffline, status: http.StatusNotFound, message: "stream is offline or unavailable"},
@@ -29,6 +33,14 @@ func (a *API) rewriteLiveProxyPlaylist(channel string, playlist []byte) ([]byte,
 		token, err := a.liveMediaRegistry.register(channel, trimmed, now)
 		if err != nil {
 			return "", err
+		}
+		// FFmpeg's HLS demuxer validates segment extensions. Keep the upstream
+		// type in the opaque URL without exposing the upstream address.
+		parsed, _ := url.Parse(trimmed)
+		ext := strings.ToLower(path.Ext(parsed.Path))
+		switch ext {
+		case ".ts", ".aac", ".m4s", ".mp4", ".m4a", ".m3u8", ".key", ".vtt":
+			token += ext
 		}
 		return "/api/live-proxy/" + url.PathEscape(channel) + "/media/" + token, nil
 	})
@@ -95,7 +107,8 @@ func (a *API) handleGetLiveProxyMedia(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	targetURL, ok := a.liveMediaRegistry.lookup(channel, strings.TrimSpace(r.PathValue("token")), a.now())
+	token, _, _ := strings.Cut(strings.TrimSpace(r.PathValue("token")), ".")
+	targetURL, ok := a.liveMediaRegistry.lookup(channel, token, a.now())
 	if !ok {
 		http.NotFound(w, r)
 		return
