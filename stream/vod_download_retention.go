@@ -11,6 +11,19 @@ import (
 	"time"
 )
 
+// RecoverInterruptedDownloads restores conversion backups and removes abandoned
+// partials before metadata synchronization can prune recordings.
+func (d *VODDownloader) RecoverInterruptedDownloads() error {
+	d.Lock()
+	dir := d.dir
+	d.Unlock()
+	if dir == "" {
+		return nil
+	}
+	_, err := d.cleanupInterruptedPartials(dir)
+	return err
+}
+
 // StartCleanup removes expired downloads immediately and once per hour.
 func (d *VODDownloader) StartCleanup(ctx context.Context) {
 	d.runCleanup(time.Now())
@@ -99,7 +112,7 @@ func (d *VODDownloader) cleanupExpired(now time.Time) (int, error) {
 		}
 
 		path := filepath.Join(dir, name)
-		removed, err := d.removeExpired(dir, id, path)
+		removed, err := d.removeExpired(dir, id, path, cutoff)
 		if err != nil {
 			cleanupErrs = append(cleanupErrs, fmt.Errorf("failed to delete %q: %w", name, err))
 			continue
@@ -166,6 +179,9 @@ func (d *VODDownloader) recoverInterruptedConversion(dir, id string) (bool, erro
 	if d.dir != dir {
 		return false, nil
 	}
+	if _, removing := d.removing[id]; removing {
+		return false, nil
+	}
 	if d.active != nil {
 		if _, ok := d.active[id]; ok {
 			return false, nil
@@ -212,7 +228,7 @@ func (d *VODDownloader) removeInterruptedPartial(dir, path string) (bool, error)
 	return true, nil
 }
 
-func (d *VODDownloader) removeExpired(dir, id, path string) (bool, error) {
+func (d *VODDownloader) removeExpired(dir, id, path string, cutoff time.Time) (bool, error) {
 	d.Lock()
 	defer d.Unlock()
 
@@ -223,6 +239,18 @@ func (d *VODDownloader) removeExpired(dir, id, path string) (bool, error) {
 		if _, ok := d.active[id]; ok {
 			return false, nil
 		}
+	}
+	// A download or conversion may have replaced the candidate since the
+	// directory scan. Check the current file while holding the lifecycle lock.
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() || (info.Size() > 0 && !info.ModTime().Before(cutoff)) {
+		return false, nil
 	}
 	if err := os.Remove(vodConversionBackupPath(dir, id)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, err

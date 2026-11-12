@@ -457,19 +457,10 @@ func (d *VODDownloader) finishConversion(id string, download *vodDownload, tempP
 			if err := os.Chtimes(outputPath, completedAt, completedAt); err != nil {
 				slog.Error("failed to record vod conversion completion time", "id", id, "output", outputPath, "error", err)
 			}
-			info, statErr := os.Stat(outputPath)
 			d.Lock()
-			if statErr == nil {
-				if d.presets == nil {
-					d.presets = make(map[string]vodPresetCacheEntry)
-				}
-				d.presets[id] = vodPresetCacheEntry{
-					size: info.Size(), modTime: info.ModTime(),
-					metadata: vodDownloadMetadata{Preset: VODDownloadPreset(download.progress.Preset), OriginalSize: download.progress.OriginalSize},
-				}
-			} else {
-				delete(d.presets, id)
-			}
+			// The replacement has new codec, dimensions, duration, and bitrate.
+			// Let the next metadata request probe the completed file in full.
+			delete(d.presets, id)
 			d.Unlock()
 			slog.Info("vod conversion finished", "id", id, "output", outputPath, "elapsed", time.Since(startedAt))
 		}

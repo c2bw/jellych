@@ -16,6 +16,43 @@ import (
 
 const testLiveGeneration = "test-generation"
 
+func TestLiveStoreReleasesServedMarkersWithSegments(t *testing.T) {
+	for _, tracked := range []bool{false, true} {
+		for _, grace := range []time.Duration{0, time.Second} {
+			t.Run(fmt.Sprintf("tracked=%v/grace=%v", tracked, grace), func(t *testing.T) {
+				var mu sync.RWMutex
+				items := make(map[string]map[string][]byte)
+				store := newLiveStore(&mu, &items, tracked)
+				now := time.Now()
+				store.now = func() time.Time { return now }
+				store.deleteGrace = grace
+				store.StoreObject("channel", "old.ts", []byte("old"))
+				store.SetWindowUnlockSegment("channel", "old.ts")
+				store.NoteSegmentServed("channel", "old.ts")
+				if !store.IsSegmentServed("channel", "old.ts") || !store.IsWindowUnlocked("channel") {
+					t.Fatal("serving the startup segment should unlock the window")
+				}
+				store.DeleteObject("channel", "old.ts")
+				if grace > 0 && !store.IsSegmentServed("channel", "old.ts") {
+					t.Fatal("marker should remain while the segment is in its grace period")
+				}
+				now = now.Add(grace)
+				store.StoreObject("channel", "next.ts", []byte("next"))
+				if store.GetObject("channel", "old.ts") != nil || store.IsSegmentServed("channel", "old.ts") {
+					t.Fatal("purged segments must release their served markers")
+				}
+				store.NoteSegmentServed("channel", "old.ts")
+				if len(store.servedSegments) != 0 {
+					t.Fatal("a delayed read notification must not recreate a purged marker")
+				}
+				if !store.IsWindowUnlocked("channel") {
+					t.Fatal("purging an old segment must not relock the startup window")
+				}
+			})
+		}
+	}
+}
+
 func TestLiveStoreEnforcesCapacity(t *testing.T) {
 	store := NewIsolatedLiveStore()
 	store.maxChannelBytes = 5

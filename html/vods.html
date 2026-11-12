@@ -44,14 +44,14 @@
             <div>
               <span class="eyebrow">New capture</span>
               <h1>Add a VOD</h1>
-              <p>Queue a Twitch archive by its 10-digit ID.</p>
+              <p>Queue a Twitch archive by its numeric ID.</p>
             </div>
           </div>
           <form id="vodForm" class="vod-form">
             <label class="field-label" for="vodId">VOD ID</label>
             <div class="input-with-prefix">
               <span>#</span>
-              <input id="vodId" class="field" type="text" inputmode="numeric" minlength="10" maxlength="10" pattern="[0-9]{10}" placeholder="1234567890" required />
+              <input id="vodId" class="field" type="text" inputmode="numeric" maxlength="64" pattern="[0-9]{1,64}" placeholder="1234567890" required />
             </div>
             <button id="addVodBtn" class="button button-primary" type="submit">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>

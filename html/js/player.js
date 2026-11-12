@@ -314,7 +314,9 @@ export class Player {
       this.hls = hls;
       hls.loadSource(url);
       hls.attachMedia(this.video);
-      hls.on(Hls.Events.MANIFEST_PARSED, ()=>safePlay(this.video));
+      hls.on(Hls.Events.MANIFEST_PARSED, ()=>{
+        if(this.hls === hls && this.wantsPlayback) safePlay(this.video);
+      });
       hls.on(Hls.Events.FRAG_BUFFERED, (_, data)=>{
         if(this.hls === hls) this.recordFragmentBitrate(data);
       });

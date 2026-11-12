@@ -1,6 +1,7 @@
 package server
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,47 @@ import (
 	"testing/fstest"
 	"time"
 )
+
+func TestStreamingResponsesOutlastWriteTimeout(t *testing.T) {
+	for _, path := range []string{
+		"/vod/test/file.mkv",
+		"/vod/test/index.m3u8",
+		"/live/test/index.m3u8",
+		"/api/live-proxy/test/media/token",
+		"/api/status",
+	} {
+		t.Run(path, func(t *testing.T) {
+			slow := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				time.Sleep(100 * time.Millisecond)
+				_, _ = io.WriteString(w, "complete response")
+			})
+			srv := httptest.NewUnstartedServer(newHandler(fstest.MapFS{}, Handlers{
+				API: slow, Live: slow, LiveWrite: http.NotFoundHandler(),
+			}))
+			srv.Config.WriteTimeout = 25 * time.Millisecond
+			srv.Start()
+			t.Cleanup(srv.Close)
+			client := srv.Client()
+			client.Timeout = 5 * time.Second
+			resp, err := client.Get(srv.URL + path)
+			if path == "/api/status" {
+				if err == nil {
+					resp.Body.Close()
+					t.Fatal("ordinary API response should retain its write timeout")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("media response failed: %v", err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil || string(body) != "complete response" {
+				t.Fatalf("media response = %q, %v", body, err)
+			}
+		})
+	}
+}
 
 func TestStartReturnsListenError(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

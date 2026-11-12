@@ -136,6 +136,10 @@ func (s *LiveStore) NoteSegmentServed(channel, name string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The object may have been purged between the read and this notification.
+	if _, exists := (*s.items)[channel][name]; !exists {
+		return
+	}
 	if s.servedSegments == nil {
 		s.servedSegments = make(map[string]map[string]struct{})
 	}
@@ -334,6 +338,10 @@ func (s *LiveStore) deleteObjectLocked(channel, name string) {
 		return
 	}
 	delete(items[channel], name)
+	delete(s.servedSegments[channel], name)
+	if len(s.servedSegments[channel]) == 0 {
+		delete(s.servedSegments, channel)
+	}
 	if !s.trackedBytes {
 		return
 	}

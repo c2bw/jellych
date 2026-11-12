@@ -190,6 +190,42 @@ test('resuming Hls.js after a user pause restarts loading only once', (t)=>{
   assert.equal(hls.startLoadCalls, 1);
 });
 
+test('manifest completion respects a pause and permits requested playback', t=>{
+  enableFakeHls(t);
+  const video = new NativeHLSVideo();
+  const player = new Player(video);
+  t.after(()=>player.stop());
+
+  player.play('/live/alpha/index.m3u8');
+  const parsed = player.hls.handlers.get(FakeHls.Events.MANIFEST_PARSED);
+  player.pause();
+  parsed();
+  assert.equal(video.playCalls, 0, 'loading must not undo a user pause');
+
+  player.notePlaybackWanted();
+  parsed();
+  assert.equal(video.playCalls, 1, 'the current manifest can start requested playback');
+});
+
+test('manifest callbacks from stopped or replaced players cannot start playback', t=>{
+  enableFakeHls(t);
+  const video = new NativeHLSVideo();
+  const player = new Player(video);
+  t.after(()=>player.stop());
+
+  player.play('/live/alpha/index.m3u8');
+  const oldParsed = player.hls.handlers.get(FakeHls.Events.MANIFEST_PARSED);
+  player.stop();
+  oldParsed();
+  assert.equal(video.playCalls, 0);
+
+  player.play('/live/bravo/index.m3u8');
+  oldParsed();
+  assert.equal(video.playCalls, 0, 'the old manifest must not start the replacement stream');
+  player.hls.handlers.get(FakeHls.Events.MANIFEST_PARSED)();
+  assert.equal(video.playCalls, 1);
+});
+
 test('Hls.js is preferred when native HLS is also reported', (t)=>{
   enableFakeHls(t);
   const video = new NativeHLSVideo();

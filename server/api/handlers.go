@@ -499,6 +499,9 @@ func isIdempotentStopError(err error) bool {
 
 func (a *API) handleActiveStreams(w http.ResponseWriter, r *http.Request) {
 	active := a.streams.ActiveChannels()
+	if active == nil {
+		active = []string{}
+	}
 	writeJSON(w, active)
 }
 

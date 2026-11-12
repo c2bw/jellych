@@ -60,3 +60,29 @@ test('does not prompt for unrelated unauthorized responses', async ()=>{
   assert.equal(response.status, 401);
   assert.equal(promptCalls, 0);
 });
+
+test('retains the entered secret across requests when storage is unavailable', async t=>{
+  for(const readBlocked of [true, false]){
+    await t.test(readBlocked ? 'reads and writes blocked' : 'only writes blocked', async t=>{
+      if(readBlocked) t.mock.method(sessionStorage, 'getItem', ()=>{ throw new Error('storage blocked'); });
+      t.mock.method(sessionStorage, 'setItem', ()=>{ throw new Error('storage blocked'); });
+      let promptCalls = 0;
+      t.mock.method(window, 'prompt', ()=>{ promptCalls++; return 'fallback-secret'; });
+      const secrets = [];
+      t.mock.method(globalThis, 'fetch', async (_input, options)=>{
+        const secret = options.headers.get('X-Jellych-API-Secret');
+        secrets.push(secret);
+        return secret === 'fallback-secret'
+          ? new Response('ok')
+          : new Response('unauthorized', {status: 401, headers: {'WWW-Authenticate': 'Bearer realm="jellych-control"'}});
+      });
+      // Use a fresh page instance so prior tests cannot supply the fallback.
+      const auth = await import('../html/js/auth.js?storage-blocked=' + readBlocked);
+      assert.equal((await auth.apiFetch('/api/playing/alpha', {method: 'POST'})).status, 200);
+      assert.equal((await auth.apiFetch('/api/playing/alpha', {method: 'POST'})).status, 200);
+      assert.equal(auth.getControlSecret(), 'fallback-secret');
+      assert.equal(promptCalls, 1);
+      assert.deepEqual(secrets, [null, 'fallback-secret', 'fallback-secret']);
+    });
+  }
+});

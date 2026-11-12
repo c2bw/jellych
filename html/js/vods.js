@@ -17,8 +17,8 @@ const downloadPresetCommandEl = document.getElementById('downloadPresetCommand')
 let currentVODs = [];
 let currentPage = 1;
 let progressPollTimer = 0;
+let vodLoadFailed = false;
 let resolvedVODPresetCommands = null;
-const vodIDLength = 10;
 const vodsPerPage = 15;
 
 function updateDownloadPresetCommand(){
@@ -398,9 +398,12 @@ async function loadVODs(){
     currentVODs = await fetchJSON('/api/vods');
     updateChannelFilter();
     applyVODFilter();
-    scheduleProgressPolling();
+    vodLoadFailed = false;
   }catch(err){
+    vodLoadFailed = true;
     listEl.textContent = 'Could not load VODs: ' + err.message;
+  }finally{
+    scheduleProgressPolling();
   }
 }
 
@@ -409,7 +412,7 @@ function scheduleProgressPolling(){
     clearTimeout(progressPollTimer);
     progressPollTimer = 0;
   }
-  if(!currentVODs.some(vodDownloadActive)) return;
+  if(!vodLoadFailed && !currentVODs.some(vodDownloadActive)) return;
   progressPollTimer = window.setTimeout(async ()=>{
     progressPollTimer = 0;
     await loadVODs();
@@ -419,8 +422,8 @@ function scheduleProgressPolling(){
 async function addVOD(event){
   event.preventDefault();
   const id = idInput.value.trim();
-  if(id.length !== vodIDLength || !/^\d+$/.test(id)){
-    setMessage('VOD ID must be ' + vodIDLength + ' digits', true);
+  if(!/^\d{1,64}$/.test(id)){
+    setMessage('VOD ID must contain 1 to 64 digits', true);
     return;
   }
 

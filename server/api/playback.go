@@ -231,7 +231,6 @@ func (a *API) reconcileIdleStreams(now time.Time) {
 			continue
 		}
 		if now.Sub(startedAt) >= idleStopTTL {
-			delete(a.playback.idleTimers, channel)
 			stopList = append(stopList, channel)
 		}
 	}
@@ -243,8 +242,29 @@ func (a *API) reconcileIdleStreams(now time.Time) {
 	a.playback.idleMu.Unlock()
 
 	for _, channel := range stopList {
-		if err := a.streams.StopChannel(channel); err != nil {
+		if err := a.playback.stopIfStillIdle(channel, now, a.streams.StopChannel); err != nil {
 			slog.Error("failed to stop idle stream", "channel", channel, "error", err)
 		}
 	}
+}
+
+// stopIfStillIdle rechecks current activity after the sweep's snapshots. Hold
+// both activity locks through stopping so a recorded heartbeat or media read
+// cannot be overtaken by an idle stop based on older state.
+func (p *PlaybackTracker) stopIfStillIdle(channel string, now time.Time, stop func(string) error) error {
+	p.playMu.Lock()
+	defer p.playMu.Unlock()
+	p.idleMu.Lock()
+	defer p.idleMu.Unlock()
+	p.pruneExpiredLocked(now)
+	if len(p.playSessions[channel]) > 0 {
+		delete(p.idleTimers, channel)
+		return nil
+	}
+	startedAt, ok := p.idleTimers[channel]
+	if !ok || now.Sub(startedAt) < idleStopTTL {
+		return nil
+	}
+	delete(p.idleTimers, channel)
+	return stop(channel)
 }
